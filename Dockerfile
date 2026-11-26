@@ -10,7 +10,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the package itself (with its runtime dependencies, without dev extras)
-COPY pyproject.toml README.md LICENSE /src/
+COPY pyproject.toml README.md LICENSE THIRD-PARTY-NOTICES /src/
 COPY sme_ocpp_sim /src/sme_ocpp_sim
 COPY configs /src/configs
 RUN pip install --prefix=/install /src

@@ -56,6 +56,10 @@ Runtime environment
 Python               PSF-2.0                 Bundled in the Windows executable; the base of the
                                              Docker image (python:3.12-slim, Debian packages under
                                              their own licenses, see /usr/share/doc/*/copyright).
+PyInstaller          GPL-2.0-or-later        Windows executable only: its bootloader and runtime hooks
+                     WITH Bootloader-        are embedded in the exe. The bootloader exception allows
+                     exception               distributing programs built with it under any license.
+                                             https://pyinstaller.org/
 
 Not distributed
 ---------------

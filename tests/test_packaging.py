@@ -22,3 +22,18 @@ def test_shipped_configs_load():
     assert configs
     for path in configs:
         load_file(str(path))
+
+
+def test_default_config_is_bundled_demo(monkeypatch):
+    """Started without -c, the CLI loads the bundled demo config (as sme-modbus-sim / sme-bac-sim)."""
+    import sme_ocpp_sim.__main__ as cli
+    import sme_ocpp_sim.web as web
+
+    assert cli.DEFAULT_CONFIG == ROOT / "configs" / "demo-site.yaml"
+    seen = {}
+    monkeypatch.setattr(web, "create_app", lambda engine, path: seen.update(engine=engine, path=path) or "app")
+    monkeypatch.setattr(cli, "run_web", lambda app, args, name: seen.update(app=app))
+    assert cli.main(["--no-browser"]) == 0
+    assert seen["app"] == "app"
+    assert seen["path"] == str(cli.DEFAULT_CONFIG)
+    assert seen["engine"].config.chargers, "demo config should define chargers"

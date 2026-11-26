@@ -57,3 +57,20 @@ jobs:
           load_file(str(pkg.joinpath("configs", "demo-site.yaml")))
           print("wheel OK")
           PY
+      - name: License files are in the wheel's .dist-info
+        run: |
+          python - dist/*.whl <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          for lic in ("LICENSE", "THIRD-PARTY-NOTICES"):
+              assert any(".dist-info/" in n and n.endswith("/" + lic) for n in names), f"{lic} missing from .dist-info"
+          print("license files OK")
+          PY
+
+  # The Dockerfile must build before a release tag does it (single arch, no push).
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t sme-ocpp-sim:ci .
+      - run: docker run --rm sme-ocpp-sim:ci sme-ocpp-sim --version
