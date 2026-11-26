@@ -78,7 +78,8 @@ from ..charging import power
 from ..charging.composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
 from ..charging.ev import PRESETS, EvModel
 from ..charging.power import AcSupply, PowerState
-from ..charging.profiles import ChargingProfile, ChargingRateUnit, ClearStatus, ProfileStatus, ProfileStore
+from ..charging.profiles import (ChargingProfile, ChargingRateUnit, ClearStatus, InstalledProfile, ProfileStatus,
+                                ProfileStore)
 from ..config import ChargerConfig, ReconnectConfig
 from ..protocol import base as d
 from ..protocol.base import AuthResult as A
@@ -1170,10 +1171,33 @@ class ChargerRuntime:
             self._end_tx(c, R.OTHER)  # TODO(spec): a fault ends the transaction with reason Other
         self._refresh(c)
 
-    async def clear_fault(self, connector: int) -> None:
+    async def clear_fault(self, connector: int) -> bool:
+        """Clear an operator fault; the connector goes back to Available / Preparing (plugged). ``False`` = it was
+        not faulted."""
         c = self._conn(connector)
+        if c.fault is None:
+            return False
         c.fault = None
         self._refresh(c)
+        return True
+
+    def has_transaction(self, connector: int) -> bool:
+        return self._conn(connector).tx is not None
+
+    def faulted(self, connector: int) -> Optional[str]:
+        """The operator fault's error code, or ``None``."""
+        return self._conn(connector).fault
+
+    def installed_profiles(self, connector: Optional[int] = None) -> Tuple[InstalledProfile, ...]:
+        """Installed charging profiles (all, or those of ``connector``; 0 = the charge point)."""
+        if connector:
+            self._conn(connector)
+        return self.profiles.profiles(connector)
+
+    def composite(self, connector: int, duration: int,
+                  unit: Optional[ChargingRateUnit] = None) -> d.GetCompositeResult:
+        """The GetCompositeSchedule answer for ``connector`` (0 = the charge point) right now, without a CSMS."""
+        return self._get_composite(d.GetComposite(connector, duration, unit))
 
     async def send_data_transfer(self, vendor_id: str, message_id: Optional[str] = None,
                                  data: Optional[str] = None) -> d.DataTransferResult:

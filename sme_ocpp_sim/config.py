@@ -143,6 +143,9 @@ class SessionConfig(StrictModel):
     target_soc: float = Field(90.0, ge=0, le=100)
 
 
+#: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.
+PASSWORD_MASK = "********"
+
 #: Upper bound for ``connectors`` (simulator limit, not an OCPP one).
 MAX_CONNECTORS = 32
 
@@ -150,6 +153,8 @@ MAX_CONNECTORS = 32
 def _charger_id(v: str) -> str:
     if ":" in v:
         raise ValueError("charger id must not contain ':' (it is the Basic Auth user-id, RFC 7617)")
+    if v == "bulk":
+        raise ValueError("charger id 'bulk' is reserved (the Web API uses /api/chargers/bulk/... for bulk operations)")
     return v
 
 
