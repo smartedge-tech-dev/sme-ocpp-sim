@@ -1,14 +1,15 @@
 """Simulator configuration (YAML, design §7).
 
-M3 scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` and a flat per-charger model
-(``connectors`` count instead of the ``evses`` tree, constant power placeholder). ``template`` / ``evses`` /
-``ev_models`` / ``session`` follow in M4 / M5; ``behaviors`` is v0.2.
+Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` and a flat per-charger model
+(``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
+The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
+``ev_models`` entry). ``template`` / ``evses`` follow in M5; ``behaviors`` is v0.2.
 
 YAML pitfall: unquoted ``0123``, ``1e5``-like numbers, ``ON`` / ``OFF`` / ``yes`` / ``no`` are not strings in
 YAML 1.1. Identity / text fields therefore only accept real strings and tell the user to quote the value,
 instead of silently turning ``0123`` into ``83``.
 
-The only product import is the version metadata registry (no adapter is imported).
+Product imports: the version metadata registry (no adapter) and the pure EV model of :mod:`.charging.ev`.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from pydantic import AfterValidator, BeforeValidator, Field, field_validator, mo
 from sme_sim_common.config import StrictModel
 from typing_extensions import Annotated
 
+from .charging.ev import PRESETS, EvModel, validate_curve
 from .protocol.registry import check_version
 
 
@@ -85,6 +87,48 @@ class CsmsDefaults(StrictModel):
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 
+class EvModelConfig(StrictModel):
+    """One ``ev_models`` entry (design §7); see :class:`.charging.ev.EvModel` for the semantics."""
+
+    id: QuotedStr = Field(min_length=1)
+    capacity_kwh: float = Field(gt=0)
+    max_ac_kw: float = Field(gt=0)
+    max_current_a: float = Field(32.0, gt=0)
+    #: Accepted for the design §7 shape; DC charging is not modelled in v0.1.
+    max_dc_kw: Optional[float] = Field(None, gt=0)
+    phases: Literal[1, 2, 3] = 1
+    min_current_a: float = Field(6.0, ge=0)
+    efficiency: float = Field(0.9, gt=0, le=1)
+    curve: Optional[List[Tuple[float, float]]] = None  # SoC% -> fraction of max; None = ev.DEFAULT_CURVE
+
+    @field_validator("curve")
+    @classmethod
+    def _curve(cls, v: Optional[List[Tuple[float, float]]]) -> Optional[List[Tuple[float, float]]]:
+        if v is not None:
+            validate_curve(tuple(v))
+        return v
+
+    @model_validator(mode="after")
+    def _currents(self) -> "EvModelConfig":
+        if self.min_current_a > self.max_current_a:
+            raise ValueError("min_current_a must be <= max_current_a")
+        return self
+
+    def to_model(self) -> EvModel:
+        extra = {"curve": tuple(tuple(p) for p in self.curve)} if self.curve is not None else {}
+        return EvModel(self.id, capacity_kwh=self.capacity_kwh, max_ac_w=self.max_ac_kw * 1000.0,
+                       max_current_a=self.max_current_a, phases=self.phases, min_current_a=self.min_current_a,
+                       efficiency=self.efficiency, **extra)
+
+
+class SessionConfig(StrictModel):
+    """The EV that is plugged in (design §7 ``session``); every new transaction starts at ``initial_soc``."""
+
+    ev_model: QuotedStr = "compact-40kwh"
+    initial_soc: float = Field(30.0, ge=0, le=100)
+    target_soc: float = Field(90.0, ge=0, le=100)
+
+
 #: Upper bound for ``connectors`` (simulator limit, not an OCPP one).
 MAX_CONNECTORS = 32
 
@@ -117,8 +161,16 @@ class ChargerConfig(StrictModel):
     id_tags: List[Annotated[QuotedStr, Field(min_length=1, max_length=20)]] = Field(default_factory=list)
     #: Boot retry delay when the CSMS answers Pending / Rejected with ``interval`` 0.
     boot_retry_s: float = Field(60.0, gt=0)
-    #: M3 placeholder: constant charging power until the M4 power model.
-    power_w: float = Field(6000.0, gt=0)
+    # Supply and hardware limit of each connector (design §3.2 / §7). ``voltage_v`` is the nominal supply
+    # voltage; ``line_to_line`` marks a 3-phase voltage given line-to-line (Japanese 3-phase 200 V delta).
+    max_power_w: float = Field(6000.0, gt=0)
+    voltage_v: float = Field(200.0, gt=0)
+    phases: Literal[1, 2, 3] = 1
+    line_to_line: bool = False
+    #: Power ramp in W per simulated second (``None`` = step change).
+    ramp_up_w_per_s: Optional[float] = Field(None, gt=0)
+    ramp_down_w_per_s: Optional[float] = Field(None, gt=0)
+    session: SessionConfig = Field(default_factory=SessionConfig)
     #: Default for MeterValueSampleInterval when ``config_keys`` does not set it (``None`` = key table default).
     meter_sample_interval_s: Optional[int] = Field(None, ge=0)
 
@@ -134,10 +186,14 @@ class SimConfig(StrictModel):
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     frame_log: FrameLogConfig = Field(default_factory=FrameLogConfig)
     csms_defaults: CsmsDefaults = Field(default_factory=CsmsDefaults)
+    ev_models: List[EvModelConfig] = Field(default_factory=list)
     chargers: List[ChargerConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_chargers(self) -> "SimConfig":
+        ev_ids = [e.id for e in self.ev_models]
+        if len(set(ev_ids)) != len(ev_ids):
+            raise ValueError("duplicate ev_models id")
         seen = set()
         for c in self.chargers:
             if c.id in seen:
@@ -146,7 +202,17 @@ class SimConfig(StrictModel):
             if c.csms_url is None and self.csms_defaults.url is None:
                 raise ValueError(f"charger {c.id!r}: no csms_url and no csms_defaults.url")
             self._check_profile(c)
+            if c.session.ev_model not in ev_ids and c.session.ev_model not in PRESETS:
+                raise ValueError(f"charger {c.id!r}: unknown session.ev_model {c.session.ev_model!r} "
+                                 f"(not in ev_models nor presets {sorted(PRESETS)})")
         return self
+
+    def resolve_ev(self, charger: ChargerConfig) -> EvModel:
+        """The EV model of ``charger``'s session; an ``ev_models`` entry overrides a preset of the same id."""
+        for e in self.ev_models:
+            if e.id == charger.session.ev_model:
+                return e.to_model()
+        return PRESETS[charger.session.ev_model]
 
     def _check_profile(self, c: ChargerConfig) -> None:
         profile = self.csms_defaults.security_profile

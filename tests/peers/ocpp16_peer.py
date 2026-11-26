@@ -193,8 +193,22 @@ class CsmsPeer:
         """Send a CSMS -> CP CALL (an ``ocpp.v16.call`` object) on the current session of ``cp_id``."""
         return await self.sessions[cp_id].cp.call(payload, **kw)
 
-    async def remote_start(self, cp_id, id_tag, connector_id=None):
-        return await self.request(cp_id, call.RemoteStartTransaction(id_tag=id_tag, connector_id=connector_id))
+    async def remote_start(self, cp_id, id_tag, connector_id=None, charging_profile=None):
+        return await self.request(cp_id, call.RemoteStartTransaction(id_tag=id_tag, connector_id=connector_id,
+                                                                     charging_profile=charging_profile))
+
+    async def set_charging_profile(self, cp_id, connector_id, profile):
+        """``profile``: a 1.6 ChargingProfile dict with camelCase keys."""
+        return await self.request(cp_id, call.SetChargingProfile(connector_id=connector_id,
+                                                                 cs_charging_profiles=profile))
+
+    async def clear_charging_profile(self, cp_id, **kw):
+        """``kw``: id / connector_id / charging_profile_purpose / stack_level."""
+        return await self.request(cp_id, call.ClearChargingProfile(**kw))
+
+    async def get_composite_schedule(self, cp_id, connector_id, duration, unit=None):
+        return await self.request(cp_id, call.GetCompositeSchedule(connector_id=connector_id, duration=duration,
+                                                                   charging_rate_unit=unit))
 
     async def remote_stop(self, cp_id, transaction_id):
         return await self.request(cp_id, call.RemoteStopTransaction(transaction_id=transaction_id))

@@ -1,4 +1,4 @@
-"""Single charger runtime (plan §2.2, M3).
+"""Single charger runtime (plan §2.2, M3 / M4b).
 
 One :class:`ChargerRuntime` per charger owns the reconnect loop, the RPC connection, the version adapter, the
 ConfigStore and the connector state machines. It speaks only the domain types of ``protocol.base`` and the
@@ -31,6 +31,21 @@ sent by ONE worker per session that runs once the boot is accepted:
   StopTransaction are never dropped *by this bound*; they are still dropped after ``TransactionMessageAttempts``
   failed attempts or an internal error.
 
+Power model and smart charging (M4b, design §3.2 / §3.3): the runtime owns a :class:`ProfileStore`. While a
+transaction is charging (StartTransaction answered), the connector's power model is stepped every ``tick_s`` and
+before every meter reading / StopTransaction: ``composite.limit_at`` (the evaluator that also answers
+GetCompositeSchedule, fed with the same per-phase voltage and phases) -> ``power.step`` -> power, energy register,
+SoC. The suspension cause of the power model moves the connector Charging <-> SuspendedEV / SuspendedEVSE; the
+StatusNotification goes through the outbox like any other state change. Every transaction starts a fresh EV at
+``session.initial_soc``; when it ends the connector's TxProfiles are dropped (1.6 §3.13.1, §7.10). A
+RemoteStartTransaction profile travels with the reservation / transaction and is installed, bound to the
+transactionId, once StartTransaction is answered (§5.16.2); a start that is refused or fails discards it.
+
+Interpretations (not defined by the spec): a limit in A applies to the phases the EV uses while one charges and to
+the supply's phases otherwise (errata 3.34); GetCompositeSchedule periods are capped at the hardware maximum
+(``max_power_w``, times the connector count for connectorId 0), which also stands for "no limit"; ticks are
+session tasks, so after an offline gap the first step integrates the gap at the limit in force on reconnect.
+
 Concurrency invariant: there is no lock around connector state. Every state check and the mutation that depends
 on it run without an ``await`` in between (single-threaded asyncio), so they are atomic.
 """
@@ -43,11 +58,16 @@ import inspect
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Coroutine, Deque, Dict, Iterable, List, Optional, Set, Tuple
 
+from ..charging import power
+from ..charging.composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
+from ..charging.ev import PRESETS, EvModel
+from ..charging.power import AcSupply, PowerState
+from ..charging.profiles import ChargingProfile, ChargingRateUnit, ClearStatus, ProfileStatus, ProfileStore
 from ..config import ChargerConfig, ReconnectConfig
 from ..protocol import base as d
 from ..protocol.base import AuthResult as A
@@ -66,10 +86,12 @@ ENERGY = "Energy.Active.Import.Register"
 POWER = "Power.Active.Import"
 CURRENT = "Current.Import"
 VOLTAGE = "Voltage"
-#: Single-phase placeholder until the M4 power / EV model (phases, real voltage).
-NOMINAL_V = 230.0
+SOC = "SoC"
+POWER_DECIMALS = 1  # same resolution as the GetCompositeSchedule limits
 CURRENT_DECIMALS = 3
+SOC_DECIMALS = 1
 LOCATION = "Outlet"
+SOC_LOCATION = "EV"
 
 BACKOFF_FACTOR = 2.0
 #: RpcConnection writes the CALLRESULT right after the handler returns; follow-up CALLs (StatusNotification,
@@ -111,6 +133,7 @@ class _Tx:
     started_at: datetime
     tx_id: Optional[str] = None    # set once the CSMS answered StartTransaction
     ended: Optional[_Stop] = None  # set when the transaction ended (maybe before tx_id arrived)
+    profile: Optional[ChargingProfile] = None  # RemoteStart TxProfile, installed once tx_id is known
 
 
 @dataclass
@@ -123,8 +146,10 @@ class _Conn:
     fault: Optional[str] = None               # version wire error code
     finishing: bool = False
     pending_tag: Optional[str] = None         # authorized, waiting for the cable
+    pending_profile: Optional[ChargingProfile] = None  # RemoteStart TxProfile of ``pending_tag``
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0                     # energy register
+    pw: Optional[PowerState] = None           # power model state while charging (None otherwise)
     last_mono: Optional[float] = None
     meter_task: Optional[asyncio.Task] = None
 
@@ -179,8 +204,21 @@ class ChargerRuntime:
         monotonic: Callable[[], float] = time.monotonic,
         connect: Callable[[TransportConfig], Awaitable[Any]] = open_connection,
         backoff: Optional[Backoff] = None,
+        ev: Optional[EvModel] = None,
+        tick_s: float = 1.0,
+        time_scale: float = 1.0,
     ) -> None:
+        """``ev`` defaults to the preset ``cfg.session.ev_model`` (``SimConfig.resolve_ev`` also knows
+        ``ev_models``); ``tick_s`` is the power model step, ``time_scale`` its simulated-time factor."""
+        if tick_s <= 0 or time_scale <= 0:
+            raise ValueError("tick_s and time_scale must be > 0")
+        if ev is None and cfg.session.ev_model not in PRESETS:
+            raise ValueError(f"EV model {cfg.session.ev_model!r} is not a preset; pass ev=")
         self.cfg = cfg
+        self.ev: EvModel = ev or PRESETS[cfg.session.ev_model]
+        self.supply = AcSupply(cfg.voltage_v, cfg.phases, cfg.line_to_line)
+        self.profiles = ProfileStore(cfg.connectors)
+        self._tick_s, self._time_scale = tick_s, time_scale
         self.adapter: d.VersionAdapter = get_adapter_class(ocpp_version)(strict=strict)
         names = {k.name for k in self.adapter.config_keys}
         derived = {CONNECTORS_KEY: str(cfg.connectors)}
@@ -237,6 +275,9 @@ class ChargerRuntime:
             d.Unlock: self._unlock,
             d.ChangeAvailability: self._change_availability,
             d.DataTransfer: self._data_transfer,
+            d.SetProfile: self._set_profile,
+            d.ClearProfiles: self._clear_profiles,
+            d.GetComposite: self._get_composite,
         }
 
     # ================================================================== connection
@@ -403,6 +444,7 @@ class ChargerRuntime:
         for c in self.conns.values():
             await self._send_status(c.state)
         self._spawn(self._outbox_worker())
+        self._spawn(self._tick_loop())
         for c in self.conns.values():
             if c.tx is not None and c.tx.tx_id is not None:
                 self._start_meter(c)
@@ -577,8 +619,10 @@ class ChargerRuntime:
         if not c.operative:
             return S.UNAVAILABLE
         if c.tx is not None:
-            # Charging only once the CSMS answered StartTransaction.
-            return S.CHARGING if c.tx.tx_id is not None else S.PREPARING
+            # Charging only once the CSMS answered StartTransaction; then the power model may suspend it.
+            if c.tx.tx_id is None:
+                return S.PREPARING
+            return S(c.pw.suspension) if c.pw is not None and c.pw.suspension else S.CHARGING
         if c.plugged and c.finishing:
             return S.FINISHING
         if c.plugged or c.pending_tag:
@@ -635,29 +679,81 @@ class ChargerRuntime:
                                                          "Authorize")
         return info.status if info is not None else A.ERROR
 
-    def _accumulate(self, c: _Conn) -> None:
-        """Add the energy since the last reading (only while charging) and restart the interval."""
-        now = self._mono()
-        if c.tx is not None and c.tx.tx_id is not None and c.last_mono is not None:
-            c.meter_wh += self.cfg.power_w * (now - c.last_mono) / 3600.0
-        c.last_mono = now
-
     def _samples(self, c: _Conn, measurands: Iterable[str]) -> List[d.Sample]:
-        power = self.cfg.power_w if c.tx is not None and c.tx.tx_id is not None else 0.0
+        """Readings of the configured measurands (others are skipped; SoC only while an EV charges).
+        Current.Import is the balanced per-phase current, reported once without a phase."""
+        r = power.meter_reading(c.pw, self.ev, self.supply) if c.pw is not None else None
+        watts = r.power_active_import_w if r else 0.0
+        amps = r.current_import_a if r else 0.0
         out: List[d.Sample] = []
         for name in measurands:
             if name == ENERGY:
                 out.append(d.Sample(name, round(c.meter_wh), "Wh", location=LOCATION))
             elif name == POWER:
-                out.append(d.Sample(name, power, "W", location=LOCATION))
+                out.append(d.Sample(name, round(watts, POWER_DECIMALS), "W", location=LOCATION))
             elif name == CURRENT:
-                out.append(d.Sample(name, round(power / NOMINAL_V, CURRENT_DECIMALS), "A", location=LOCATION))
+                out.append(d.Sample(name, round(amps, CURRENT_DECIMALS), "A", location=LOCATION))
             elif name == VOLTAGE:
-                out.append(d.Sample(name, NOMINAL_V, "V", location=LOCATION))
-            # M4: the power / EV model provides the remaining measurands (SoC, Current.Offered, ...)
+                out.append(d.Sample(name, self.supply.voltage_v, "V", location=LOCATION))
+            elif name == SOC and r is not None:
+                out.append(d.Sample(name, round(r.soc_pct, SOC_DECIMALS), "Percent", location=SOC_LOCATION))
         return out
 
-    async def _start_tx(self, c: _Conn, tag: str) -> A:
+    # ================================================================== power model / smart charging
+
+    def _phases(self, connector_id: int) -> int:
+        """Phases a limit in A applies to: the EV's while one charges, else the supply's (errata 3.34)."""
+        c = self.conns.get(connector_id)
+        return self.supply.phases_used(self.ev) if c is not None and c.pw is not None else self.supply.phases
+
+    def _transactions(self) -> Dict[int, ActiveTransaction]:
+        # TODO(spec): 1.6 transaction ids are integers; 2.0.1 string ids need a mapping in charging.profiles.
+        return {c.id: ActiveTransaction(int(c.tx.tx_id), c.tx.started_at)
+                for c in self.conns.values() if c.tx is not None and c.tx.tx_id is not None}
+
+    def _limit_w(self, c: _Conn) -> Optional[float]:
+        return limit_at(self.profiles, c.id, self._clock(), transactions=self._transactions(),
+                        number_phases=self._phases(c.id), voltage=self.supply.phase_voltage_v())
+
+    def _advance(self, c: _Conn) -> None:
+        """Step the power model of a charging connector up to now (power, energy register, SoC, suspension) and
+        restart the interval; a connector that is not charging only restarts the interval."""
+        now = self._mono()
+        if c.pw is not None:
+            dt = max(0.0, now - c.last_mono) if c.last_mono is not None else 0.0
+            c.pw = power.step(c.pw, dt_s=dt, ev=self.ev, target_soc_pct=self.cfg.session.target_soc,
+                              evse_limit_w=self._limit_w(c), evse_max_w=self.cfg.max_power_w, supply=self.supply,
+                              ramp_up_w_per_s=self.cfg.ramp_up_w_per_s,
+                              ramp_down_w_per_s=self.cfg.ramp_down_w_per_s, time_scale=self._time_scale)
+            c.meter_wh = c.pw.energy_wh
+        c.last_mono = now
+
+    def _settle(self) -> None:
+        """Integrate every charging connector up to now (before a limit change)."""
+        for c in self.conns.values():
+            self._advance(c)
+
+    def _tick_all(self) -> None:
+        for c in self.conns.values():
+            if c.pw is not None:
+                self._advance(c)
+                self._refresh(c)  # Charging <-> SuspendedEV / SuspendedEVSE
+
+    async def _tick_loop(self) -> None:
+        """Session task: step the power model of every charging connector each ``tick_s``."""
+        while True:
+            await asyncio.sleep(self._tick_s)
+            self._tick_all()
+
+    def _bind_profile(self, c: _Conn, tx: _Tx) -> None:
+        """Install the RemoteStart TxProfile for the transaction it started (§5.16.2)."""
+        assert tx.profile is not None and tx.tx_id is not None
+        tx_id = int(tx.tx_id)
+        st = self.profiles.install(c.id, replace(tx.profile, transaction_id=tx_id), active_transaction=tx_id)
+        if st is not ProfileStatus.ACCEPTED:
+            log.warning("%s: RemoteStart charging profile not installed (%s)", self.cfg.id, st.value)
+
+    async def _start_tx(self, c: _Conn, tag: str, profile: Optional[ChargingProfile] = None) -> A:
         """Start a transaction for an authorized ``tag``; the state is re-checked here (an await may lie between
         authorization and this call). Not plugged = keep the tag and wait for the cable (Accepted).
 
@@ -668,16 +764,16 @@ class ChargerRuntime:
             return A.UNAVAILABLE
         c.finishing = False
         if not c.plugged:
-            c.pending_tag = tag
+            c.pending_tag, c.pending_profile = tag, profile
             self._refresh(c)
             return A.ACCEPTED
-        c.pending_tag = None
+        c.pending_tag, c.pending_profile = None, None
         if not self.online:
             # TODO(spec): offline transactions are not simulated in v0.1 (§3.7 p.17 would queue a
             # StartTransaction without transactionId); the start is refused with Offline.
             self._refresh(c)
             return A.OFFLINE
-        tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self._clock())
+        tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self._clock(), profile=profile)
         c.last_mono = self._mono()
         self._refresh(c)  # Preparing
         ev = d.TxStarted(c.id, tx.id_tag, tx.meter_start_wh, tx.started_at)
@@ -698,13 +794,17 @@ class ChargerRuntime:
             if tx.ended is not None:
                 self._outq_push(self._stop_msg(c, tx), front=True)
             return A.ACCEPTED
-        self._accumulate(c)  # restart the energy interval (tx_id unset: nothing added); charging starts now
         tx.tx_id = res.tx_id
         if not res.id_token_info.accepted and self.store.get_bool(STOP_ON_INVALID_KEY):
             # TODO(spec): MaxEnergyOnInvalidId / suspending instead of stopping is not simulated.
             self._end_tx_now(c, R.DE_AUTHORIZED, tx)
             return res.id_token_info.status
-        self._refresh(c)  # Charging
+        if tx.profile is not None:
+            self._bind_profile(c, tx)
+        c.pw = PowerState(soc_pct=self.cfg.session.initial_soc, energy_wh=c.meter_wh)  # a fresh EV session
+        c.last_mono = None
+        self._advance(c)  # zero-length step: initial power and suspension; charging starts now
+        self._refresh(c)  # Charging (or Suspended*)
         self._start_meter(c)
         return A.ACCEPTED
 
@@ -720,7 +820,7 @@ class ChargerRuntime:
             tx = c.tx
             if tx is None or tx.tx_id is None:
                 continue
-            self._accumulate(c)
+            self._advance(c)
             ev = d.TxUpdated(c.id, tx.tx_id, self._clock(), self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)))
             self._outq_push(_OutMsg(_Kind.METER, lambda ev=ev: self.adapter.send_tx_updated(ev), c, tx))
 
@@ -731,7 +831,7 @@ class ChargerRuntime:
             self._end_tx_now(c, reason, cur)
 
     def _end_tx_now(self, c: _Conn, reason: R, tx: _Tx) -> None:
-        self._accumulate(c)
+        self._advance(c)
         tx.ended = _Stop(int(round(c.meter_wh)), self._clock(), reason,
                          self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)))
         if tx.tx_id is not None:
@@ -748,7 +848,8 @@ class ChargerRuntime:
         if c.meter_task is not None and c.meter_task is not asyncio.current_task():
             c.meter_task.cancel()
         c.meter_task = None
-        c.tx, c.last_mono, c.finishing = None, None, finishing
+        c.tx, c.last_mono, c.finishing, c.pw = None, None, finishing, None
+        self.profiles.end_transaction(c.id)
         if c.pending_operative is not None:
             c.operative, c.pending_operative = c.pending_operative, None
         station = self._station_pending is not None and all(x.tx is None for x in self.conns.values())
@@ -768,7 +869,45 @@ class ChargerRuntime:
 
     async def handle(self, cmd: d.Command) -> Any:
         fn = self._commands.get(type(cmd))
-        return fn(cmd) if fn is not None else d.CommandStatus.NOT_IMPLEMENTED  # M4: SetProfile / ...
+        return fn(cmd) if fn is not None else d.CommandStatus.NOT_IMPLEMENTED
+
+    def _set_profile(self, cmd: d.SetProfile) -> d.CommandStatus:
+        c = self.conns.get(cmd.evse_id)
+        active = int(c.tx.tx_id) if c is not None and c.tx is not None and c.tx.tx_id is not None else None
+        self._settle()
+        if self.profiles.install(cmd.evse_id, cmd.profile, active_transaction=active) is not ProfileStatus.ACCEPTED:
+            return d.CommandStatus.REJECTED
+        self._after_reply(self._tick_all)
+        return d.CommandStatus.ACCEPTED
+
+    def _clear_profiles(self, cmd: d.ClearProfiles) -> d.CommandStatus:
+        self._settle()
+        st = self.profiles.clear(profile_id=cmd.profile_id, connector_id=cmd.evse_id, purpose=cmd.purpose,
+                                 stack_level=cmd.stack_level)
+        if st is not ClearStatus.ACCEPTED:
+            return d.CommandStatus.UNKNOWN
+        self._after_reply(self._tick_all)
+        return d.CommandStatus.ACCEPTED
+
+    def _get_composite(self, cmd: d.GetComposite) -> d.GetCompositeResult:
+        if not 0 <= cmd.evse_id <= self.connector_count or cmd.duration < 1:
+            return d.GetCompositeResult(d.CommandStatus.REJECTED)
+        now = self._clock()
+        phases, volts = self._phases(cmd.evse_id), self.supply.phase_voltage_v()
+        sched = composite_schedule(self.profiles, cmd.evse_id, now, cmd.duration, cmd.unit,
+                                   transactions=self._transactions(), number_phases=phases, voltage=volts)
+        max_w = self.cfg.max_power_w * (self.connector_count if cmd.evse_id == 0 else 1)
+
+        def cap(p: CompositePeriod) -> CompositePeriod:
+            # The hardware maximum caps every period and stands for "no limit" (see the module docstring).
+            if sched.unit is ChargingRateUnit.W:
+                return replace(p, limit=max_w if p.limit is None else min(p.limit, max_w))
+            n = p.number_phases or phases
+            hw = convert(max_w, ChargingRateUnit.W, ChargingRateUnit.A, n, volts)
+            return replace(p, limit=hw if p.limit is None else min(p.limit, hw), number_phases=n)
+
+        return d.GetCompositeResult(d.CommandStatus.ACCEPTED, cmd.evse_id, now,
+                                    replace(sched, periods=tuple(cap(p) for p in sched.periods)))
 
     def _get_config(self, cmd: d.GetConfig) -> d.GetConfigResult:
         known, unknown = self.store.get(cmd.keys)
@@ -803,18 +942,21 @@ class ChargerRuntime:
             c = self.conns[cmd.evse_id]
         if c is None or not free(c):
             return d.CommandStatus.REJECTED
+        if cmd.profile is not None and ProfileStore(self.connector_count).install(
+                c.id, cmd.profile, active_transaction=0) is not ProfileStatus.ACCEPTED:
+            return d.CommandStatus.REJECTED  # dry run: a profile the store would refuse later
         c.pending_tag = cmd.id_token  # reserve until the follow-up runs
-        self._after_reply(functools.partial(self._remote_start_go, c, cmd.id_token))
+        self._after_reply(functools.partial(self._remote_start_go, c, cmd.id_token, cmd.profile))
         return d.CommandStatus.ACCEPTED
 
-    async def _remote_start_go(self, c: _Conn, tag: str) -> None:
+    async def _remote_start_go(self, c: _Conn, tag: str, profile: Optional[ChargingProfile] = None) -> None:
         if self.store.get_bool(AUTHORIZE_REMOTE_KEY) and await self._authorize(tag) is not A.ACCEPTED:
             if c.pending_tag == tag:  # still our reservation (the await may have let another start in)
-                c.pending_tag = None
+                c.pending_tag, c.pending_profile = None, None
                 self._refresh(c)
             return
         # TODO(spec): ConnectionTimeOut (cable not plugged in time) is not enforced.
-        await self._start_tx(c, tag)
+        await self._start_tx(c, tag, profile)
 
     def _remote_stop(self, cmd: d.RequestStop) -> d.CommandStatus:
         for c in self.conns.values():
@@ -830,7 +972,7 @@ class ChargerRuntime:
             reason = R.SOFT_RESET if kind is d.ResetKind.SOFT else R.HARD_RESET
             for c in self.conns.values():
                 self._end_tx(c, reason)
-                c.pending_tag = None
+                c.pending_tag, c.pending_profile = None, None
             # Let the StopTransactions go out before closing, including one queued by a StartTransaction answer
             # that arrives meanwhile; bounded, a silent CSMS must not block the Reset (anything left stays queued
             # for the next session). Idle is set only when the queue is empty and no answer is being applied.
@@ -870,7 +1012,7 @@ class ChargerRuntime:
 
     async def _send_readings(self, conns: List[_Conn]) -> None:
         for c in conns:
-            self._accumulate(c)
+            self._advance(c)
             tx_id = c.tx.tx_id if c.tx is not None else None
             ev = d.MeterSample(c.id, self._clock(), self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)),
                                "Trigger", tx_id)
@@ -888,7 +1030,7 @@ class ChargerRuntime:
             else:
                 c.operative, c.pending_operative = cmd.operative, None
                 if not cmd.operative:
-                    c.pending_tag = None
+                    c.pending_tag, c.pending_profile = None, None
                 changed.append(c)
         station = cmd.evse_id == 0
         if station:
@@ -920,7 +1062,7 @@ class ChargerRuntime:
             return
         c.plugged = True
         if c.pending_tag and c.operative and not c.fault:
-            await self._start_tx(c, c.pending_tag)
+            await self._start_tx(c, c.pending_tag, c.pending_profile)
         else:
             self._refresh(c)
 
@@ -994,7 +1136,10 @@ class ChargerRuntime:
                       "started_at": c.tx.started_at.isoformat()}
             return {"id": c.id, "status": c.state.status.value, "error_code": c.state.error_code,
                     "plugged": c.plugged, "operative": c.operative, "pending_operative": c.pending_operative,
-                    "pending_tag": c.pending_tag, "meter_wh": round(c.meter_wh, 3), "transaction": tx}
+                    "pending_tag": c.pending_tag, "meter_wh": round(c.meter_wh, 3),
+                    "power_w": round(c.pw.power_w, POWER_DECIMALS) if c.pw is not None else 0.0,
+                    "soc_pct": round(c.pw.soc_pct, SOC_DECIMALS) if c.pw is not None else None,
+                    "transaction": tx}
 
         return {
             "id": self.cfg.id,

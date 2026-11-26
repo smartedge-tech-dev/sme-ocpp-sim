@@ -99,7 +99,7 @@ def test_local_transaction_with_meter_values():
         await _until(lambda: len(_statuses(s, 1)) == 5)
         assert _statuses(s, 1) == ["Available", "Preparing", "Charging", "Finishing", "Available"]
         assert s.authorizes == []  # local_only never asks the CSMS
-    _scenario(body, cfg_kw={"auth_mode": "local_only", "id_tags": ["TAG1"], "power_w": 36000})
+    _scenario(body, cfg_kw={"auth_mode": "local_only", "id_tags": ["TAG1"], "max_power_w": 36000})
 
 
 def test_remote_start_stop_with_authorize():
