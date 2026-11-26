@@ -231,3 +231,6 @@ site/
 # Internal working notes and local Claude Code settings
 ai/
 .claude/
+
+# OCA OCPP JSON schemas, placed by hand for the schema tests (not redistributed)
+.oca-schemas/
