@@ -305,7 +305,7 @@ function renderConnectors(c, fresh) {
 function card(c, x) {
   const tx = x.transaction;
   const tag = (tx && (tx.id_tag || tx.idTag)) || x.pending_tag;
-  const txId = tx && (tx.transaction_id ?? tx.id ?? tx.transactionId);
+  const txId = tx && (tx.tx_id ?? tx.transaction_id ?? tx.id ?? tx.transactionId);
   const btn = (key, fn, opts) => h("button", { type: "button", class: `btn small${opts && opts.danger ? " danger" : ""}`,
     disabled: opts && opts.disabled, onclick: fn }, t(key));
   const id = c.id, conn = x.id;
