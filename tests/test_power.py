@@ -160,3 +160,17 @@ def test_invalid_args():
         step(PowerState(soc_pct=30), **base(), time_scale=0)
     with pytest.raises(ValueError):
         step(PowerState(soc_pct=30), **base(ramp_up_w_per_s=0.0))
+
+
+def test_ev_taper_below_its_minimum_suspends_ev():
+    # default curve: 10 % of 6000 W at 100 % SoC = 600 W < 6 A x 200 V; 1200 W is reached at 97.78 % SoC
+    s = step(PowerState(soc_pct=99.0, power_w=1500), **base())
+    assert s.suspension == "SuspendedEV" and s.target_w == 0 and s.power_w == 0
+    # the EV-side cause wins over a too-low EVSE offer as well
+    assert step(PowerState(soc_pct=99.0), **base(evse_limit_w=500.0)).suspension == "SuspendedEV"
+    s = step(PowerState(soc_pct=97.0), **base())
+    assert s.suspension is None and s.power_w > 1200
+    # an EV without a minimum keeps tapering
+    ev = EvModel("nomin", capacity_kwh=40, max_ac_w=6000, max_current_a=30, min_current_a=0.0)
+    s = step(PowerState(soc_pct=99.0), **base(ev=ev))
+    assert s.suspension is None and 0 < s.power_w < 1200

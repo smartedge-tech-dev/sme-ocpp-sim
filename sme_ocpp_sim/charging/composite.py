@@ -28,7 +28,9 @@ Interpretations (not defined by the spec)
   recurrence also extends before ``startSchedule`` (which only fixes the time of day / week; 7.8, 7.9 checked).
 - validFrom is inclusive, validTo is exclusive (7.8 checked).
 - connectorId 0 = min(ChargePointMax, sum over connectors 1..N of their TxProfile/TxDefault limit); if any
-  connector is unconstrained the sum is unconstrained (5.7, 3.13.3 checked). A single connector gets the full
+  connector is unconstrained the sum is unconstrained (5.7, 3.13.3 checked). Idle connectors (no transaction)
+  are included: they contribute their TxDefault limit, or make the sum unconstrained if they have none, so the
+  value is the most the charger *may* draw, not what it draws now. A single connector gets the full
   ChargePointMax value (no sharing between connectors is modelled here).
 - ``minChargingRate`` does not alter the limit; refusing to charge below it is the EV model's job (7.13 checked).
 - An unconstrained interval is reported as ``limit=None``; the adapter decides how to encode it. No unit given
@@ -41,7 +43,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, cast
 
 from sme_ocpp_sim.charging.profiles import (
     ChargingProfile,
@@ -189,8 +191,8 @@ def _limit(ctx: _Context, connector_id: int, t: datetime) -> Optional[_Limit]:
         return _min(cp_max, _tx_limit(ctx, connector_id, t))
     parts = [_tx_limit(ctx, c, t) for c in range(1, ctx.store.connector_count + 1)]
     if not parts or any(p is None for p in parts):
-        return cp_max
-    return _min(cp_max, (sum(p[0] for p in parts if p), ctx.phases))
+        return cp_max  # no connectors, or one is unconstrained
+    return _min(cp_max, (sum(cast(_Limit, p)[0] for p in parts), ctx.phases))
 
 
 def _boundaries(

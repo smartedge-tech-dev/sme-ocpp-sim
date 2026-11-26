@@ -41,6 +41,12 @@ StatusNotification goes through the outbox like any other state change. Every tr
 RemoteStartTransaction profile travels with the reservation / transaction and is installed, bound to the
 transactionId, once StartTransaction is answered (§5.16.2); a start that is refused or fails discards it.
 
+Timing: a SetChargingProfile / ClearChargingProfile first integrates every charging connector up to now at the old
+limit; the new limit takes effect on the tick scheduled right after the CALLRESULT is sent (``_after_reply``),
+not before the CSMS has the answer. ``time_scale`` scales only the power model (ramp, energy register, SoC);
+profile evaluation always uses the wall clock (``clock``), because schedules are in CSMS time and must match what
+GetCompositeSchedule reports. A Relative 60 s period therefore lasts 60 wall-clock seconds at any time_scale.
+
 Interpretations (not defined by the spec): a limit in A applies to the phases the EV uses while one charges and to
 the supply's phases otherwise (errata 3.34); GetCompositeSchedule periods are capped at the hardware maximum
 (``max_power_w``, times the connector count for connectorId 0), which also stands for "no limit"; ticks are
@@ -209,7 +215,9 @@ class ChargerRuntime:
         time_scale: float = 1.0,
     ) -> None:
         """``ev`` defaults to the preset ``cfg.session.ev_model`` (``SimConfig.resolve_ev`` also knows
-        ``ev_models``); ``tick_s`` is the power model step, ``time_scale`` its simulated-time factor."""
+        ``ev_models``); ``tick_s`` is the power model step, ``time_scale`` its simulated-time factor. time_scale
+        speeds up only the power model (ramp, energy, SoC); charging profiles stay on the wall clock (see the
+        module docstring)."""
         if tick_s <= 0 or time_scale <= 0:
             raise ValueError("tick_s and time_scale must be > 0")
         if ev is None and cfg.session.ev_model not in PRESETS:
@@ -703,6 +711,8 @@ class ChargerRuntime:
 
     def _phases(self, connector_id: int) -> int:
         """Phases a limit in A applies to: the EV's while one charges, else the supply's (errata 3.34)."""
+        # A charging EV draws on min(EV, supply) phases, so an A limit only reaches those (errata 3.34); with no EV
+        # (or connector 0, the whole charger) the limit applies to every supply phase.
         c = self.conns.get(connector_id)
         return self.supply.phases_used(self.ev) if c is not None and c.pw is not None else self.supply.phases
 
@@ -743,15 +753,29 @@ class ChargerRuntime:
         """Session task: step the power model of every charging connector each ``tick_s``."""
         while True:
             await asyncio.sleep(self._tick_s)
-            self._tick_all()
+            try:
+                self._tick_all()
+            except Exception:  # a local bug must not stop the power model for the rest of the session
+                log.exception("%s: power model tick failed", self.cfg.id)
 
     def _bind_profile(self, c: _Conn, tx: _Tx) -> None:
         """Install the RemoteStart TxProfile for the transaction it started (§5.16.2)."""
         assert tx.profile is not None and tx.tx_id is not None
         tx_id = int(tx.tx_id)
-        st = self.profiles.install(c.id, replace(tx.profile, transaction_id=tx_id), active_transaction=tx_id)
+        st = self._install(c.id, replace(tx.profile, transaction_id=tx_id), active_transaction=tx_id)
         if st is not ProfileStatus.ACCEPTED:
             log.warning("%s: RemoteStart charging profile not installed (%s)", self.cfg.id, st.value)
+
+    def _install(self, connector_id: int, profile: ChargingProfile, *,
+                 active_transaction: Optional[int]) -> ProfileStatus:
+        """ProfileStore.install, logging a same-id profile it replaces on another connector (3.13.2)."""
+        moved = [ip.connector_id for ip in self.profiles.profiles()
+                 if ip.profile.profile_id == profile.profile_id and ip.connector_id != connector_id]
+        st = self.profiles.install(connector_id, profile, active_transaction=active_transaction)
+        if st is ProfileStatus.ACCEPTED and moved:
+            log.info("%s: charging profile %d on connector %s replaced by the one for connector %d", self.cfg.id,
+                     profile.profile_id, ",".join(map(str, moved)), connector_id)
+        return st
 
     async def _start_tx(self, c: _Conn, tag: str, profile: Optional[ChargingProfile] = None) -> A:
         """Start a transaction for an authorized ``tag``; the state is re-checked here (an await may lie between
@@ -875,7 +899,7 @@ class ChargerRuntime:
         c = self.conns.get(cmd.evse_id)
         active = int(c.tx.tx_id) if c is not None and c.tx is not None and c.tx.tx_id is not None else None
         self._settle()
-        if self.profiles.install(cmd.evse_id, cmd.profile, active_transaction=active) is not ProfileStatus.ACCEPTED:
+        if self._install(cmd.evse_id, cmd.profile, active_transaction=active) is not ProfileStatus.ACCEPTED:
             return d.CommandStatus.REJECTED
         self._after_reply(self._tick_all)
         return d.CommandStatus.ACCEPTED
@@ -942,10 +966,12 @@ class ChargerRuntime:
             c = self.conns[cmd.evse_id]
         if c is None or not free(c):
             return d.CommandStatus.REJECTED
-        if cmd.profile is not None and ProfileStore(self.connector_count).install(
-                c.id, cmd.profile, active_transaction=0) is not ProfileStatus.ACCEPTED:
-            return d.CommandStatus.REJECTED  # dry run: a profile the store would refuse later
-        c.pending_tag = cmd.id_token  # reserve until the follow-up runs
+        if cmd.profile is not None and self.profiles.validate(
+                c.id, cmd.profile, for_remote_start=True) is not ProfileStatus.ACCEPTED:
+            return d.CommandStatus.REJECTED
+        # Reserve until the follow-up runs; the profile travels with the tag, so a cable plugged in meanwhile
+        # (plug -> _start_tx) starts the transaction with it (§5.16.2).
+        c.pending_tag, c.pending_profile = cmd.id_token, cmd.profile
         self._after_reply(functools.partial(self._remote_start_go, c, cmd.id_token, cmd.profile))
         return d.CommandStatus.ACCEPTED
 

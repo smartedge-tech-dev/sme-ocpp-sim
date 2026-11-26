@@ -19,6 +19,11 @@ Interpretations (not defined by the spec)
 - A TxProfile whose ``transaction_id`` differs from the connector's active transaction is Rejected.
 - Recurring without ``recurrency_kind``, non-increasing ``start_period`` values, an empty period list, a
   connectorId outside ``0..connector_count`` or ``valid_to <= valid_from`` are Rejected.
+- Value ranges the 1.6 schemas do not carry are checked here (the 2.0.1 adapter reuses this store): a negative
+  ``limit`` / ``start_period`` / ``min_charging_rate``, ``number_phases`` outside 1..3 and ``duration <= 0`` (a
+  schedule of zero length never applies) are Rejected (7.13 / 7.14).
+- RemoteStartTransaction profiles (:meth:`ProfileStore.validate` with ``for_remote_start``) must be TxProfiles
+  without a ``transaction_id`` (6.33, 5.16.2); the transaction does not exist yet.
 """
 
 from __future__ import annotations
@@ -97,8 +102,18 @@ class InstalledProfile:
 
 
 def _schedule_ok(profile: ChargingProfile) -> bool:
-    starts = [p.start_period for p in profile.schedule.periods]
+    sched = profile.schedule
+    starts = [p.start_period for p in sched.periods]
     if not starts or starts[0] != 0 or any(b <= a for a, b in zip(starts, starts[1:])):
+        return False
+    for period in sched.periods:
+        if period.start_period < 0 or period.limit < 0:
+            return False
+        if period.number_phases is not None and not 1 <= period.number_phases <= 3:
+            return False
+    if sched.duration is not None and sched.duration <= 0:
+        return False
+    if sched.min_charging_rate is not None and sched.min_charging_rate < 0:
         return False
     if profile.kind is ChargingProfileKind.RECURRING and profile.recurrency_kind is None:
         return False
@@ -117,20 +132,41 @@ class ProfileStore:
     def profiles(self, connector_id: Optional[int] = None) -> Tuple[InstalledProfile, ...]:
         return tuple(ip for ip in self._installed if connector_id is None or ip.connector_id == connector_id)
 
-    def install(
-        self, connector_id: int, profile: ChargingProfile, *, active_transaction: Optional[int] = None
+    def validate(
+        self,
+        connector_id: int,
+        profile: ChargingProfile,
+        *,
+        active_transaction: Optional[int] = None,
+        for_remote_start: bool = False,
     ) -> ProfileStatus:
-        """SetChargingProfile. ``active_transaction`` is the transactionId running on ``connector_id``."""
+        """The checks of :meth:`install` without installing anything.
+
+        ``for_remote_start``: the profile of a RemoteStartTransaction, checked before its transaction exists
+        (must be a TxProfile on a connector > 0 without ``transaction_id``; ``active_transaction`` is ignored).
+        """
         purpose = profile.purpose
         if not 0 <= connector_id <= self.connector_count or not _schedule_ok(profile):
             return ProfileStatus.REJECTED
         if purpose is ChargingProfilePurpose.CHARGE_POINT_MAX and connector_id != 0:
             return ProfileStatus.REJECTED
+        if for_remote_start:
+            ok = purpose is ChargingProfilePurpose.TX and connector_id != 0 and profile.transaction_id is None
+            return ProfileStatus.ACCEPTED if ok else ProfileStatus.REJECTED
         if purpose is ChargingProfilePurpose.TX:
             if connector_id == 0 or active_transaction is None:
                 return ProfileStatus.REJECTED
             if profile.transaction_id is not None and profile.transaction_id != active_transaction:
                 return ProfileStatus.REJECTED
+        return ProfileStatus.ACCEPTED
+
+    def install(
+        self, connector_id: int, profile: ChargingProfile, *, active_transaction: Optional[int] = None
+    ) -> ProfileStatus:
+        """SetChargingProfile. ``active_transaction`` is the transactionId running on ``connector_id``."""
+        purpose = profile.purpose
+        if self.validate(connector_id, profile, active_transaction=active_transaction) is ProfileStatus.REJECTED:
+            return ProfileStatus.REJECTED
         self._installed = [
             ip
             for ip in self._installed

@@ -433,3 +433,53 @@ def test_c14_no_match_is_unknown(kw):
     store = _clear_store()
     assert store.clear(**kw) is ClearStatus.UNKNOWN
     assert len(store.profiles()) == 4
+
+
+def test_c8_connector_zero_includes_idle_connector_tx_default():
+    # connector 1 charges under a 10 A TxProfile; idle connector 2 contributes its 16 A TxDefault
+    store = store_with((0, prof(1, periods=[(0, 16)])), (1, prof(2, TX, periods=[(0, 10)])), connectors=2)
+    txs = {1: ActiveTransaction(1, NOW)}
+    assert amps(store, NOW, connector_id=1, transactions=txs) == 10
+    assert amps(store, NOW, connector_id=2, transactions=txs) == 16
+    assert amps(store, NOW, connector_id=0, transactions=txs) == 26
+    # idle connector without any TxDefault -> the sum is unconstrained
+    store.clear(profile_id=1)
+    assert limit_at(store, 0, NOW, transactions=txs) is None
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        prof(1, periods=[(0, -1)]),  # negative limit
+        prof(1, periods=[(0, 16), (-5, 8)]),  # negative start_period
+        prof(1, phases=0),
+        prof(1, phases=4),
+        prof(1, duration=0),
+        prof(1, duration=-60),
+        prof(1, min_rate=-1.0),
+    ],
+)
+def test_c13_validation_rejects_value_ranges(profile):
+    store = ProfileStore(1)
+    assert store.install(1, profile) is ProfileStatus.REJECTED
+    assert store.profiles() == ()
+
+
+def test_c13_validation_accepts_range_boundaries():
+    store = ProfileStore(1)
+    assert store.install(1, prof(1, periods=[(0, 0)], phases=1, duration=1, min_rate=0.0)) is ProfileStatus.ACCEPTED
+    assert store.install(1, prof(2, stack=1, phases=3)) is ProfileStatus.ACCEPTED
+
+
+def test_c13_validate_does_not_install_and_checks_remote_start_profiles():
+    store = ProfileStore(2)
+    assert store.validate(1, prof(1)) is ProfileStatus.ACCEPTED
+    assert store.validate(1, prof(1, TX)) is ProfileStatus.REJECTED  # no transaction
+    assert store.validate(1, prof(1, TX), active_transaction=5) is ProfileStatus.ACCEPTED
+    assert store.profiles() == ()
+    assert store.validate(1, prof(1, TX), for_remote_start=True) is ProfileStatus.ACCEPTED
+    assert store.validate(0, prof(1, TX), for_remote_start=True) is ProfileStatus.REJECTED
+    assert store.validate(1, prof(1, TXDEF), for_remote_start=True) is ProfileStatus.REJECTED
+    assert store.validate(1, prof(1, TX, tx_id=3), for_remote_start=True) is ProfileStatus.REJECTED
+    assert store.validate(1, prof(1, TX, periods=[(10, 16)]), for_remote_start=True) is ProfileStatus.REJECTED
+    assert store.profiles() == ()

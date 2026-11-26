@@ -173,3 +173,48 @@ def test_ramp_up_reaches_the_limit():
         assert rt.snapshot()["connectors"][0]["power_w"] < 6000  # ramping
         await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == 6000)
     _scenario(body, cfg_kw={"ramp_up_w_per_s": 20000})
+
+
+def test_remote_start_profile_survives_plug_during_reservation():
+    """Cable plugged while the RemoteStart follow-up still waits for Authorize: plug() starts the transaction,
+    which must carry the RemoteStart TxProfile (§5.16.2)."""
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        release = asyncio.Event()
+        authorize = rt._authorize
+
+        async def slow_authorize(tag):
+            await release.wait()
+            return await authorize(tag)
+
+        rt._authorize = slow_authorize
+        r = await peer.remote_start(CP, "R1", 1, charging_profile=_profile(8, "A", pid=9))
+        assert r.status == "Accepted"
+        assert rt.conns[1].pending_tag == "R1" and rt.conns[1].pending_profile is not None
+        await rt.plug(1)  # the follow-up is still parked in Authorize
+        release.set()
+        await _until(lambda: s.starts and _statuses(s, 1)[-1:] == ["Charging"])
+        tx = s.starts[0]["transaction_id"]
+        [ip] = rt.profiles.profiles(1)
+        assert ip.profile.profile_id == 9 and ip.profile.transaction_id == tx
+        await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == 1600)  # 8 A x 200 V
+        assert len(s.starts) == 1 and rt.conns[1].pending_profile is None
+    _scenario(body, cfg_kw={"auth_mode": "csms_only", "config_keys": {"AuthorizeRemoteTxRequests": "true"}})
+
+
+def test_tick_loop_survives_a_failing_tick(caplog):
+    async def body(peer, rt):
+        await _charging(peer, rt)
+        calls = []
+        tick_all = rt._tick_all
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            tick_all()
+
+        rt._tick_all = flaky
+        await _until(lambda: len(calls) >= 3)
+        assert any("power model tick failed" in r.getMessage() and r.exc_info for r in caplog.records)
+    _scenario(body)

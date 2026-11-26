@@ -6,9 +6,10 @@ Modelling choices (simulator conventions, not defined by OCPP):
 
 - ``target = min(evse_max_w, evse_limit_w, ev_accept_w)``; ``evse_limit_w=None`` means "no schedule limit".
 - Suspension (the cause, reported independently of the ramp):
-  ``SuspendedEV`` if the EV accepts 0 W (target SoC reached, or a zero taper), checked first;
-  otherwise ``SuspendedEVSE`` if the EVSE offer is 0 W or below the EV's minimum usable power
-  (``ev.min_current_a`` per used phase) -- the EV cannot run on it, so the target becomes 0 W.
+  ``SuspendedEV`` if the EV accepts 0 W (target SoC reached, or a zero taper) or its acceptance has tapered
+  below its own minimum usable power (``ev.min_current_a`` per used phase; end-of-charge taper), checked first;
+  otherwise ``SuspendedEVSE`` if the EVSE offer is 0 W or below that minimum -- the EV cannot run on it.
+  Either way the target becomes 0 W.
 - Ramp: power moves toward the target at ``ramp_up_w_per_s`` / ``ramp_down_w_per_s`` (``None`` = step
   change). Default ramp-down is a step change, so a lowered limit is honoured within the same tick.
 - ``time_scale`` multiplies the caller's elapsed ``dt_s`` into simulated seconds; *everything* time-based
@@ -101,10 +102,11 @@ def step(state: PowerState, *, dt_s: float, ev: EvModel, target_soc_pct: float,
     offer_w = max(0.0, offer_w)
     accept_w = ev_accept_w(ev, state.soc_pct, target_soc_pct, v_phase, n)
 
+    min_w = ev_min_power_w(ev, v_phase, n)
     suspension: Optional[Suspension] = None
-    if accept_w <= 0:
+    if accept_w <= 0 or accept_w < min_w:
         suspension, target_w = "SuspendedEV", 0.0
-    elif offer_w <= 0 or offer_w < ev_min_power_w(ev, v_phase, n):
+    elif offer_w <= 0 or offer_w < min_w:
         suspension, target_w = "SuspendedEVSE", 0.0
     else:
         target_w = min(offer_w, accept_w)
