@@ -38,7 +38,9 @@ PRODUCT_ROUTES = {
     ("post", "/api/chargers/{cid}/" + a) for a in
     ("connect", "disconnect", "plug", "unplug", "swipe", "start", "stop", "fault", "clear-fault", "datatransfer")
 } | {("get", "/api/chargers/{cid}/profiles"), ("get", "/api/chargers/{cid}/composite"), ("get", "/api/frames"),
-     ("get", "/api/frames.jsonl"), ("post", "/api/chargers/bulk/connect"), ("post", "/api/chargers/bulk/disconnect")}
+     ("get", "/api/frames.jsonl"), ("post", "/api/chargers/bulk/connect"), ("post", "/api/chargers/bulk/disconnect"),
+     ("get", "/api/csms-defaults"), ("put", "/api/csms-defaults"), ("get", "/api/chargers/{cid}/settings"),
+     ("patch", "/api/chargers/{cid}/settings"), ("get", "/api/chargers/{cid}/configuration")}
 
 
 @pytest.fixture
@@ -518,3 +520,57 @@ def test_operator_connect_needs_running_engine():
             assert r.status_code == 400 and "not running" in r.json()["error"]
 
     asyncio.run(main())
+
+
+# ------------------------------------------------------------------ JSON settings routes
+
+def test_csms_defaults_get_put(setup):
+    client, engine, _ = setup
+    d = client.get("/api/csms-defaults").json()
+    assert d["url"] == DEAD_URL and d["security_profile"] == 1 and d["reconnect"]["min_s"] == 0.05
+    r = client.put("/api/csms-defaults", json={**d, "url": "ws://127.0.0.1:9/other"})
+    assert r.status_code == 200 and r.json()["url"] == "ws://127.0.0.1:9/other"
+    assert engine.config.csms_defaults.url == "ws://127.0.0.1:9/other"
+    assert engine.config.csms_defaults.reconnect.min_s == 0.05
+    for bad_body in ({**d, "security_profile": 7}, {**d, "url": "http://x"}, {**d, "nope": 1},
+                     {**d, "security_profile": 0}):  # profile 0 with charger passwords: cross-field rule
+        r = client.put("/api/csms-defaults", json=bad_body)
+        assert r.status_code == 400, bad_body
+    assert engine.config.csms_defaults.security_profile == 1
+
+
+def test_charger_settings_get_patch_and_save(setup):
+    client, engine, path = setup
+    s = client.get("/api/chargers/CP001/settings").json()
+    assert s["password"] == PASSWORD_MASK and s["id_tags"] == ["TAG1"] and s["csms_url"] is None
+    assert s["effective"]["csms_url"] == DEAD_URL
+    assert client.get("/api/chargers/NOPE/settings").status_code == 404
+    assert client.patch("/api/chargers/NOPE/settings", json={}).status_code == 404
+    r = client.patch("/api/chargers/CP001/settings", json={"csms_url": "ws://127.0.0.1:9/cp", "password": PASSWORD_MASK,
+                                                           "config_keys": {"HeartbeatInterval": 123}})
+    assert r.status_code == 200 and r.json()["password"] == PASSWORD_MASK
+    c = next(c for c in engine.config.chargers if c.id == "CP001")
+    assert (c.csms_url, c.password, c.connectors, c.id_tags) == ("ws://127.0.0.1:9/cp", "s3cret#pw", 2, ["TAG1"])
+    keys = {k["key"]: k for k in client.get("/api/chargers/CP001/configuration").json()["keys"]}
+    assert keys["HeartbeatInterval"]["value"] == "123" and isinstance(keys["HeartbeatInterval"]["readonly"], bool)
+    for body in ({"connectors": 3}, {"csms_url": "http://x"}, {"config_keys": {"NoSuchKey": "1"}},
+                 {"verify_tls": None}, {"password": None}):  # profile 1 needs a password
+        assert client.patch("/api/chargers/CP001/settings", json=body).status_code == 400, body
+    assert client.post("/api/config/save").status_code == 200
+    text = path.read_text(encoding="utf-8")
+    saved = yaml.safe_load(text)
+    assert text.startswith("# comment kept by save")
+    assert saved["chargers"][0]["csms_url"] == "ws://127.0.0.1:9/cp" and saved["chargers"][0]["password"] == "s3cret#pw"
+    assert saved["chargers"][1] == {"id": "CP002", "password": "other-secret"}
+    assert "verify_tls" not in text and "auth_mode" not in text  # no defaults injected
+
+
+def test_configuration_and_frames_until(setup):
+    client, engine, _ = setup
+    assert client.get("/api/chargers/NOPE/configuration").status_code == 404
+    assert client.get("/api/chargers/CP002/configuration").json()["keys"]
+    base = engine.frame_log.last_seq
+    for a in ("A", "B", "C"):
+        _frame(engine, "CP001", "tx", a)
+    r = client.get(f"/api/frames?since={base + 1}&until={base + 2}&limit=1").json()
+    assert [f["seq"] for f in r["frames"]] == [base + 2] and r["frames"][0]["action"] == "B"

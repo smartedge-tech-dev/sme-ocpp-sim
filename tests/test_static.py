@@ -51,3 +51,41 @@ def test_used_keys_defined():
     common = _en_keys(*sorted(COMMON_STATIC.rglob("*.js")))
     missing = sorted(k for k in used if k not in (common if k.startswith(RESERVED) else product))
     assert not missing, f"missing {missing}"
+
+
+def test_literal_and_enumerated_keys_defined():
+    # Keys passed as plain string literals to helpers (btn("op.plug"), kv("detail.power"), menu labels) and the
+    # enumerated keys built with tk(prefix, value) for OCPP 1.6 connector statuses and the connection badge.
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    prefixes = ("add", "bulk", "chargers", "conn", "detail", "dt", "frames", "keys", "menu", "op", "profiles",
+                "sc", "settings", "status")
+    used = set(re.findall(r'"((?:%s)\.[A-Za-z0-9_.]+)"' % "|".join(prefixes), js))
+    used -= set(re.findall(r'\btk\(\s*"([^"]+)"', js))  # tk() prefixes, completed below
+    used -= {k for k in used if k.endswith(".jsonl")}     # file names (frames.jsonl)
+    used |= {f"status.{s}" for s in ("Available", "Preparing", "Charging", "SuspendedEVSE", "SuspendedEV",
+                                     "Finishing", "Reserved", "Unavailable", "Faulted")}
+    used |= {f"conn.{s}" for s in ("online", "pending", "rejected", "booting", "connecting", "error", "held")}
+    used |= {f"frames.dir.{d}" for d in ("tx", "rx")}
+    product = _en_keys(STATIC / "i18n" / "en.js")
+    missing = sorted(used - product)
+    assert not missing, f"missing {missing}"
+
+
+def test_global_dialog_functions_exposed():
+    # Plan §9: the main dialogs can be opened from the console / Playwright for screenshots.
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    m = re.search(r"Object\.assign\(window, \{([^}]+)\}\)", js)
+    assert m
+    names = {n.strip() for n in m.group(1).split(",")}
+    assert names == {"openChargerDialog", "openSettingsDialog", "openProfileDialog", "openFrameDetail",
+                     "openAddChargerDialog"}
+    assert "vendor: Shell.vendors.smartEdge" in js
+
+
+def test_settings_use_json_routes():
+    # The settings dialog and the key table go through the JSON routes (validated server side); no client-side YAML
+    # editing is left in the UI.
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "yaml" not in js.lower()
+    for route in ("/api/csms-defaults", 'chargerUrl(SET.id, "settings")', 'chargerUrl(id, "configuration")'):
+        assert route in js, route
