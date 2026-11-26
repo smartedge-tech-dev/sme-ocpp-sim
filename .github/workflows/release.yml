@@ -1,15 +1,23 @@
-# Release on a v* tag: Windows onefile exe + GitHub Release (notes from CHANGELOG.md) + PyPI.
-# PyPI trusted publishing trusts exactly this workflow file name (release.yml) and the
-# environment name (pypi). Keep both names, and register them on PyPI before the first tag
-# (see sme-sim-common templates/CHECKLIST.md).
+# Release on a v* tag: Windows onefile exe + GitHub Release (notes from CHANGELOG.md), multi-arch image on
+# ghcr.io (+ offline image archives attached to the release) and PyPI.
+# PyPI trusted publishing trusts exactly this workflow file name (release.yml) and the environment name
+# (pypi). Keep both names, and register them on PyPI before the first tag
+# (see sme-sim-common templates/CHECKLIST.md section 5).
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      image_archives_version:
+        description: "Re-export the offline image archives of an already pushed version (e.g. 0.1.0) to release v<version>"
+        type: string
+        default: ""
 
 jobs:
   windows-exe:
+    if: github.event_name == 'push'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -41,11 +49,94 @@ jobs:
           fi
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/sme-ocpp-sim-*-windows.exe
+          files: |
+            dist/sme-ocpp-sim-*-windows.exe
+            THIRD-PARTY-NOTICES
           body_path: ${{ steps.notes.outputs.found == 'true' && 'release-notes.md' || '' }}
           generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
 
+  docker:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/smartedge-tech-dev/sme-ocpp-sim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+      # One manifest list per tag: amd64 and arm64 (armv7 is not a v0.1 target)
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Offline image archives (docker load -i reads .tar.gz directly). Each one is the
+      # single-architecture image that was just pushed, tagged $IMAGE:<ver>, so commands after
+      # `docker load` are the same as after `docker pull`.
+      - name: Export offline image archives
+        run: sh packaging/export-image-archives.sh "$IMAGE" "${{ steps.meta.outputs.version }}" images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: images/*.tar.gz
+          compression-level: 0
+          retention-days: 3
+
+  # Uploads the offline image archives after windows-exe has created the release with its notes,
+  # so the release body is never created empty by this job.
+  docker-release-assets:
+    needs: [windows-exe, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: images
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: images/*.tar.gz
+
+  # Manual re-export of the offline image archives for a release whose docker job failed after the push.
+  image-archives:
+    if: github.event_name == 'workflow_dispatch' && inputs.image_archives_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      IMAGE: ghcr.io/smartedge-tech-dev/sme-ocpp-sim
+      VERSION: ${{ inputs.image_archives_version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh packaging/export-image-archives.sh "$IMAGE" "$VERSION" images
+      - run: gh release upload "v$VERSION" images/*.tar.gz --clobber
+
+  # Trusted publishing: needs a (pending) publisher on PyPI for project sme-ocpp-sim, owner
+  # smartedge-tech-dev, repository sme-ocpp-sim, workflow release.yml, environment pypi, and the
+  # GitHub environment `pypi`. Until both exist, this job fails the tag build (the other jobs still run).
   pypi:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -59,43 +150,3 @@ jobs:
       - run: python -m build
       - run: python -m twine check --strict dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
-
-  # ---------------------------------------------------------------------------------------------
-  # Optional: multi-arch Docker image on ghcr.io. Uncomment only for products that ship an image
-  # (SME BACnetSim does; SME SerialHub does not - it needs host serial / virtual COM ports, so it is
-  # not released as a container). Needs a Dockerfile at the repo root.
-  #
-  # docker:
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: read
-  #     packages: write
-  #   env:
-  #     IMAGE: ghcr.io/smartedge-tech-dev/sme-ocpp-sim
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: docker/setup-qemu-action@v3
-  #     - uses: docker/setup-buildx-action@v3
-  #     - uses: docker/login-action@v3
-  #       with:
-  #         registry: ghcr.io
-  #         username: ${{ github.actor }}
-  #         password: ${{ secrets.GITHUB_TOKEN }}
-  #     - id: meta
-  #       uses: docker/metadata-action@v5
-  #       with:
-  #         images: ${{ env.IMAGE }}
-  #         tags: |
-  #           type=semver,pattern={{version}}
-  #           type=raw,value=latest
-  #     - uses: docker/build-push-action@v6
-  #       with:
-  #         context: .
-  #         platforms: linux/amd64,linux/arm64,linux/arm/v7
-  #         push: true
-  #         tags: ${{ steps.meta.outputs.tags }}
-  #         labels: ${{ steps.meta.outputs.labels }}
-  #         cache-from: type=gha
-  #         cache-to: type=gha,mode=max
-  # (SME BACnetSim additionally exports offline image archives with skopeo and attaches them to the
-  #  release after windows-exe created it; copy that part from its release.yml if needed.)
