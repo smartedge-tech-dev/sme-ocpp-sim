@@ -29,12 +29,12 @@ The readonly flags also match the vendor document WY-L22-0061A p.9 where it list
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, Tuple
 
 from ..base import ConfigKeyDef, KeyType
 from .enums import Measurand
 
-B, I, C, S = KeyType.BOOL, KeyType.INT, KeyType.CSL, KeyType.STR
+_BOOL, _INT, _CSL = KeyType.BOOL, KeyType.INT, KeyType.CSL
 
 _MEASURANDS = frozenset(m.value for m in Measurand)
 _PROFILES = frozenset({"Core", "FirmwareManagement", "LocalAuthListManagement", "Reservation",
@@ -44,56 +44,55 @@ _PROFILES = frozenset({"Core", "FirmwareManagement", "LocalAuthListManagement", 
 SUPPORTED_FEATURE_PROFILES = "Core,SmartCharging,RemoteTrigger"
 
 
-def _k(name: str, type_: KeyType, readonly: bool, default: str, *, verified: bool, **kw) -> ConfigKeyDef:
+def _k(name: str, type_: KeyType, readonly: bool, default: str, *, verified: bool = True, **kw) -> ConfigKeyDef:
+    """One key row; ``verified`` = checked against OCPP 1.6 §9 (page per row)."""
     return ConfigKeyDef(name=name, type=type_, readonly=readonly, default=default, verified=verified, **kw)
 
 
-V, U = True, False  # verified against OCPP 1.6 §9 (page per row) / unverified
-
-KEYS: List[ConfigKeyDef] = [
+KEYS: Tuple[ConfigKeyDef, ...] = (
     # ---- 9.1 Core Profile
-    _k("AllowOfflineTxForUnknownId", B, False, "false", verified=V),  # §9.1.1 p.97
-    _k("AuthorizationCacheEnabled", B, False, "false", verified=V),  # §9.1.2 p.97
-    _k("AuthorizeRemoteTxRequests", B, False, "false", verified=V),  # §9.1.3 p.97, R or RW
-    _k("BlinkRepeat", I, False, "0", verified=V),  # §9.1.4 p.98, times
-    _k("ClockAlignedDataInterval", I, False, "0", verified=V),  # §9.1.5 p.98, s
-    _k("ConnectionTimeOut", I, False, "60", verified=V),  # §9.1.6 p.98, s
-    _k("ConnectorPhaseRotation", C, False, "0.Unknown", verified=V),  # §9.1.7 p.99
-    _k("ConnectorPhaseRotationMaxLength", I, True, "10", verified=V),  # §9.1.8 p.99
-    _k("GetConfigurationMaxKeys", I, True, "100", verified=V),  # §9.1.9 p.99
-    _k("HeartbeatInterval", I, False, "300", verified=V),  # §9.1.10 p.99, s
-    _k("LightIntensity", I, False, "100", verified=V),  # §9.1.11 p.100, %
-    _k("LocalAuthorizeOffline", B, False, "true", verified=V),  # §9.1.12 p.100
-    _k("LocalPreAuthorize", B, False, "false", verified=V),  # §9.1.13 p.100
-    _k("MaxEnergyOnInvalidId", I, False, "0", verified=V),  # §9.1.14 p.100, Wh
-    _k("MeterValuesAlignedData", C, False, "Energy.Active.Import.Register", allowed=_MEASURANDS, verified=V),  # §9.1.15 p.101
-    _k("MeterValuesAlignedDataMaxLength", I, True, "10", verified=V),  # §9.1.16 p.101
-    _k("MeterValuesSampledData", C, False, "Energy.Active.Import.Register,Power.Active.Import",
-       allowed=_MEASURANDS, verified=V),  # §9.1.17 p.101, spec default Energy.Active.Import.Register
-    _k("MeterValuesSampledDataMaxLength", I, True, "10", verified=V),  # §9.1.18 p.101
-    _k("MeterValueSampleInterval", I, False, "60", verified=V),  # §9.1.19 p.102, s
-    _k("MinimumStatusDuration", I, False, "0", verified=V),  # §9.1.20 p.102, s
-    _k("NumberOfConnectors", I, True, "1", verified=V),  # §9.1.21 p.102; runtime overrides from ChargerConfig.connectors
-    _k("ResetRetries", I, False, "1", verified=V),  # §9.1.22 p.102, times
-    _k("StopTransactionOnEVSideDisconnect", B, False, "true", verified=V),  # §9.1.23 p.103, errata 3.80: optional, R or RW
-    _k("StopTransactionOnInvalidId", B, False, "true", verified=V),  # §9.1.24 p.103
-    _k("StopTxnAlignedData", C, False, "", allowed=_MEASURANDS, verified=V),  # §9.1.25 p.103
-    _k("StopTxnAlignedDataMaxLength", I, True, "10", verified=V),  # §9.1.26 p.103
-    _k("StopTxnSampledData", C, False, "", allowed=_MEASURANDS, verified=V),  # §9.1.27 p.104
-    _k("StopTxnSampledDataMaxLength", I, True, "10", verified=V),  # §9.1.28 p.104
-    _k("SupportedFeatureProfiles", C, True, SUPPORTED_FEATURE_PROFILES, allowed=_PROFILES, verified=V),  # §9.1.29 p.104
-    _k("SupportedFeatureProfilesMaxLength", I, True, "6", verified=V),  # §9.1.30 p.104, errata 3.81
-    _k("TransactionMessageAttempts", I, False, "3", verified=V),  # §9.1.31 p.105, times
-    _k("TransactionMessageRetryInterval", I, False, "60", verified=V),  # §9.1.32 p.105, s
-    _k("UnlockConnectorOnEVSideDisconnect", B, False, "true", verified=V),  # §9.1.33 p.105, errata 3.84: R or RW
-    _k("WebSocketPingInterval", I, False, "0", verified=V),  # §9.1.34 p.105, s, >= 0
+    _k("AllowOfflineTxForUnknownId", _BOOL, False, "false"),  # §9.1.1 p.97
+    _k("AuthorizationCacheEnabled", _BOOL, False, "false"),  # §9.1.2 p.97
+    _k("AuthorizeRemoteTxRequests", _BOOL, False, "false"),  # §9.1.3 p.97, R or RW
+    _k("BlinkRepeat", _INT, False, "0"),  # §9.1.4 p.98, times
+    _k("ClockAlignedDataInterval", _INT, False, "0"),  # §9.1.5 p.98, s
+    _k("ConnectionTimeOut", _INT, False, "60"),  # §9.1.6 p.98, s
+    _k("ConnectorPhaseRotation", _CSL, False, "0.Unknown"),  # §9.1.7 p.99
+    _k("ConnectorPhaseRotationMaxLength", _INT, True, "10"),  # §9.1.8 p.99
+    _k("GetConfigurationMaxKeys", _INT, True, "100"),  # §9.1.9 p.99
+    _k("HeartbeatInterval", _INT, False, "300"),  # §9.1.10 p.99, s
+    _k("LightIntensity", _INT, False, "100"),  # §9.1.11 p.100, %
+    _k("LocalAuthorizeOffline", _BOOL, False, "true"),  # §9.1.12 p.100
+    _k("LocalPreAuthorize", _BOOL, False, "false"),  # §9.1.13 p.100
+    _k("MaxEnergyOnInvalidId", _INT, False, "0"),  # §9.1.14 p.100, Wh
+    _k("MeterValuesAlignedData", _CSL, False, "Energy.Active.Import.Register", allowed=_MEASURANDS),  # §9.1.15 p.101
+    _k("MeterValuesAlignedDataMaxLength", _INT, True, "10"),  # §9.1.16 p.101
+    _k("MeterValuesSampledData", _CSL, False, "Energy.Active.Import.Register,Power.Active.Import",
+       allowed=_MEASURANDS),  # §9.1.17 p.101, spec default Energy.Active.Import.Register
+    _k("MeterValuesSampledDataMaxLength", _INT, True, "10"),  # §9.1.18 p.101
+    _k("MeterValueSampleInterval", _INT, False, "60"),  # §9.1.19 p.102, s
+    _k("MinimumStatusDuration", _INT, False, "0"),  # §9.1.20 p.102, s
+    _k("NumberOfConnectors", _INT, True, "1"),  # §9.1.21 p.102; runtime overrides from ChargerConfig.connectors
+    _k("ResetRetries", _INT, False, "1"),  # §9.1.22 p.102, times
+    _k("StopTransactionOnEVSideDisconnect", _BOOL, False, "true"),  # §9.1.23 p.103, errata 3.80: optional, R or RW
+    _k("StopTransactionOnInvalidId", _BOOL, False, "true"),  # §9.1.24 p.103
+    _k("StopTxnAlignedData", _CSL, False, "", allowed=_MEASURANDS),  # §9.1.25 p.103
+    _k("StopTxnAlignedDataMaxLength", _INT, True, "10"),  # §9.1.26 p.103
+    _k("StopTxnSampledData", _CSL, False, "", allowed=_MEASURANDS),  # §9.1.27 p.104
+    _k("StopTxnSampledDataMaxLength", _INT, True, "10"),  # §9.1.28 p.104
+    _k("SupportedFeatureProfiles", _CSL, True, SUPPORTED_FEATURE_PROFILES, allowed=_PROFILES),  # §9.1.29 p.104
+    _k("SupportedFeatureProfilesMaxLength", _INT, True, "6"),  # §9.1.30 p.104, errata 3.81
+    _k("TransactionMessageAttempts", _INT, False, "3"),  # §9.1.31 p.105, times
+    _k("TransactionMessageRetryInterval", _INT, False, "60"),  # §9.1.32 p.105, s
+    _k("UnlockConnectorOnEVSideDisconnect", _BOOL, False, "true"),  # §9.1.33 p.105, errata 3.84: R or RW
+    _k("WebSocketPingInterval", _INT, False, "0"),  # §9.1.34 p.105, s, >= 0
     # ---- 9.4 Smart Charging Profile
-    _k("ChargeProfileMaxStackLevel", I, True, "10", verified=V),  # §9.4.1 p.107
-    _k("ChargingScheduleAllowedChargingRateUnit", C, True, "Current,Power",
-       allowed=frozenset({"Current", "Power"}), verified=V),  # §9.4.2 p.107, errata 3.88
-    _k("ChargingScheduleMaxPeriods", I, True, "48", verified=V),  # §9.4.3 p.107
-    _k("ConnectorSwitch3to1PhaseSupported", B, True, "false", verified=V),  # §9.4.4 p.107, errata 4.28
-    _k("MaxChargingProfilesInstalled", I, True, "10", verified=V),  # §9.4.5 p.108
-]
+    _k("ChargeProfileMaxStackLevel", _INT, True, "10"),  # §9.4.1 p.107
+    _k("ChargingScheduleAllowedChargingRateUnit", _CSL, True, "Current,Power",
+       allowed=frozenset({"Current", "Power"})),  # §9.4.2 p.107, errata 3.88
+    _k("ChargingScheduleMaxPeriods", _INT, True, "48"),  # §9.4.3 p.107
+    _k("ConnectorSwitch3to1PhaseSupported", _BOOL, True, "false"),  # §9.4.4 p.107, errata 4.28
+    _k("MaxChargingProfilesInstalled", _INT, True, "10"),  # §9.4.5 p.108
+)
 
 KEYS_BY_NAME: Dict[str, ConfigKeyDef] = {k.name: k for k in KEYS}

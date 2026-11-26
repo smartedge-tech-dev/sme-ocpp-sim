@@ -278,7 +278,7 @@ class TxEnded:
     tx_id: str
     meter_stop_wh: int
     timestamp: datetime
-    reason: Optional[str] = None
+    reason: Optional["StopReason"] = None
     id_token: Optional[str] = None
     samples: Sequence[Sample] = ()
 
@@ -313,15 +313,48 @@ class BootResult:
     current_time: Optional[datetime] = None
 
 
+class StopReason(str, Enum):
+    """Why a transaction ended. Values are domain names; each adapter maps them to its wire reason."""
+
+    LOCAL = "local"                      # stopped at the charger (same id token / local stop)
+    REMOTE = "remote"                    # RequestStop from the CSMS
+    EV_DISCONNECTED = "ev_disconnected"  # cable unplugged on the EV side
+    DE_AUTHORIZED = "de_authorized"      # the CSMS did not accept the id token of a started transaction
+    UNLOCK_COMMAND = "unlock_command"    # Unlock from the CSMS
+    SOFT_RESET = "soft_reset"
+    HARD_RESET = "hard_reset"
+    OTHER = "other"                      # e.g. a connector fault
+
+
+class AuthResult(str, Enum):
+    """Outcome of presenting an id token.
+
+    The first five values equal the authorization status of the CSMS answer (same spelling in 1.6 and 2.0.1
+    for these). The rest are simulator-internal outcomes of the runtime API and are never sent on the wire.
+    """
+
+    ACCEPTED = "Accepted"
+    BLOCKED = "Blocked"
+    EXPIRED = "Expired"
+    INVALID = "Invalid"
+    CONCURRENT_TX = "ConcurrentTx"
+    # ---- internal (runtime API only)
+    OFFLINE = "Offline"          # CSMS authorization needed but not online
+    ERROR = "Error"              # the CSMS call failed
+    BUSY = "Busy"                # connector has a transaction of another id token
+    UNAVAILABLE = "Unavailable"  # connector inoperative or faulted
+    STOPPED = "Stopped"          # the token ended its own transaction
+
+
 @dataclass(frozen=True)
 class IdTokenInfo:
-    status: str  # "Accepted" | "Blocked" | "Expired" | "Invalid" | "ConcurrentTx"
+    status: AuthResult  # one of the first five (wire) values
     expiry: Optional[datetime] = None
     parent_id_token: Optional[str] = None
 
     @property
     def accepted(self) -> bool:
-        return self.status == "Accepted"
+        return self.status == AuthResult.ACCEPTED
 
 
 @dataclass(frozen=True)

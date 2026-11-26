@@ -112,7 +112,9 @@ class RpcConnection:
                     await self._send_raw(raw, FrameInfo("tx", raw, framer.CALL, uid, action))
                 except ConnectionClosed as e:
                     raise ConnectionError("connection closed") from e
-                return await asyncio.wait_for(fut, self._timeout if timeout is None else timeout)
+                # asyncio.timeout, not wait_for: 3.11 wait_for may swallow a concurrent cancellation.
+                async with asyncio.timeout(self._timeout if timeout is None else timeout):
+                    return await fut
             finally:
                 self._pending.pop(uid, None)
 

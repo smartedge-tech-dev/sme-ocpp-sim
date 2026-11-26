@@ -99,3 +99,37 @@ def test_listeners(store):
     store.set("HeartbeatInterval", "45")  # unchanged: no callback
     store.set("NumberOfConnectors", "9")  # rejected: no callback
     assert seen == [("HeartbeatInterval", "45")]
+
+
+def test_str_normalize_returns_stripped_value():
+    from sme_ocpp_sim.protocol.base import ConfigKeyDef, KeyType
+    from sme_ocpp_sim.runtime.config_store import normalize
+    free = ConfigKeyDef("X", KeyType.STR, False, "")
+    assert normalize(free, "  abc ") == "abc"
+    choice = ConfigKeyDef("Y", KeyType.STR, False, "a", allowed=frozenset({"a", "b"}))
+    assert normalize(choice, " b ") == "b" and normalize(choice, "c") is None
+
+
+@pytest.mark.parametrize("raw, want", [("10", "10"), (" 007 ", "7"), ("0", "0"), ("1_0", None), ("+5", None),
+                                       ("-1", None), ("١٢", None), ("1.0", None), ("", None)])
+def test_int_accepts_only_ascii_digits(raw, want):
+    from sme_ocpp_sim.runtime.config_store import normalize
+    assert normalize(KEYS_BY_NAME["HeartbeatInterval"], raw) == want
+
+
+def test_listener_exception_does_not_escape_set(caplog):
+    from sme_ocpp_sim.protocol.base import ConfigStatus
+    s = ConfigStore(KEYS)
+    seen = []
+
+    def bad(key, value):
+        raise RuntimeError("boom")
+    s.add_listener(bad)
+    s.add_listener(lambda k, v: seen.append((k, v)))
+    assert s.set("HeartbeatInterval", "42") is ConfigStatus.ACCEPTED
+    assert s.value("HeartbeatInterval") == "42" and seen == [("HeartbeatInterval", "42")]
+    assert "listener failed" in caplog.text
+
+
+def test_keys_table_is_a_tuple_and_verified():
+    assert isinstance(KEYS, tuple) and all(k.verified for k in KEYS)

@@ -212,7 +212,7 @@ def test_send_transaction_messages():
         started = await a.send_tx_started(d.TxStarted(1, "T1", 1000, TS))
         await a.send_tx_updated(d.TxUpdated(1, started.tx_id, TS, sample))
         await a.send_tx_updated(d.TxUpdated(1, started.tx_id, TS, ()))  # nothing to send
-        ended = await a.send_tx_ended(d.TxEnded(1, started.tx_id, 1500, TS, "Local", "T1", sample[:1]))
+        ended = await a.send_tx_ended(d.TxEnded(1, started.tx_id, 1500, TS, d.StopReason.LOCAL, "T1", sample[:1]))
         return info, started, ended
 
     (info, started, ended), sent = _out(flow, resp)

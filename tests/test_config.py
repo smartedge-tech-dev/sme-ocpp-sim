@@ -59,9 +59,9 @@ def test_duplicate_ids_rejected():
 
 
 def test_url_resolution_and_required():
-    cfg = _yaml('  - id: "A"\n  - id: "B"\n    csms_url: "wss://other/ocpp"\n')
+    cfg = _yaml('  - id: "A"\n  - id: "B"\n    csms_url: "ws://other/ocpp"\n')
     assert cfg.resolve_csms(cfg.chargers[0]) == (URL, "1.6")
-    assert cfg.resolve_csms(cfg.chargers[1]) == ("wss://other/ocpp", "1.6")
+    assert cfg.resolve_csms(cfg.chargers[1]) == ("ws://other/ocpp", "1.6")
     with pytest.raises(ValidationError, match="no csms_url"):
         _yaml('  - id: "A"\n', defaults="")
     with pytest.raises(ValidationError, match="ws://"):
@@ -82,3 +82,37 @@ def test_field_constraints():
 def test_empty_config_and_defaults():
     cfg = parse_text("")
     assert cfg.chargers == [] and cfg.simulation.running and cfg.frame_log.size == 20000
+
+
+@pytest.mark.parametrize("profile, url, password, ok", [
+    (0, "ws://h/ocpp", None, True),
+    (0, "ws://h/ocpp", "pw", False),
+    (0, "wss://h/ocpp", None, False),
+    (1, "ws://h/ocpp", "pw", True),
+    (1, "ws://h/ocpp", None, False),
+    (1, "wss://h/ocpp", "pw", False),
+    (2, "wss://h/ocpp", "pw", True),
+    (2, "ws://h/ocpp", "pw", False),
+    (2, "wss://h/ocpp", None, False),
+])
+def test_security_profile_consistency(profile, url, password, ok):
+    pw = f', password: "{password}"' if password else ""
+    text = (f'csms_defaults: {{ url: "{url}", security_profile: {profile} }}\n'
+            f'chargers:\n  - {{ id: "A"{pw} }}\n')
+    if ok:
+        assert parse_text(text).chargers[0].id == "A"
+    else:
+        with pytest.raises(ValidationError, match=f"security_profile {profile} needs"):
+            parse_text(text)
+
+
+def test_charger_id_colon_connectors_bound_and_float_boot_retry():
+    from sme_ocpp_sim.config import MAX_CONNECTORS
+    with pytest.raises(ValidationError, match="must not contain"):
+        ChargerConfig(id="A:B")
+    assert ChargerConfig(id="A", connectors=MAX_CONNECTORS).connectors == MAX_CONNECTORS
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", connectors=MAX_CONNECTORS + 1)
+    assert ChargerConfig(id="A", boot_retry_s=0.5).boot_retry_s == 0.5
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", boot_retry_s=0)

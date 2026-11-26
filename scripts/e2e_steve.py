@@ -47,7 +47,9 @@ results: dict = {}
 def sql(compose_dir: str, query: str) -> str:
     cmd = ["docker", "compose", "exec", "-T", "db", "mariadb", "-usteve", "-pchangeme", "stevedb", "-B", "-e", query]
     out = subprocess.run(cmd, cwd=compose_dir, capture_output=True, text=True)
-    return out.stdout.strip() if out.returncode == 0 else "SQL ERROR: " + out.stderr.strip()
+    if out.returncode != 0:
+        raise RuntimeError(f"SQL failed ({out.returncode}): {out.stderr.strip()}")
+    return out.stdout.strip()
 
 
 class _Forms(HTMLParser):
@@ -136,6 +138,9 @@ async def registered_flow(base: str, http: str, log: FrameLog) -> None:
         results["online"] = await _until(lambda: rt.online)
         results["get_configuration_before_boot"] = any(
             e.direction == "rx" and e.action == "GetConfiguration" for e in log.since(0, charger=CP_ID))
+        # SteVe's boot interval is long (hours); shorten it locally, which also checks that an interval
+        # change wakes the heartbeat loop at once.
+        rt.store.set("HeartbeatInterval", "2")
         results["heartbeat"] = await _until(lambda: rt.last_heartbeat is not None, 5) or "no heartbeat within 5 s"
         results["swipe_unknown"] = await rt.swipe(1, UNKNOWN_TAG)
         await rt.plug(1)
@@ -152,7 +157,12 @@ async def registered_flow(base: str, http: str, log: FrameLog) -> None:
             results["GetConfiguration_served"] = await _until(lambda: sum(
                 1 for e in log.since(0, charger=CP_ID, action="GetConfiguration") if e.direction == "rx") > n, 10)
             await asyncio.sleep(1.0)
-            _, html = await asyncio.to_thread(web.get, task_url.split(http, 1)[1])
+            # SteveWeb.get takes a path below the SteVe base (``http``), e.g. /manager/operations/tasks/1
+            base_path = urllib.parse.urlparse(http).path.rstrip("/")
+            task_path = urllib.parse.urlparse(task_url).path
+            if base_path and task_path.startswith(base_path):
+                task_path = task_path[len(base_path):]
+            _, html = await asyncio.to_thread(web.get, task_path)
             results["task_page_excerpt"] = " ".join(re.sub(r"<[^>]+>", " ", html).split())[-600:]
 
         results["stop_tx"] = await rt.stop_tx(1)
@@ -170,8 +180,8 @@ async def unregistered_flow(base: str, log: FrameLog) -> None:
     stop = asyncio.Event()
     task = asyncio.create_task(rt.run(stop))
     try:
-        await _until(lambda: rt.connect_attempts >= 2 and rt.last_error is not None, 15)
-        results["unregistered"] = {"last_error": rt.last_error, "attempts": rt.connect_attempts,
+        reached = await _until(lambda: rt.connect_attempts >= 2 and rt.last_error is not None, 15)
+        results["unregistered"] = {"retried": reached, "last_error": rt.last_error, "attempts": rt.connect_attempts,
                                    "connected": rt.connected}
     finally:
         stop.set()

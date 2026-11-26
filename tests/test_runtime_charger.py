@@ -209,3 +209,142 @@ def test_stop_ends_loop_promptly():
         finally:
             await peer.stop()
     asyncio.run(main())
+
+
+def test_stop_while_offline_is_queued_and_delivered_after_reconnect():
+    async def main():
+        peer = CsmsPeer(hb_interval=30)
+        port = await peer.start()
+        rt = ChargerRuntime(_cfg(auth_mode="accept_all", config_keys={"MeterValueSampleInterval": "0"}), peer.url,
+                            reconnect=FAST, call_timeout=5)
+        stop = asyncio.Event()
+        task = asyncio.create_task(rt.run(stop))
+        try:
+            s1 = await _online(peer, rt)
+            await rt.plug(1)
+            assert await rt.swipe(1, "T") == "Accepted"
+            tx = s1.starts[0]["transaction_id"]
+            await peer.stop()
+            await _until(lambda: not rt.connected and rt.last_error is not None)
+            assert await rt.stop_tx(1)
+            assert s1.stops == [] and rt.snapshot()["tx_queue"] == 1
+            assert rt.snapshot()["connectors"][0]["status"] == "Finishing"
+            assert rt.last_error["kind"] == "disconnected"
+            await peer.start(port=port)
+            await _until(lambda: len(peer.history) == 2 and peer.history[1].stops)
+            s2 = peer.history[1]
+            assert s2.stops[0]["transaction_id"] == tx and s2.stops[0]["reason"] == "Local"
+            await _until(lambda: rt.snapshot()["tx_queue"] == 0)
+            assert (1, "Charging", "NoError") not in s2.statuses  # state refreshed before reporting
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 3)
+            await peer.stop()
+    asyncio.run(main())
+
+
+class _RecordingBackoff:
+    def __init__(self):
+        self.nexts = self.resets = 0
+
+    def next(self):
+        self.nexts += 1
+        return 0.01
+
+    def reset(self):
+        self.resets += 1
+
+
+def test_backoff_reset_only_after_accepted_boot():
+    from rpc_fakes import FakeWs
+
+    async def connect(_cfg):
+        ws = FakeWs()
+        await ws.close()  # the CSMS accepts the socket and drops it at once
+        return ws
+
+    async def main():
+        bo = _RecordingBackoff()
+        rt = ChargerRuntime(_cfg(), "ws://unused/ocpp", connect=connect, backoff=bo)
+        stop = asyncio.Event()
+        task = asyncio.create_task(rt.run(stop))
+        await _until(lambda: rt.connect_attempts >= 4)
+        stop.set()
+        await asyncio.wait_for(task, 3)
+        assert bo.resets == 0 and bo.nexts >= 3
+        assert rt.last_error["kind"] == "disconnected"
+
+        peer = CsmsPeer(hb_interval=30)
+        await peer.start()
+        try:
+            bo = _RecordingBackoff()
+            rt = ChargerRuntime(_cfg(), peer.url, backoff=bo)
+            stop = asyncio.Event()
+            task = asyncio.create_task(rt.run(stop))
+            await _until(lambda: rt.online)
+            assert bo.resets == 1 and rt.last_error is None
+            stop.set()
+            await asyncio.wait_for(task, 3)
+        finally:
+            await peer.stop()
+    asyncio.run(main())
+
+
+def test_triggered_boot_keeps_registration():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        peer.boot_statuses = ["Pending"]
+        assert (await peer.trigger(CP, "BootNotification")).status == "Accepted"
+        await _until(lambda: s.boots == 2)
+        await asyncio.sleep(0.1)
+        assert s.boot_statuses[-1] == "Pending"
+        assert rt.registration == "Accepted" and rt.online
+    _scenario(body)
+
+
+def test_swipe_rechecks_state_after_authorize():
+    async def body(peer, rt):
+        await _online(peer, rt)
+        await rt.plug(1)
+        real = rt._authorize
+
+        async def auth_then_fault(tag):
+            res = await real(tag)
+            await rt.fault(1, "GroundFailure")
+            return res
+        rt._authorize = auth_then_fault
+        assert await rt.swipe(1, "T") == "Unavailable"
+        await rt.clear_fault(1)
+
+        async def auth_then_other_start(tag):
+            res = await real(tag)
+            await rt._start_tx(rt.conns[1], "OTHER")
+            return res
+        rt._authorize = auth_then_other_start
+        assert await rt.swipe(1, "T") == "Busy"
+        assert rt.snapshot()["connectors"][0]["transaction"]["id_tag"] == "OTHER"
+        rt._authorize = real
+        assert await rt.swipe(1, "X") == "Busy"
+        assert await rt.swipe(1, "OTHER") == "Stopped"
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_heartbeat_interval_change_takes_effect_promptly():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        assert rt.store.value("HeartbeatInterval") == "30" and s.heartbeats == 0
+        assert (await peer.change_configuration(CP, "HeartbeatInterval", "1")).status == "Accepted"
+        await _until(lambda: s.heartbeats >= 1, timeout=4)
+    _scenario(body)
+
+
+def test_meter_interval_change_takes_effect_promptly():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        await rt.swipe(1, "T")
+        await asyncio.sleep(0.3)
+        assert s.meter_values == []
+        assert (await peer.change_configuration(CP, "MeterValueSampleInterval", "1")).status == "Accepted"
+        await _until(lambda: len(s.meter_values) >= 1, timeout=4)
+    _scenario(body, cfg_kw={"auth_mode": "accept_all", "config_keys": {"MeterValueSampleInterval": "600"}})

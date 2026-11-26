@@ -11,6 +11,7 @@ Transaction ids are 1.6 integers on the wire and strings in the domain.
 
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
@@ -24,6 +25,19 @@ from .config_keys import KEYS
 log = logging.getLogger(__name__)
 
 _NO_ERROR = "NoError"
+_SMART_CHARGING = ("SetChargingProfile", "ClearChargingProfile", "GetCompositeSchedule")
+
+#: Domain stop reason -> 1.6 ``Reason`` of StopTransaction.req.
+_REASON_16: Dict[d.StopReason, str] = {
+    d.StopReason.LOCAL: "Local",
+    d.StopReason.REMOTE: "Remote",
+    d.StopReason.EV_DISCONNECTED: "EVDisconnected",
+    d.StopReason.DE_AUTHORIZED: "DeAuthorized",
+    d.StopReason.UNLOCK_COMMAND: "UnlockCommand",
+    d.StopReason.SOFT_RESET: "SoftReset",
+    d.StopReason.HARD_RESET: "HardReset",
+    d.StopReason.OTHER: "Other",
+}
 
 
 def _fmt(value: float) -> str:
@@ -39,7 +53,14 @@ def _sampled(samples: Sequence[d.Sample], context: str) -> List[m.SampledValue]:
 
 
 def _id_info(info: m.IdTagInfo) -> d.IdTokenInfo:
-    return d.IdTokenInfo(status=info.status.value, expiry=info.expiry_date, parent_id_token=info.parent_id_tag)
+    return d.IdTokenInfo(status=d.AuthResult(info.status.value), expiry=info.expiry_date, parent_id_token=info.parent_id_tag)
+
+
+def _meter_values(evse_id: int, tx_id: Optional[str], ts: datetime, samples: Sequence[d.Sample],
+                  context: str) -> m.MeterValuesRequest:
+    return m.MeterValuesRequest(
+        connector_id=evse_id, transaction_id=int(tx_id) if tx_id is not None else None,
+        meter_value=[m.MeterValueNonEmpty(timestamp=ts, sampled_value=_sampled(samples, context))])
 
 
 def _accepted(status: d.CommandStatus) -> str:
@@ -57,7 +78,7 @@ class Adapter16(d.VersionAdapter):
     version = "1.6"
     subprotocol = "ocpp1.6"
     error_codes = OCPP16_ERRORS
-    config_keys = tuple(KEYS)
+    config_keys = KEYS
 
     # ------------------------------------------------------------------ inbound
 
@@ -68,88 +89,87 @@ class Adapter16(d.VersionAdapter):
         return model
 
     def handlers(self, runtime: d.CommandSink) -> Dict[str, d.Handler]:
-        p = self._parse
-
-        async def remote_start(payload: dict) -> dict:
-            req = p("RemoteStartTransaction", payload)
-            if req.connector_id is not None:
-                # TODO(spec): connectorId 0 on RemoteStartTransaction is treated as out of range (must be > 0).
-                _check_connector(req.connector_id, runtime, allow_zero=False)
-            # M4: convert chargingProfile into charging.profiles; until then the 1.6 model is passed through.
-            st = await runtime.handle(d.RequestStart(req.connector_id, req.id_tag, req.charging_profile))
-            return dump(m.RemoteStartTransactionResponse(status=_accepted(st)))
-
-        async def remote_stop(payload: dict) -> dict:
-            req = p("RemoteStopTransaction", payload)
-            st = await runtime.handle(d.RequestStop(str(req.transaction_id)))
-            return dump(m.RemoteStopTransactionResponse(status=_accepted(st)))
-
-        async def get_configuration(payload: dict) -> dict:
-            req = p("GetConfiguration", payload)
-            res: d.GetConfigResult = await runtime.handle(d.GetConfig(tuple(req.key or ())))
-            return dump(m.GetConfigurationResponse(
-                configuration_key=[m.KeyValue(key=e.key, readonly=e.readonly, value=e.value) for e in res.known],
-                unknown_key=list(res.unknown) or None))
-
-        async def change_configuration(payload: dict) -> dict:
-            req = p("ChangeConfiguration", payload)
-            st: d.ConfigStatus = await runtime.handle(d.SetConfig(req.key, req.value))
-            return dump(m.ChangeConfigurationResponse(status=st.value))
-
-        async def reset(payload: dict) -> dict:
-            req = p("Reset", payload)
-            st = await runtime.handle(d.Reset(d.ResetKind(req.type.value)))
-            return dump(m.ResetResponse(status=_accepted(st)))
-
-        async def trigger(payload: dict) -> dict:
-            req = p("TriggerMessage", payload)
-            if req.connector_id is not None:
-                # TODO(spec): connectorId 0 is accepted for TriggerMessage (charger-wide request).
-                _check_connector(req.connector_id, runtime, allow_zero=True)
-            what = d.TriggerWhat(req.requested_message.value)
-            if what in (d.TriggerWhat.DIAGNOSTICS_STATUS, d.TriggerWhat.FIRMWARE_STATUS):
-                return dump(m.TriggerMessageResponse(status="NotImplemented"))
-            st = await runtime.handle(d.Trigger(what, req.connector_id))
-            status = {d.CommandStatus.ACCEPTED: "Accepted", d.CommandStatus.REJECTED: "Rejected"}.get(
-                st, "NotImplemented")
-            return dump(m.TriggerMessageResponse(status=status))
-
-        async def unlock(payload: dict) -> dict:
-            req = p("UnlockConnector", payload)
-            _check_connector(req.connector_id, runtime, allow_zero=False)
-            st: d.UnlockStatus = await runtime.handle(d.Unlock(req.connector_id))
-            return dump(m.UnlockConnectorResponse(status=st.value))
-
-        async def change_availability(payload: dict) -> dict:
-            req = p("ChangeAvailability", payload)
-            _check_connector(req.connector_id, runtime, allow_zero=True)
-            st: d.AvailabilityStatus = await runtime.handle(
-                d.ChangeAvailability(req.connector_id, req.type.value == "Operative"))
-            return dump(m.ChangeAvailabilityResponse(status=st.value))
-
-        async def data_transfer(payload: dict) -> dict:
-            req = p("DataTransfer", payload)
-            res: d.DataTransferResult = await runtime.handle(d.DataTransfer(req.vendor_id, req.message_id, req.data))
-            return dump(m.DataTransferResponse(status=res.status.value, data=res.data))
-
-        def smart_charging(action: str) -> d.Handler:
-            async def not_yet(payload: dict) -> dict:
-                # M4: SetChargingProfile / ClearChargingProfile / GetCompositeSchedule with charging.profiles.
-                raise CallError(OCPP16_ERRORS.not_implemented, f"{action} is not implemented yet")
-            return not_yet
-
-        return {
-            "RemoteStartTransaction": remote_start,
-            "RemoteStopTransaction": remote_stop,
-            "GetConfiguration": get_configuration,
-            "ChangeConfiguration": change_configuration,
-            "Reset": reset,
-            "TriggerMessage": trigger,
-            "UnlockConnector": unlock,
-            "ChangeAvailability": change_availability,
-            "DataTransfer": data_transfer,
-            **{a: smart_charging(a) for a in ("SetChargingProfile", "ClearChargingProfile", "GetCompositeSchedule")},
+        table = {
+            "RemoteStartTransaction": self._remote_start,
+            "RemoteStopTransaction": self._remote_stop,
+            "GetConfiguration": self._get_configuration,
+            "ChangeConfiguration": self._change_configuration,
+            "Reset": self._reset,
+            "TriggerMessage": self._trigger,
+            "UnlockConnector": self._unlock,
+            "ChangeAvailability": self._change_availability,
+            "DataTransfer": self._data_transfer,
         }
+        out: Dict[str, d.Handler] = {a: functools.partial(h, runtime) for a, h in table.items()}
+        for action in _SMART_CHARGING:
+            out[action] = functools.partial(self._smart_charging, action)
+        return out
+
+    async def _remote_start(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("RemoteStartTransaction", payload)
+        if req.connector_id is not None:
+            # TODO(spec): connectorId 0 on RemoteStartTransaction is treated as out of range (must be > 0).
+            _check_connector(req.connector_id, runtime, allow_zero=False)
+        # M4: convert chargingProfile into charging.profiles; until then the 1.6 model is passed through.
+        st = await runtime.handle(d.RequestStart(req.connector_id, req.id_tag, req.charging_profile))
+        return dump(m.RemoteStartTransactionResponse(status=_accepted(st)))
+
+    async def _remote_stop(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("RemoteStopTransaction", payload)
+        st = await runtime.handle(d.RequestStop(str(req.transaction_id)))
+        return dump(m.RemoteStopTransactionResponse(status=_accepted(st)))
+
+    async def _get_configuration(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("GetConfiguration", payload)
+        res: d.GetConfigResult = await runtime.handle(d.GetConfig(tuple(req.key or ())))
+        return dump(m.GetConfigurationResponse(
+            configuration_key=[m.KeyValue(key=e.key, readonly=e.readonly, value=e.value) for e in res.known],
+            unknown_key=list(res.unknown) or None))
+
+    async def _change_configuration(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("ChangeConfiguration", payload)
+        st: d.ConfigStatus = await runtime.handle(d.SetConfig(req.key, req.value))
+        return dump(m.ChangeConfigurationResponse(status=st.value))
+
+    async def _reset(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("Reset", payload)
+        st = await runtime.handle(d.Reset(d.ResetKind(req.type.value)))
+        return dump(m.ResetResponse(status=_accepted(st)))
+
+    async def _trigger(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("TriggerMessage", payload)
+        if req.connector_id is not None:
+            # TODO(spec): connectorId 0 is accepted for TriggerMessage (charger-wide request).
+            _check_connector(req.connector_id, runtime, allow_zero=True)
+        what = d.TriggerWhat(req.requested_message.value)
+        if what in (d.TriggerWhat.DIAGNOSTICS_STATUS, d.TriggerWhat.FIRMWARE_STATUS):
+            return dump(m.TriggerMessageResponse(status="NotImplemented"))
+        st = await runtime.handle(d.Trigger(what, req.connector_id))
+        status = {d.CommandStatus.ACCEPTED: "Accepted", d.CommandStatus.REJECTED: "Rejected"}.get(
+            st, "NotImplemented")
+        return dump(m.TriggerMessageResponse(status=status))
+
+    async def _unlock(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("UnlockConnector", payload)
+        _check_connector(req.connector_id, runtime, allow_zero=False)
+        st: d.UnlockStatus = await runtime.handle(d.Unlock(req.connector_id))
+        return dump(m.UnlockConnectorResponse(status=st.value))
+
+    async def _change_availability(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("ChangeAvailability", payload)
+        _check_connector(req.connector_id, runtime, allow_zero=True)
+        st: d.AvailabilityStatus = await runtime.handle(
+            d.ChangeAvailability(req.connector_id, req.type.value == "Operative"))
+        return dump(m.ChangeAvailabilityResponse(status=st.value))
+
+    async def _data_transfer(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("DataTransfer", payload)
+        res: d.DataTransferResult = await runtime.handle(d.DataTransfer(req.vendor_id, req.message_id, req.data))
+        return dump(m.DataTransferResponse(status=res.status.value, data=res.data))
+
+    async def _smart_charging(self, action: str, payload: dict) -> dict:
+        # M4: SetChargingProfile / ClearChargingProfile / GetCompositeSchedule with charging.profiles.
+        raise CallError(OCPP16_ERRORS.not_implemented, f"{action} is not implemented yet")
 
     # ------------------------------------------------------------------ outbound
 
@@ -188,26 +208,21 @@ class Adapter16(d.VersionAdapter):
     async def send_tx_updated(self, ev: d.TxUpdated) -> None:
         if not ev.samples:
             return  # 1.6 needs at least one sampledValue
-        await self._send("MeterValues", m.MeterValuesRequest(
-            connector_id=ev.evse_id, transaction_id=int(ev.tx_id),
-            meter_value=[m.MeterValueNonEmpty(timestamp=ev.timestamp,
-                                              sampled_value=_sampled(ev.samples, ev.context))]))
+        await self._send("MeterValues", _meter_values(ev.evse_id, ev.tx_id, ev.timestamp, ev.samples, ev.context))
 
     async def send_tx_ended(self, ev: d.TxEnded) -> Optional[d.IdTokenInfo]:
         data = ([m.MeterValue(timestamp=ev.timestamp, sampled_value=_sampled(ev.samples, "Transaction.End"))]
                 if ev.samples else None)
         resp = await self._send("StopTransaction", m.StopTransactionRequest(
             transaction_id=int(ev.tx_id), timestamp=ev.timestamp, meter_stop=ev.meter_stop_wh,
-            id_tag=ev.id_token, reason=ev.reason, transaction_data=data))
+            id_tag=ev.id_token, reason=_REASON_16[ev.reason] if ev.reason is not None else None,
+            transaction_data=data))
         return _id_info(resp.id_tag_info) if resp.id_tag_info is not None else None
 
     async def send_meter_sample(self, ev: d.MeterSample) -> None:
         if not ev.samples:
             return
-        await self._send("MeterValues", m.MeterValuesRequest(
-            connector_id=ev.evse_id, transaction_id=int(ev.tx_id) if ev.tx_id is not None else None,
-            meter_value=[m.MeterValueNonEmpty(timestamp=ev.timestamp,
-                                              sampled_value=_sampled(ev.samples, ev.context))]))
+        await self._send("MeterValues", _meter_values(ev.evse_id, ev.tx_id, ev.timestamp, ev.samples, ev.context))
 
     async def send_data_transfer(self, cmd: d.DataTransfer) -> d.DataTransferResult:
         resp = await self._send("DataTransfer", m.DataTransferRequest(

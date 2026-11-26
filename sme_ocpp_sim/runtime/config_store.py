@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..protocol.base import ConfigEntry, ConfigKeyDef, ConfigStatus, KeyType
+
+log = logging.getLogger(__name__)
 
 Listener = Callable[[str, str], None]
 
@@ -21,11 +24,11 @@ def normalize(defn: ConfigKeyDef, value: str) -> Optional[str]:
         return low if low in (_TRUE, _FALSE) else None
     if defn.type is KeyType.INT:
         # All 1.6 integer keys are counts / seconds / percentages. TODO(spec): verify ranges against OCPP 1.6 §9
-        try:
-            n = int(v)
-        except ValueError:
+        # Only plain ASCII digits: int() would also take "+5", "1_0" and non-ASCII digits. This also rejects
+        # negative values (simulator choice, see config_keys).
+        if not (v.isascii() and v.isdigit()):
             return None
-        return str(n) if n >= 0 else None
+        return str(int(v))
     if defn.type is KeyType.CSL:
         items = [p.strip() for p in v.split(",")] if v else []
         if any(not p for p in items):
@@ -35,7 +38,7 @@ def normalize(defn: ConfigKeyDef, value: str) -> Optional[str]:
         return ",".join(items)
     if defn.allowed is not None and v not in defn.allowed:
         return None
-    return value
+    return v
 
 
 class ConfigStore:
@@ -112,7 +115,10 @@ class ConfigStore:
         self._values[key] = norm
         if changed:
             for cb in list(self._listeners):
-                cb(key, norm)
+                try:
+                    cb(key, norm)
+                except Exception:  # noqa: BLE001 - the value is already stored; one listener must not undo set()
+                    log.exception("configuration listener failed for %s", key)
         return ConfigStatus.REBOOT_REQUIRED if d.reboot_required else ConfigStatus.ACCEPTED
 
     def add_listener(self, cb: Listener) -> None:

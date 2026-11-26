@@ -79,12 +79,24 @@ WsUrl = Annotated[QuotedStr, AfterValidator(_ws_url)]
 class CsmsDefaults(StrictModel):
     url: Optional[WsUrl] = None
     ocpp_version: OcppVersion = "1.6"
-    security_profile: int = Field(0, ge=0, le=2)  # 3 (client certificates) is out of v0.1 scope
+    #: OCPP security profile every charger must match (checked per charger): 0 = no password + ws://,
+    #: 1 = password + ws://, 2 = password + wss://. 3 (client certificates) is out of v0.1 scope.
+    security_profile: int = Field(0, ge=0, le=2)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 
+#: Upper bound for ``connectors`` (simulator limit, not an OCPP one).
+MAX_CONNECTORS = 32
+
+
+def _charger_id(v: str) -> str:
+    if ":" in v:
+        raise ValueError("charger id must not contain ':' (it is the Basic Auth user-id, RFC 7617)")
+    return v
+
+
 class ChargerConfig(StrictModel):
-    id: QuotedStr = Field(min_length=1)
+    id: Annotated[QuotedStr, AfterValidator(_charger_id)] = Field(min_length=1)
     #: ``None`` = ``csms_defaults.url``; the charger id is appended as the last path segment.
     csms_url: Optional[WsUrl] = None
     #: ``None`` = ``csms_defaults.ocpp_version``
@@ -99,12 +111,12 @@ class ChargerConfig(StrictModel):
     model: QuotedStr = Field("SIM-AC6", min_length=1, max_length=20)
     serial: Optional[QuotedStr] = Field(None, max_length=25)
     firmware: Optional[QuotedStr] = Field("0.1.0", max_length=50)
-    connectors: int = Field(1, ge=1)
+    connectors: int = Field(1, ge=1, le=MAX_CONNECTORS)
     config_keys: Dict[str, Annotated[str, BeforeValidator(_key_value)]] = Field(default_factory=dict)
     auth_mode: Literal["local_only", "csms_only", "local_then_csms", "accept_all"] = "local_then_csms"
     id_tags: List[Annotated[QuotedStr, Field(min_length=1, max_length=20)]] = Field(default_factory=list)
     #: Boot retry delay when the CSMS answers Pending / Rejected with ``interval`` 0.
-    boot_retry_s: int = Field(60, ge=1)
+    boot_retry_s: float = Field(60.0, gt=0)
     #: M3 placeholder: constant charging power until the M4 power model.
     power_w: float = Field(6000.0, gt=0)
     #: Default for MeterValueSampleInterval when ``config_keys`` does not set it (``None`` = key table default).
@@ -133,7 +145,20 @@ class SimConfig(StrictModel):
             seen.add(c.id)
             if c.csms_url is None and self.csms_defaults.url is None:
                 raise ValueError(f"charger {c.id!r}: no csms_url and no csms_defaults.url")
+            self._check_profile(c)
         return self
+
+    def _check_profile(self, c: ChargerConfig) -> None:
+        profile = self.csms_defaults.security_profile
+        url = c.csms_url or self.csms_defaults.url or ""
+        want_password, want_tls = profile >= 1, profile == 2
+        problems = []
+        if want_password != (c.password is not None):
+            problems.append("a password" if want_password else "no password")
+        if want_tls != url.startswith("wss://"):
+            problems.append("a wss:// url" if want_tls else "a ws:// url")
+        if problems:
+            raise ValueError(f"charger {c.id!r}: security_profile {profile} needs {' and '.join(problems)}")
 
     def resolve_csms(self, charger: ChargerConfig) -> Tuple[str, str]:
         """``(url, ocpp_version)`` of ``charger`` after applying ``csms_defaults``."""

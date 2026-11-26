@@ -96,3 +96,12 @@ class ConnectorState:
         else:
             self.error_code, self.info, self.vendor_error_code = None, info, vendor_error_code
         return True
+
+    def force(self, new: S, *, error_code: Optional[str] = None, info: Optional[str] = None,
+              vendor_error_code: Optional[str] = None) -> None:
+        """Set ``new`` without the table check (same field handling as :meth:`transition`)."""
+        if new is S.FAULTED and not error_code:
+            raise ValueError("Faulted needs an error_code")
+        self.status = new
+        self.error_code = error_code if new is S.FAULTED else None
+        self.info, self.vendor_error_code = info, vendor_error_code
