@@ -382,9 +382,13 @@ def test_ws_snapshot_then_increments(setup):
         full = _full_pair(ws, seqs)
         assert {c["id"] for c in full["charger_state"]["chargers"]} == {"CP001", "CP002"}
         client.post("/api/chargers/CP001/plug", json={"connector": 1})
-        m = _until(ws, lambda m: m["type"] == "charger_state", seqs=seqs)
-        assert not m["full"] and [c["id"] for c in m["chargers"]] == ["CP001"]
-        assert m["chargers"][0]["connectors"][0]["status"] == "Preparing"
+        # A delta carries only changed chargers, but CP002's own reconnect attempts may change it too,
+        # so wait for the delta that carries CP001 instead of assuming it is the only one.
+        m = _until(ws, lambda m: m["type"] == "charger_state"
+                   and any(c["id"] == "CP001" for c in m["chargers"]), seqs=seqs)
+        assert not m["full"]
+        cp1 = next(c for c in m["chargers"] if c["id"] == "CP001")
+        assert cp1["connectors"][0]["status"] == "Preparing"
         assert seqs == list(range(1, len(seqs) + 1))  # per-connection, no gaps, no duplicates
 
 
