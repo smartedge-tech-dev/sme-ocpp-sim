@@ -1,0 +1,89 @@
+# Screenshot demo site for scripts/screenshots.py (dev only).
+#
+# __CSMS_URL__ is replaced by the script with the URL of the in-process dev CSMS (tests/peers/ocpp16_peer.py).
+# time_scale 60 makes power, energy and SoC move visibly while the screenshots are taken.
+
+simulation:
+  tick_seconds: 1
+  time_scale: 60
+  running: true
+
+frame_log:
+  size: 20000
+
+csms_defaults:
+  url: "__CSMS_URL__"
+  ocpp_version: "1.6"
+  security_profile: 0
+  reconnect: { min_s: 1, max_s: 10, jitter: 0.2 }
+
+ev_models:
+  - id: "compact-40kwh"
+    capacity_kwh: 40
+    max_ac_kw: 7.4
+    max_current_a: 32
+    phases: 1
+  - id: "suv-90kwh"
+    capacity_kwh: 90
+    max_ac_kw: 11
+    max_current_a: 16
+    phases: 3
+
+chargers:
+  - id: "CP-0001"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    id_tags: ["04A1B2C3"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "compact-40kwh", initial_soc: 12, target_soc: 100 }
+  - id: "CP-0002"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    connectors: 2
+    id_tags: ["04A1B2C4"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "compact-40kwh", initial_soc: 25, target_soc: 100 }
+  - id: "CP-0003"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    id_tags: ["04A1B2C5"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "compact-40kwh", initial_soc: 38, target_soc: 100 }
+  - id: "CP-0004"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    id_tags: ["04A1B2C6"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "compact-40kwh", initial_soc: 51, target_soc: 100 }
+  - id: "CP-0005"
+    model: "SIM-AC11"
+    max_power_w: 11000
+    voltage_v: 200
+    phases: 3
+    line_to_line: true
+    id_tags: ["04A1B2C7"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "suv-90kwh", initial_soc: 18, target_soc: 100 }
+  - id: "CP-0006"
+    model: "SIM-AC11"
+    max_power_w: 11000
+    voltage_v: 200
+    phases: 3
+    line_to_line: true
+    id_tags: ["04A1B2C8"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "suv-90kwh", initial_soc: 44, target_soc: 100 }
+  - id: "CP-0007"
+    model: "SIM-AC11"
+    max_power_w: 11000
+    voltage_v: 200
+    phases: 3
+    line_to_line: true
+    id_tags: ["04A1B2C9"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    session: { ev_model: "suv-90kwh", initial_soc: 63, target_soc: 100 }
+  - id: "CP-0008"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    id_tags: ["04A1B2CA"]
+    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
