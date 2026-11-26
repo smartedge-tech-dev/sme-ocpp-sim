@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 # --------------------------------------------------------------------------------------------- status
 
@@ -333,6 +333,18 @@ class TxStartedResult:
 # --------------------------------------------------------------------------------------------- adapter
 
 Handler = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
+#: Outbound CALL of the current connection: ``(action, payload) -> response payload``.
+CallFn = Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]]
+
+
+class CommandSink(Protocol):
+    """What an adapter needs from the runtime to answer CSMS CALLs."""
+
+    @property
+    def connector_count(self) -> int: ...
+
+    async def handle(self, cmd: Command) -> Any:
+        """Execute one domain command and return its domain result (see the command / result types)."""
 
 
 class VersionAdapter(ABC):
@@ -347,8 +359,17 @@ class VersionAdapter(ABC):
     #: Configuration key table the runtime builds its ConfigStore from.
     config_keys: Sequence[ConfigKeyDef] = ()
 
+    def __init__(self, *, strict: bool = False) -> None:
+        #: Strict inbound parsing (unknown fields rejected) instead of the lenient default.
+        self.strict = strict
+        self._call: Optional[CallFn] = None
+
+    def bind(self, call: Optional[CallFn]) -> None:
+        """Attach the outbound CALL function of the current connection (``None`` while offline)."""
+        self._call = call
+
     @abstractmethod
-    def handlers(self, runtime: Any) -> Dict[str, Handler]:
+    def handlers(self, runtime: CommandSink) -> Dict[str, Handler]:
         """Inbound CALL handlers by action; each parses the payload, calls the runtime, returns the response."""
 
     @abstractmethod
