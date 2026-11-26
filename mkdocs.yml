@@ -55,6 +55,7 @@ plugins:
             About: 关于
 
 markdown_extensions:
+  - attr_list
   - admonition
   - tables
   - toc:

@@ -23,13 +23,13 @@
 
 | Action | 说明 |
 |---|---|
-| RemoteStartTransaction | 可携带 `chargingProfile`（不带 `transactionId` 的 TxProfile） |
+| RemoteStartTransaction | 可携带 `chargingProfile`（不带 `transactionId` 的 TxProfile）。Boot 被接受之前应答 Rejected |
 | RemoteStopTransaction | |
 | GetConfiguration | `key` 为空时返回全部键；未知键放入 `unknownKey`。Boot 被接受之前也会应答 |
 | ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
 | Reset | Soft / Hard：结束交易、断开、重连并重新 Boot |
 | TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification；DiagnosticsStatusNotification 和 FirmwareStatusNotification 应答 `NotImplemented` |
-| UnlockConnector | Unlocked / UnlockFailed / NotSupported |
+| UnlockConnector | 始终应答 `Unlocked`（其他应答暂不可配置）；该 connector 上进行中的 transaction 以 reason `UnlockCommand` 结束 |
 | ChangeAvailability | Accepted / Rejected / Scheduled（交易进行中为 Scheduled） |
 | DataTransfer | 默认应答 `UnknownVendorId` |
 | SetChargingProfile | ChargePointMaxProfile（仅 connector 0）/ TxDefaultProfile / TxProfile（需要进行中的交易） |

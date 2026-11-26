@@ -25,13 +25,13 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 
 | Action | Notes |
 |---|---|
-| RemoteStartTransaction | May carry a `chargingProfile` (TxProfile without `transactionId`) |
+| RemoteStartTransaction | May carry a `chargingProfile` (TxProfile without `transactionId`). Rejected before the boot is accepted |
 | RemoteStopTransaction | |
 | GetConfiguration | An empty `key` list returns all keys; unknown keys go to `unknownKey`. Answered even before the boot is accepted |
 | ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
 | Reset | Soft / Hard: ends transactions, disconnects, reconnects and boots again |
 | TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification; DiagnosticsStatusNotification and FirmwareStatusNotification answer `NotImplemented` |
-| UnlockConnector | Unlocked / UnlockFailed / NotSupported |
+| UnlockConnector | Always answers `Unlocked` (other answers are not configurable yet); a running transaction on the connector ends with reason `UnlockCommand` |
 | ChangeAvailability | Accepted / Rejected / Scheduled (Scheduled while a transaction is running) |
 | DataTransfer | Default answer `UnknownVendorId` |
 | SetChargingProfile | ChargePointMaxProfile (connector 0 only) / TxDefaultProfile / TxProfile (needs a running transaction) |

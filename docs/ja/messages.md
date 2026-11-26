@@ -25,13 +25,13 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 
 | アクション | 備考 |
 |---|---|
-| RemoteStartTransaction | `chargingProfile`（`transactionId` なしの TxProfile）を含められます |
+| RemoteStartTransaction | `chargingProfile`（`transactionId` なしの TxProfile）を含められます。Boot 受理前は Rejected |
 | RemoteStopTransaction | |
 | GetConfiguration | `key` が空ならすべてのキーを返し、未知のキーは `unknownKey` に入れます。Boot 受理前でも応答します |
 | ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
 | Reset | Soft / Hard: トランザクションを終了し、切断・再接続して再度 Boot します |
 | TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification。DiagnosticsStatusNotification と FirmwareStatusNotification は `NotImplemented` |
-| UnlockConnector | Unlocked / UnlockFailed / NotSupported |
+| UnlockConnector | 常に `Unlocked` を返します（他の応答はまだ設定できません）。コネクタで実行中のトランザクションは理由 `UnlockCommand` で終了します |
 | ChangeAvailability | Accepted / Rejected / Scheduled（トランザクション中は Scheduled） |
 | DataTransfer | 既定の応答は `UnknownVendorId` |
 | SetChargingProfile | ChargePointMaxProfile（コネクター 0 のみ）/ TxDefaultProfile / TxProfile（実行中のトランザクションが必要） |

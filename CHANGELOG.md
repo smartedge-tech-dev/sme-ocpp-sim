@@ -15,8 +15,8 @@ First release.
 ### Added
 
 - OCPP-J RPC layer and WebSocket transport (subprotocol `ocpp1.6`): CALL / CALLRESULT / CALLERROR with
-  correct error codes for malformed frames, one outstanding CALL per direction, call timeouts, reconnect with
-  exponential backoff and jitter, classified handshake errors (HTTP 404 unknown charge point, subprotocol).
+  correct error codes for malformed frames, at most one outstanding outbound CALL per connection, each inbound CALL handled
+  in its own task, call timeouts, reconnect with exponential backoff and jitter, classified handshake errors (HTTP 404 unknown charge point, subprotocol).
 - OCPP 1.6J message models with lenient parsing and schema-equivalent validation (official OCA schemas are
   not bundled).
 - Charge point runtime: BootNotification (Accepted / Pending / Rejected), Heartbeat, StatusNotification,

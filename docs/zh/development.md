@@ -42,13 +42,30 @@ Web UI 没有构建步骤：`sme_ocpp_sim/static/` 在 `sme-sim-common` 的公�
 
 | 函数 | 打开 |
 |---|---|
-| `window.openChargerDialog(id)` | 充电桩配置对话框 |
-| `window.openSettingsDialog()` | 设置对话框（CSMS URL、OCPP 版本、Security Profile） |
+| `window.openChargerDialog(id)` | 选中该充电桩并滚动到其详情（不打开对话框） |
+| `window.openSettingsDialog(id?)` | 设置对话框（CSMS 默认值，以及充电桩 `id` 的连接设置；默认为当前选中的充电桩） |
 | `window.openProfileDialog(id)` | 充电桩的 Smart Charging profile |
 | `window.openFrameDetail(seq)` | 帧日志中的一帧 |
 | `window.openAddChargerDialog()` | 添加充电桩对话框 |
 
 语言和主题保存在 `localStorage` 的 `sme-ocpp-sim.lang` 和 `sme-ocpp-sim.theme` 中。
+
+## 截图
+
+README 和文档中的图片由 `scripts/screenshots.py` 生成（开发依赖：Playwright、Pillow 和 `ocpp` 库）：
+
+```powershell
+.venv\Scripts\pip install -e ".[dev]"
+.venv\Scripts\python -m playwright install chromium   # 仅首次
+.venv\Scripts\python scripts\screenshots.py
+```
+
+脚本在临时目录中运行：在同一进程内启动开发用 CSMS `tests/peers/ocpp16_peer.py`，用 `scripts/screenshots.yaml`
+（8 台充电桩、错开的 `initial_soc`、`time_scale` 60）在 `127.0.0.1` 的空闲端口上启动模拟器，在每台充电桩上开始
+transaction，并向 `CP-0001` 下发 TxDefaultProfile。然后以浅色主题拍摄每种语言，外加深色概览，把 `overview.png`、
+`charger.png`、`smart-charging.png`、`frames.png`、`settings.png`、`overview-dark.png` 和 `live.gif` 写入
+`docs/assets/screenshots/{en,ja,zh}/`（另有日文宽图 `ja/overview-wide.png`）。语言和主题通过上面的 `localStorage`
+键设置。
 
 ## 文档
 

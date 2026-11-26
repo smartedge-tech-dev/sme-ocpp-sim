@@ -4,6 +4,8 @@ Web UI 使用的 HTTP API 同样可以从测试脚本调用。基础 URL：`http
 错误：未知充电桩为 `404`；输入无效或当前状态不允许的操作为 `400`（请求校验错误也是 `400`）。
 CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答时为 `502`。
 
+成功的请求返回 `{"ok": true, ...}`（GET 路由直接返回数据本身）。
+
 ## 通用路由
 
 | 方法 | 路径 | 含义 |
@@ -11,14 +13,22 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | GET | `/api/version` | 版本 |
 | GET | `/api/state` | 完整状态快照：充电桩、connector、数值 |
 | GET / PUT | `/api/config` | 当前配置（PUT 应用新配置；只有变化的充电桩会重连） |
-| POST | `/api/config/save` | 把配置写回 YAML 文件（见 [配置](configuration.md#web-ui)） |
-| POST | `/api/simulation` | 运行 / 暂停模拟 |
+| POST | `/api/config/save` | 把配置写回 YAML 文件（见 [配置](configuration.md#saving-from-the-web-ui)）；文件写入失败时为 `500` |
+| POST | `/api/simulation` | 运行 / 暂停与时间倍率：`{"running": true, "time_scale": 10}`（均可省略；其他字段会被拒绝） |
+| GET / PUT | `/api/csms-defaults` | `csms_defaults` 块（PUT 整块替换并重新加载） |
+| GET / PATCH | `/api/chargers/{id}/settings` | 单台充电桩的连接 / 认证设置（见下文） |
+| GET | `/api/chargers/{id}/configuration` | GetConfiguration 所见的运行时配置键 |
 | POST | `/api/devices` | 添加充电桩 |
 | GET / PUT | `/api/devices/{id}/config` | 单台充电桩的配置（PUT 整项替换） |
 | POST | `/api/devices/{id}/duplicate` | 复制充电桩（ID 递增） |
 | DELETE | `/api/devices/{id}` | 删除充电桩 |
 
 密码始终以 `********` 返回；原样发回掩码会保留已保存的密码。由于 PUT 整项替换，省略 `password` 表示没有密码。
+
+`/api/chargers/{id}/settings` 包含 `csms_url`、`ocpp_version`、`password`、`ca_file`、`verify_tls`、`id_tags`、
+`config_keys`，以及实际生效的 CSMS URL / OCPP 版本（`effective`）。PATCH 只修改请求中出现的字段；`null` 表示
+取消该设置（`id_tags` / `config_keys` 变为空；`verify_tls` 只能是 true 或 false）。密码掩码同上可原样发回。
+修改通过重新加载配置生效，只有 `POST /api/config/save` 才写入文件。
 
 ## 充电桩操作
 
@@ -28,8 +38,8 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | POST | `/api/chargers/{id}/disconnect` | 无（在 `connect` 之前保持断开；交易像网络中断一样保留） |
 | POST | `/api/chargers/{id}/plug` | `{"connector": 1}` |
 | POST | `/api/chargers/{id}/unplug` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` |
-| POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` |
+| POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` 必填 |
+| POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — 插枪并刷卡；`id_tag` 默认为第一个配置的 tag（没有则 `400`）；connector 已有 transaction 或处于故障时为 `400` |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——1.6 的 `ChargePointErrorCode`；以原因 `Other` 结束进行中的交易并上报 `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}`——恢复为 Available / Preparing |
@@ -50,8 +60,12 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 
 | 方法 | 路径 | 含义 |
 |---|---|---|
-| GET | `/api/frames?since=&charger=&action=&dir=&limit=` | 序号 `since` 之后的 OCPP 帧，可按充电桩、action 和方向过滤 |
+| GET | `/api/frames?since=&until=&charger=&action=&dir=&limit=` | `since < seq <= until` 的 OCPP 帧，可按充电桩、action 和方向过滤 |
 | GET | `/api/frames.jsonl?...` | 同样内容的 JSON Lines 流式下载（不指定 `limit` 时为缓冲区中所有匹配的帧） |
+
+`/api/frames` 返回 `{"frames": [...], "last_seq": n, "truncated": bool}`：匹配帧中最新的至多 `limit` 条
+（默认 500，最大 5000），按从旧到新排列。`truncated: true` 表示更早的匹配帧被省略；`last_seq` 是整个日志的
+最新序号（不受过滤影响）。
 
 帧日志只包含 OCPP 帧，不含 HTTP 头和密码。
 

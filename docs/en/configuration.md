@@ -38,7 +38,7 @@ chargers:
     (`id`, `id_tags`, `password`, URLs, `vendor`, ...) only accept quoted strings and ask you to add quotes,
     instead of silently turning `0123` into `83`.
 
-## Saving from the web UI
+## Saving from the web UI { #saving-from-the-web-ui }
 
 Changes made in the UI apply immediately (only the chargers that changed reconnect) and can be saved back to
 the YAML file. Saving replaces every top-level block that changed (`simulation`, `frame_log`, `csms_defaults`,

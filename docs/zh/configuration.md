@@ -37,7 +37,7 @@ chargers:
     在 YAML 1.1 中，不加引号的 `0123`、`1e5`、`ON`、`OFF`、`yes`、`no` 都不是字符串。标识和文本字段
     （`id`、`id_tags`、`password`、URL、`vendor` 等）只接受加引号的字符串，并提示你加上引号，而不会悄悄把 `0123` 变成 `83`。
 
-## 从 Web UI 保存
+## 从 Web UI 保存 { #saving-from-the-web-ui }
 
 在 UI 中的修改会立即生效（只有被修改的充电桩会重连），也可以保存回 YAML 文件。保存时，会把发生变化的顶层块
 （`simulation`、`frame_log`、`csms_defaults`、`ev_models`、`chargers`）整块替换：

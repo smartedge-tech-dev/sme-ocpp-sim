@@ -38,7 +38,7 @@ chargers:
     フィールド（`id`、`id_tags`、`password`、URL、`vendor` など）は引用符付きの文字列だけを受け付け、`0123` が
     黙って `83` になる代わりに、引用符を付けるよう案内します。
 
-## Web UI からの保存
+## Web UI からの保存 { #saving-from-the-web-ui }
 
 UI での変更はすぐに反映され（再接続するのは変更した充電器だけです）、YAML ファイルへ保存できます。保存時は、
 変更のあったトップレベルブロック（`simulation`、`frame_log`、`csms_defaults`、`ev_models`、`chargers`）を丸ごと置き換えます。

@@ -43,13 +43,31 @@ sme-sim-common の pytest プラグインは、各 `asyncio.run` を `SIM_TEST_T
 
 | 関数 | 開くもの |
 |---|---|
-| `window.openChargerDialog(id)` | 充電器の設定ダイアログ |
-| `window.openSettingsDialog()` | 設定ダイアログ（CSMS URL、OCPP バージョン、セキュリティプロファイル） |
+| `window.openChargerDialog(id)` | 充電器を選択して詳細までスクロール（ダイアログは開きません） |
+| `window.openSettingsDialog(id?)` | 設定ダイアログ（CSMS の既定値と充電器 `id` の接続設定。既定は選択中の充電器） |
 | `window.openProfileDialog(id)` | 充電器の Smart Charging プロファイル |
 | `window.openFrameDetail(seq)` | フレームログの 1 フレーム |
 | `window.openAddChargerDialog()` | 充電器の追加ダイアログ |
 
 言語とテーマは `localStorage` の `sme-ocpp-sim.lang` と `sme-ocpp-sim.theme` に保存されます。
+
+## スクリーンショット
+
+README とドキュメントの画像は `scripts/screenshots.py` で作成します（開発用依存: Playwright、Pillow、`ocpp`
+ライブラリ）。
+
+```powershell
+.venv\Scripts\pip install -e ".[dev]"
+.venv\Scripts\python -m playwright install chromium   # 初回のみ
+.venv\Scripts\python scripts\screenshots.py
+```
+
+スクリプトは一時ディレクトリで動作します。開発用 CSMS `tests/peers/ocpp16_peer.py` を同じプロセスで起動し、
+`scripts/screenshots.yaml`（充電器 8 台、`initial_soc` をずらし、`time_scale` 60）でシミュレーターを `127.0.0.1`
+の空きポートに起動、全充電器でトランザクションを開始して `CP-0001` に TxDefaultProfile を送ります。そのうえで全言語の
+ライトテーマと暗いテーマの概要を撮影し、`overview.png`、`charger.png`、`smart-charging.png`、`frames.png`、
+`settings.png`、`overview-dark.png`、`live.gif` を `docs/assets/screenshots/{en,ja,zh}/` に書き出します（日本語の横長画像
+`ja/overview-wide.png` も）。言語とテーマは上記の `localStorage` キーで設定します。
 
 ## ドキュメント
 
