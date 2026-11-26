@@ -147,7 +147,7 @@ FIXTURES: dict[tuple[str, str], dict[str, dict]] = {
                     "timestamp": T1,
                     "sampledValue": [
                         SAMPLED_VALUE_FULL,
-                        {"value": "50.0", "measurand": "Frequency", "unit": "Hertz"},
+                        {"value": "50.0", "measurand": "Frequency"},
                     ],
                 }
             ],

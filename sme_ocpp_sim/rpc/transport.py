@@ -196,10 +196,21 @@ class Backoff:
         self.attempt = 0
 
 
-async def wait_or_stop(stop: asyncio.Event, delay: float) -> bool:
-    """Sleep ``delay`` seconds unless ``stop`` is set first. Returns True if stopped."""
+async def wait_event(event: asyncio.Event, timeout: Optional[float]) -> bool:
+    """Wait until ``event`` is set or ``timeout`` seconds pass (None = no limit). True if it was set.
+
+    Uses ``asyncio.timeout`` rather than ``asyncio.wait_for``: on Python 3.11, ``wait_for`` can
+    swallow a cancellation that arrives while the awaited event completes (fixed in 3.12), which
+    left loops running after their session had been cancelled.
+    """
     try:
-        await asyncio.wait_for(stop.wait(), delay)
+        async with asyncio.timeout(timeout):
+            await event.wait()
         return True
     except TimeoutError:
-        return stop.is_set()
+        return event.is_set()
+
+
+async def wait_or_stop(stop: asyncio.Event, delay: float) -> bool:
+    """Sleep ``delay`` seconds unless ``stop`` is set first. Returns True if stopped."""
+    return await wait_event(stop, delay)

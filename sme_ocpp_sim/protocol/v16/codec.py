@@ -11,16 +11,24 @@ from pydantic import ValidationError
 from ...rpc.errors import OCPP16_ERRORS, CallError
 from .models import REQUESTS, RESPONSES, OcppModel
 
-# pydantic error type -> attribute name on OCPP16_ERRORS (OCPP-J 1.6 §4.2.3 meanings):
-#   OccurenceConstraintViolation: a required field is missing (occurrence constraint).
-#   TypeConstraintViolation: a field has the wrong data type (e.g. "somestring": 12).
-#   PropertyConstraintViolation: right type, but the value is not allowed (enum, length).
-#   FormationViolation: payload does not conform to the PDU structure of the action.
+# pydantic error type -> attribute name on OCPP16_ERRORS. Meanings from OCPP-J 1.6
+# §4.2.3 Table 7 "Valid Error Codes" (p.14); the OCPP-J errata (2025-04) §5.1/§5.2 (p.11-12)
+# keeps the misspelled wire names and changes no meaning:
+#   FormationViolation: "syntactically incorrect or not conform the PDU structure".
+#   PropertyConstraintViolation: "syntactically correct but at least one field contains an
+#     invalid value" (enum, maxLength).
+#   OccurenceConstraintViolation: "at least one of the fields violates occurence constraints",
+#     i.e. the CARD. column of the core spec message tables (required field missing, an array
+#     below its 1..* minimum).
+#   TypeConstraintViolation: "violates data type constraints (e.g. "somestring": 12)".
 # Validation runs in pydantic strict JSON mode, so "1" never becomes 1 and 1.0 is not an int.
 _ERROR_TYPE_TO_CODE: dict[str, str] = {
+    # TODO(spec): Table 7 (p.14) also defines ProtocolError as "Payload for Action is
+    # incomplete", which could be read as covering a missing required field too; the text
+    # does not say which one applies. OccurenceConstraintViolation is the narrower match
+    # (CARD. 1..1 violated) and what SteVe / the ocpp library send.
     "missing": "occurrence_constraint_violation",
-    # TODO(spec): an empty array where the schema says minItems=1 (MeterValues.meterValue,
-    # .sampledValue) is treated as a cardinality (occurrence) violation.
+    # Array cardinality (core spec CARD. 1..*, e.g. MeterValues.meterValue): occurrence.
     "too_short": "occurrence_constraint_violation",
     "too_long": "occurrence_constraint_violation",
     "int_type": "type_constraint_violation",
@@ -34,13 +42,16 @@ _ERROR_TYPE_TO_CODE: dict[str, str] = {
     "model_type": "type_constraint_violation",
     "model_attributes_type": "type_constraint_violation",
     "datetime_type": "type_constraint_violation",
-    # TODO(spec): a string that is not a valid dateTime is mapped to TypeConstraintViolation
-    # (dateTime is a spec data type); PropertyConstraintViolation would also be defensible.
+    # TODO(spec): a string that is not a valid dateTime -> TypeConstraintViolation, since
+    # dateTime is a core spec data type (§2.1 / message tables "FIELD TYPE"). Table 7 (p.14)
+    # does not decide between this and PropertyConstraintViolation ("invalid value"): on the
+    # JSON level the value has the right type (string), on the OCPP level it does not.
     "datetime_parsing": "type_constraint_violation",
     "datetime_from_date_parsing": "type_constraint_violation",
     "datetime_object_invalid": "type_constraint_violation",
-    # TODO(spec): explicit JSON null for a field (the schemas allow no null type); detected
-    # by codec.parse after validation, since the models accept None for optional fields.
+    # Explicit JSON null for a field: no official schema allows type null, so null is a
+    # wrong JSON data type -> TypeConstraintViolation (Table 7, p.14). Detected by
+    # codec.parse after validation, since the models accept None for optional fields.
     "null_value": "type_constraint_violation",
     # A non-string input to an enum field is re-mapped to TypeConstraintViolation below.
     "enum": "property_constraint_violation",
@@ -48,7 +59,9 @@ _ERROR_TYPE_TO_CODE: dict[str, str] = {
     # Only reached in strict mode; lenient mode strips unknown fields first.
     "extra_forbidden": "format_violation",
 }
-# TODO(spec): anything not in the table above falls back to FormationViolation.
+# Anything not in the table above is still a schema/PDU mismatch, which is the Table 7
+# (p.14) definition of FormationViolation; GenericError ("any other error not covered")
+# is left for non-validation failures.
 _FALLBACK_CODE = "format_violation"
 
 Kind = Literal["request", "response"]
@@ -121,7 +134,8 @@ def parse(
     """
     model_cls = model_for(action, kind)
     if not isinstance(payload, dict):
-        # TODO(spec): a payload that is not a JSON object is treated as a formation error.
+        # Not a JSON object: "not conform the PDU structure" -> FormationViolation
+        # (OCPP-J 1.6 §4.2.3 Table 7, p.14).
         raise CallError(OCPP16_ERRORS.format_violation, "payload must be a JSON object")
     ignored: list[str] = []
     work = payload
@@ -139,7 +153,8 @@ def parse(
         extras = [e for e in errors if e["type"] == "extra_forbidden"]
         if not extras or strict:
             # Report the first error in pydantic's (field declaration) order.
-            # TODO(spec): the spec does not say which code wins when several fields fail.
+            # TODO(spec): OCPP-J 1.6 §4.2.3 (p.14) and its errata only allow one errorCode
+            # per CALLERROR and do not say which one wins when several fields fail.
             raise _to_call_error(extras[0] if strict and extras else errors[0])
         if work is payload:
             work = copy.deepcopy(payload)

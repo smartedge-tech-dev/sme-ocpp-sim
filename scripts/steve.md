@@ -1,6 +1,6 @@
 # SteVe interop check (manual)
 
-`scripts/e2e_steve.py` arrives with the charger runtime (M3). Until then the spike version is in git history:
+`scripts/e2e_steve.py` runs the check on the real `ChargerRuntime`. The original spike version is in git history:
 `git show abc3067:spikes/rpc16/steve_check.py` (and `load_spike.py` for the 200-charger load check, M5).
 
 SteVe (GPL-3.0) is used only as an external process; its checkout lives outside this repo.

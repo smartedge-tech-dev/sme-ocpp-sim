@@ -97,7 +97,7 @@ class RpcConnection:
     async def call(self, action: str, payload: dict, timeout: Optional[float] = None) -> dict:
         """Send a CALL and return the CALLRESULT payload.
 
-        Raises :class:`CallError` on CALLERROR, :class:`asyncio.TimeoutError` on timeout
+        Raises :class:`CallError` on CALLERROR, :class:`TimeoutError` on timeout
         and :class:`ConnectionError` if the connection is (or gets) closed.
         """
         async with self._call_lock:
@@ -112,7 +112,9 @@ class RpcConnection:
                     await self._send_raw(raw, FrameInfo("tx", raw, framer.CALL, uid, action))
                 except ConnectionClosed as e:
                     raise ConnectionError("connection closed") from e
-                return await asyncio.wait_for(fut, self._timeout if timeout is None else timeout)
+                # asyncio.timeout, not wait_for: 3.11 wait_for may swallow a concurrent cancellation.
+                async with asyncio.timeout(self._timeout if timeout is None else timeout):
+                    return await fut
             finally:
                 self._pending.pop(uid, None)
 

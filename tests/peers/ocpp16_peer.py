@@ -53,6 +53,14 @@ class Session:
     results: dict = field(default_factory=dict)
     booted: asyncio.Event = field(default_factory=asyncio.Event)
     exercised: asyncio.Event = field(default_factory=asyncio.Event)
+    boot_statuses: list = field(default_factory=list)  # status answered per BootNotification
+    statuses: list = field(default_factory=list)       # (connector_id, status, error_code)
+    authorizes: list = field(default_factory=list)     # id tags
+    starts: list = field(default_factory=list)         # dict per StartTransaction
+    stops: list = field(default_factory=list)          # dict per StopTransaction
+    meter_values: list = field(default_factory=list)   # dict per MeterValues
+    data_transfers: list = field(default_factory=list)
+    cp: object = None
 
 
 class TapConnection:
@@ -74,25 +82,78 @@ class TapConnection:
 class PeerCP(OcppCP16):
     session: Session
     hb_interval: int
+    peer: "CsmsPeer"
 
     @on("BootNotification")
     async def on_boot(self, charge_point_vendor, charge_point_model, **_):
         self.session.boots += 1
-        self.session.booted.set()
-        return call_result.BootNotification(
-            current_time=_now(), interval=self.hb_interval, status="Accepted")
+        status = self.peer.boot_statuses.pop(0) if self.peer.boot_statuses else "Accepted"
+        self.session.boot_statuses.append(status)
+        if status == "Accepted":
+            self.session.booted.set()
+        interval = self.hb_interval if status == "Accepted" else self.peer.retry_interval
+        return call_result.BootNotification(current_time=_now(), interval=interval, status=status)
 
     @on("Heartbeat")
     async def on_heartbeat(self):
         self.session.heartbeats += 1
         return call_result.Heartbeat(current_time=_now())
 
+    @on("StatusNotification")
+    async def on_status(self, connector_id, error_code, status, **_):
+        await self.peer.hold("StatusNotification")
+        self.session.statuses.append((connector_id, status, error_code))
+        return call_result.StatusNotification()
+
+    @on("Authorize")
+    async def on_authorize(self, id_tag):
+        self.session.authorizes.append(id_tag)
+        return call_result.Authorize(id_tag_info={"status": self.peer.tag_status(id_tag)})
+
+    @on("StartTransaction")
+    async def on_start(self, connector_id, id_tag, meter_start, timestamp, **kw):
+        await self.peer.hold("StartTransaction")
+        self.peer.next_tx += 1
+        tx = self.peer.next_tx
+        self.session.starts.append({"connector_id": connector_id, "id_tag": id_tag, "meter_start": meter_start,
+                                    "transaction_id": tx, **kw})
+        return call_result.StartTransaction(transaction_id=tx,
+                                            id_tag_info={"status": self.peer.tag_status(id_tag)})
+
+    @on("StopTransaction")
+    async def on_stop(self, transaction_id, meter_stop, timestamp, **kw):
+        await self.peer.hold("StopTransaction")
+        self.session.stops.append({"transaction_id": transaction_id, "meter_stop": meter_stop,
+                                   "reason": kw.get("reason"), "transaction_data": kw.get("transaction_data"),
+                                   "id_tag": kw.get("id_tag")})
+        return call_result.StopTransaction(id_tag_info={"status": "Accepted"})
+
+    @on("MeterValues")
+    async def on_meter_values(self, connector_id, meter_value, **kw):
+        self.session.meter_values.append({"connector_id": connector_id, "meter_value": meter_value,
+                                          "transaction_id": kw.get("transaction_id")})
+        return call_result.MeterValues()
+
+    @on("DataTransfer")
+    async def on_data_transfer(self, vendor_id, **kw):
+        self.session.data_transfers.append({"vendor_id": vendor_id, **kw})
+        return call_result.DataTransfer(status="Accepted", data="pong")
+
 
 class CsmsPeer:
     def __init__(self, *, hb_interval: int = 1, exercise: bool = False,
                  registered: Optional[set] = None, passwords: Optional[dict] = None,
-                 ssl_context: Optional[ssl.SSLContext] = None) -> None:
+                 ssl_context: Optional[ssl.SSLContext] = None,
+                 boot_statuses: Optional[list] = None, retry_interval: int = 1,
+                 tag_statuses: Optional[dict] = None) -> None:
         self.hb_interval = hb_interval
+        self.boot_statuses = list(boot_statuses or [])  # consumed one per BootNotification, then Accepted
+        self.retry_interval = retry_interval             # interval answered with Pending / Rejected
+        self.tag_statuses = dict(tag_statuses or {})     # id tag -> status (default Accepted)
+        self.next_tx = 0
+        self.gates: dict[str, asyncio.Event] = {}        # action -> answer only once the event is set
+        self.delays: dict[str, float] = {}               # action -> answer delay in seconds
+        self.history: list = []                          # every Session, oldest first
         self.exercise = exercise
         self.registered = registered      # None = accept any charger id
         self.passwords = passwords        # None = no auth; {cp_id: password}
@@ -117,6 +178,50 @@ class CsmsPeer:
         self._server.close()
         await self._server.wait_closed()
 
+    async def hold(self, action: str) -> None:
+        """Delay the answer to ``action`` (``gates`` first, then ``delays``); the peer reads nothing meanwhile."""
+        gate = self.gates.get(action)
+        if gate is not None:
+            await gate.wait()
+        if self.delays.get(action):
+            await asyncio.sleep(self.delays[action])
+
+    def tag_status(self, id_tag: str) -> str:
+        return self.tag_statuses.get(id_tag, "Accepted")
+
+    async def request(self, cp_id: str, payload, **kw):
+        """Send a CSMS -> CP CALL (an ``ocpp.v16.call`` object) on the current session of ``cp_id``."""
+        return await self.sessions[cp_id].cp.call(payload, **kw)
+
+    async def remote_start(self, cp_id, id_tag, connector_id=None):
+        return await self.request(cp_id, call.RemoteStartTransaction(id_tag=id_tag, connector_id=connector_id))
+
+    async def remote_stop(self, cp_id, transaction_id):
+        return await self.request(cp_id, call.RemoteStopTransaction(transaction_id=transaction_id))
+
+    async def get_configuration(self, cp_id, keys=None):
+        return await self.request(cp_id, call.GetConfiguration(key=keys))
+
+    async def change_configuration(self, cp_id, key, value):
+        return await self.request(cp_id, call.ChangeConfiguration(key=key, value=value))
+
+    async def reset(self, cp_id, kind="Soft"):
+        return await self.request(cp_id, call.Reset(type=kind))
+
+    async def trigger(self, cp_id, message, connector_id=None):
+        return await self.request(cp_id, call.TriggerMessage(requested_message=message,
+                                                             connector_id=connector_id))
+
+    async def unlock(self, cp_id, connector_id):
+        return await self.request(cp_id, call.UnlockConnector(connector_id=connector_id))
+
+    async def change_availability(self, cp_id, connector_id, kind):
+        return await self.request(cp_id, call.ChangeAvailability(connector_id=connector_id, type=kind))
+
+    async def data_transfer(self, cp_id, vendor_id, message_id=None, data=None):
+        return await self.request(cp_id, call.DataTransfer(vendor_id=vendor_id, message_id=message_id,
+                                                           data=data))
+
     def _check(self, connection, request):
         cp_id = _cp_id(request.path)
         if self.registered is not None and cp_id not in self.registered:
@@ -136,8 +241,10 @@ class CsmsPeer:
         cp_id = _cp_id(ws.request.path)
         s = Session(cp_id, ws.subprotocol, ws.request.headers.get("Authorization"))
         self.sessions[cp_id] = s
+        self.history.append(s)
         cp = PeerCP(cp_id, TapConnection(ws, s.frames), response_timeout=5)
-        cp.session, cp.hb_interval = s, self.hb_interval
+        cp.session, cp.hb_interval, cp.peer = s, self.hb_interval, self
+        s.cp = cp
         tasks = [asyncio.create_task(cp.start())]
         if self.exercise:
             tasks.append(asyncio.create_task(self._exercise(cp, ws, s)))

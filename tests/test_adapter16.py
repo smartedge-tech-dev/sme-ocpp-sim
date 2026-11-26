@@ -1,0 +1,248 @@
+"""Adapter16 against a fake runtime / fake CALL function (no network)."""
+
+import asyncio
+from datetime import datetime, timezone
+
+import pytest
+
+from sme_ocpp_sim.protocol import base as d
+from sme_ocpp_sim.protocol.v16.adapter import Adapter16
+from sme_ocpp_sim.rpc import CallError
+
+PCV = "PropertyConstraintViolation"
+TS = datetime(2026, 11, 26, 1, 2, 3, 456000, tzinfo=timezone.utc)
+
+
+class FakeRuntime:
+    connector_count = 2
+
+    def __init__(self, result=None):
+        self.cmds = []
+        self.result = result
+
+    async def handle(self, cmd):
+        self.cmds.append(cmd)
+        return self.result(cmd) if callable(self.result) else self.result
+
+
+def _call(action, payload, result=None, strict=False):
+    rt = FakeRuntime(result)
+    out = asyncio.run(Adapter16(strict=strict).handlers(rt)[action](payload))
+    return out, rt.cmds
+
+
+def _error(action, payload, result=None, strict=False):
+    with pytest.raises(CallError) as ei:
+        _call(action, payload, result, strict)
+    return ei.value.code
+
+
+A, R = d.CommandStatus.ACCEPTED, d.CommandStatus.REJECTED
+
+
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected")])
+def test_remote_start(st, wire):
+    out, cmds = _call("RemoteStartTransaction", {"idTag": "T1", "connectorId": 2}, st)
+    assert out == {"status": wire}
+    assert cmds == [d.RequestStart(2, "T1", None)]
+
+
+def test_remote_start_without_connector():
+    _, cmds = _call("RemoteStartTransaction", {"idTag": "T1"}, A)
+    assert cmds[0].evse_id is None
+
+
+@pytest.mark.parametrize("cid", [0, 3, -1])
+def test_remote_start_connector_out_of_range(cid):
+    assert _error("RemoteStartTransaction", {"idTag": "T1", "connectorId": cid}, A) == PCV
+
+
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected")])
+def test_remote_stop(st, wire):
+    out, cmds = _call("RemoteStopTransaction", {"transactionId": 42}, st)
+    assert out == {"status": wire} and cmds == [d.RequestStop("42")]
+
+
+def test_get_configuration():
+    res = d.GetConfigResult([d.ConfigEntry("HeartbeatInterval", False, "300")], ["Nope"])
+    out, cmds = _call("GetConfiguration", {"key": ["HeartbeatInterval", "Nope"]}, res)
+    assert cmds == [d.GetConfig(("HeartbeatInterval", "Nope"))]
+    assert out == {"configurationKey": [{"key": "HeartbeatInterval", "readonly": False, "value": "300"}],
+                   "unknownKey": ["Nope"]}
+
+
+def test_get_configuration_all():
+    out, cmds = _call("GetConfiguration", {"key": []}, d.GetConfigResult([], []))
+    assert cmds == [d.GetConfig(())] and out == {"configurationKey": []}
+    _, cmds = _call("GetConfiguration", {}, d.GetConfigResult([], []))
+    assert cmds == [d.GetConfig(())]
+
+
+@pytest.mark.parametrize("st", list(d.ConfigStatus))
+def test_change_configuration(st):
+    out, cmds = _call("ChangeConfiguration", {"key": "HeartbeatInterval", "value": "10"}, st)
+    assert out == {"status": st.value} and cmds == [d.SetConfig("HeartbeatInterval", "10")]
+
+
+@pytest.mark.parametrize("kind", ["Soft", "Hard"])
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected")])
+def test_reset(kind, st, wire):
+    out, cmds = _call("Reset", {"type": kind}, st)
+    assert out == {"status": wire} and cmds == [d.Reset(d.ResetKind(kind))]
+
+
+@pytest.mark.parametrize("msg", ["BootNotification", "Heartbeat", "MeterValues", "StatusNotification"])
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected"), (d.CommandStatus.NOT_IMPLEMENTED,
+                                                                         "NotImplemented")])
+def test_trigger(msg, st, wire):
+    out, cmds = _call("TriggerMessage", {"requestedMessage": msg, "connectorId": 1}, st)
+    assert out == {"status": wire} and cmds == [d.Trigger(d.TriggerWhat(msg), 1)]
+
+
+@pytest.mark.parametrize("msg", ["DiagnosticsStatusNotification", "FirmwareStatusNotification"])
+def test_trigger_not_implemented(msg):
+    out, cmds = _call("TriggerMessage", {"requestedMessage": msg}, A)
+    assert out == {"status": "NotImplemented"} and cmds == []
+
+
+def test_trigger_connector_range():
+    _, cmds = _call("TriggerMessage", {"requestedMessage": "StatusNotification", "connectorId": 0}, A)
+    assert cmds[0].evse_id == 0
+    assert _error("TriggerMessage", {"requestedMessage": "StatusNotification", "connectorId": 3}, A) == PCV
+
+
+@pytest.mark.parametrize("st", list(d.UnlockStatus))
+def test_unlock(st):
+    out, cmds = _call("UnlockConnector", {"connectorId": 1}, st)
+    assert out == {"status": st.value} and cmds == [d.Unlock(1)]
+
+
+@pytest.mark.parametrize("cid", [0, 3])
+def test_unlock_out_of_range(cid):
+    assert _error("UnlockConnector", {"connectorId": cid}, d.UnlockStatus.UNLOCKED) == PCV
+
+
+@pytest.mark.parametrize("st", list(d.AvailabilityStatus))
+@pytest.mark.parametrize("kind, operative", [("Operative", True), ("Inoperative", False)])
+def test_change_availability(st, kind, operative):
+    out, cmds = _call("ChangeAvailability", {"connectorId": 0, "type": kind}, st)
+    assert out == {"status": st.value} and cmds == [d.ChangeAvailability(0, operative)]
+
+
+def test_change_availability_out_of_range():
+    assert _error("ChangeAvailability", {"connectorId": 3, "type": "Operative"},
+                  d.AvailabilityStatus.ACCEPTED) == PCV
+
+
+def test_data_transfer():
+    out, cmds = _call("DataTransfer", {"vendorId": "X", "messageId": "m", "data": "q"},
+                      d.DataTransferResult(d.DataTransferStatus.UNKNOWN_VENDOR_ID))
+    assert out == {"status": "UnknownVendorId"} and cmds == [d.DataTransfer("X", "m", "q")]
+    out, _ = _call("DataTransfer", {"vendorId": "X"}, d.DataTransferResult(d.DataTransferStatus.ACCEPTED, "r"))
+    assert out == {"status": "Accepted", "data": "r"}
+
+
+@pytest.mark.parametrize("action, payload", [
+    ("SetChargingProfile", {}), ("ClearChargingProfile", {}), ("GetCompositeSchedule", {})])
+def test_smart_charging_not_implemented_yet(action, payload):
+    assert _error(action, payload, A) == "NotImplemented"
+
+
+def test_unlisted_actions_have_no_handler():
+    h = Adapter16().handlers(FakeRuntime())
+    assert "UpdateFirmware" not in h and "GetDiagnostics" not in h and "ReserveNow" not in h
+
+
+def test_lenient_and_strict_unknown_fields():
+    out, _ = _call("Reset", {"type": "Soft", "extra": 1}, A)
+    assert out == {"status": "Accepted"}
+    assert _error("Reset", {"type": "Soft", "extra": 1}, A, strict=True) == "FormationViolation"
+
+
+def test_schema_errors_mapped():
+    assert _error("Reset", {}, A) == "OccurenceConstraintViolation"
+    assert _error("Reset", {"type": "Warm"}, A) == PCV
+
+
+# ------------------------------------------------------------------ outbound
+
+
+class FakeCall:
+    def __init__(self, responses):
+        self.responses, self.sent = responses, []
+
+    async def __call__(self, action, payload):
+        self.sent.append((action, payload))
+        return self.responses[action]
+
+
+def _out(coro_fn, responses):
+    a = Adapter16()
+    fc = FakeCall(responses)
+    a.bind(fc)
+    return asyncio.run(coro_fn(a)), fc.sent
+
+
+def test_send_booting():
+    res, sent = _out(lambda a: a.send_booting(d.Booting("V", "M", "S1", "1.0")), {"BootNotification": {
+        "status": "Pending", "currentTime": "2026-11-26T00:00:00Z", "interval": 5}})
+    assert sent == [("BootNotification", {"chargePointVendor": "V", "chargePointModel": "M",
+                                          "chargePointSerialNumber": "S1", "firmwareVersion": "1.0"})]
+    assert res.status is d.BootStatus.PENDING and res.interval == 5 and res.current_time.year == 2026
+
+
+def test_send_status_and_heartbeat():
+    res, sent = _out(lambda a: a.send_connector_status(d.ConnectorStatus(1, 1, d.DomainStatus.CHARGING,
+                                                                         timestamp=TS)),
+                     {"StatusNotification": {}})
+    assert sent[0][1] == {"connectorId": 1, "errorCode": "NoError", "status": "Charging",
+                          "timestamp": "2026-11-26T01:02:03.456Z"}
+    t, _ = _out(lambda a: a.send_heartbeat(d.Heartbeat()), {"Heartbeat": {"currentTime": "2026-11-26T00:00:00Z"}})
+    assert t.tzinfo is not None
+
+
+def test_send_transaction_messages():
+    resp = {"StartTransaction": {"transactionId": 7, "idTagInfo": {"status": "Blocked"}},
+            "MeterValues": {}, "StopTransaction": {}, "Authorize": {"idTagInfo": {"status": "Accepted"}}}
+    sample = [d.Sample("Energy.Active.Import.Register", 1234, "Wh", location="Outlet"),
+              d.Sample("Power.Active.Import", 7400.5, "W", location="Outlet")]
+
+    async def flow(a):
+        info = await a.send_authorize(d.AuthorizeRequest("T1"))
+        started = await a.send_tx_started(d.TxStarted(1, "T1", 1000, TS))
+        await a.send_tx_updated(d.TxUpdated(1, started.tx_id, TS, sample))
+        await a.send_tx_updated(d.TxUpdated(1, started.tx_id, TS, ()))  # nothing to send
+        ended = await a.send_tx_ended(d.TxEnded(1, started.tx_id, 1500, TS, d.StopReason.LOCAL, "T1", sample[:1]))
+        return info, started, ended
+
+    (info, started, ended), sent = _out(flow, resp)
+    assert info.accepted and started == d.TxStartedResult("7", d.IdTokenInfo("Blocked")) and ended is None
+    assert [a for a, _ in sent] == ["Authorize", "StartTransaction", "MeterValues", "StopTransaction"]
+    mv = sent[2][1]
+    assert mv["transactionId"] == 7 and mv["connectorId"] == 1
+    assert mv["meterValue"][0]["sampledValue"][1] == {
+        "value": "7400.5", "context": "Sample.Periodic", "measurand": "Power.Active.Import", "unit": "W",
+        "location": "Outlet"}
+    stop = sent[3][1]
+    assert stop["transactionId"] == 7 and stop["reason"] == "Local" and stop["meterStop"] == 1500
+    assert stop["transactionData"][0]["sampledValue"][0]["context"] == "Transaction.End"
+
+
+def test_send_meter_sample_and_data_transfer():
+    resp = {"MeterValues": {}, "DataTransfer": {"status": "Rejected", "data": "x"}}
+
+    async def flow(a):
+        await a.send_meter_sample(d.MeterSample(2, TS, [d.Sample("Voltage", 230, "V")], "Trigger"))
+        return await a.send_data_transfer(d.DataTransfer("V", "m", "d"))
+
+    res, sent = _out(flow, resp)
+    assert "transactionId" not in sent[0][1] and sent[0][1]["meterValue"][0]["sampledValue"][0]["context"] == "Trigger"
+    assert sent[1] == ("DataTransfer", {"vendorId": "V", "messageId": "m", "data": "d"})
+    assert res == d.DataTransferResult(d.DataTransferStatus.REJECTED, "x")
+
+
+def test_bad_response_and_unbound():
+    with pytest.raises(CallError):
+        _out(lambda a: a.send_heartbeat(d.Heartbeat()), {"Heartbeat": {}})
+    with pytest.raises(ConnectionError):
+        asyncio.run(Adapter16().send_heartbeat(d.Heartbeat()))
