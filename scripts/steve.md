@@ -30,3 +30,15 @@ Observed with SteVe 3.15.0 (first `up`: ~11 min incl. image pull + Maven build; 
   unregistered chargeBoxId -> HTTP 404 at the handshake (no BootNotification exchange at all).
 - SteVe sends `GetConfiguration {"key": []}` right after the WebSocket opens, before
   BootNotification has been answered; the CP must serve CSMS calls from the first frame.
+- SteVe 3.15.0 can hang at startup in its release-check bean (`InternetChecker.isHostAvailable`
+  blocks on an HTTPS read without a timeout). `docker compose restart app` recovers; readiness
+  then took ~7 minutes.
+- Charging profiles cannot be created by a plain form post to `/manager/chargingProfiles/add`
+  (the controller needs the submit parameter and `schedulePeriods[i].*` added by JavaScript);
+  for scripted runs insert into `charging_profile` / `charging_schedule_period` directly.
+
+v0.1.0 run (2026-11-27, SteVe 3.15.0): Boot / Heartbeat / StatusNotification / Authorize (known + unknown) /
+Start -> MeterValues -> Stop (rows in the SteVe DB) / GetConfiguration / ChangeConfiguration /
+RemoteStart / Reset Soft / SetChargingProfile / GetCompositeSchedule / ClearChargingProfile all passed;
+unregistered id and wrong subprotocol rejected at the handshake. Not exercised: RemoteStop
+(no open transaction at that point), Security Profile 1 against SteVe.

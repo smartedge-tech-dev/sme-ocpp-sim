@@ -129,7 +129,7 @@ def _count(log: FrameLog, cp: str, action: str, message_type: str = "CALL") -> i
 
 
 async def registered_flow(base: str, http: str, log: FrameLog) -> None:
-    cfg = ChargerConfig(id=CP_ID, vendor="SME", model="OCPPSim", auth_mode="csms_only", power_w=7400,
+    cfg = ChargerConfig(id=CP_ID, vendor="SME", model="OCPPSim", auth_mode="csms_only", max_power_w=7400,
                         config_keys={"MeterValueSampleInterval": "5"})
     rt = ChargerRuntime(cfg, base, frame_log=log, call_timeout=15)
     stop = asyncio.Event()
