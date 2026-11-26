@@ -39,10 +39,13 @@ VIEWPORT = {"width": 1440, "height": 1000}
 WIDE = {"width": 1600, "height": 1100}  # Japanese wide image (plan §9)
 FOCUS = "CP-0001"                  # the charger with the Smart Charging profile
 WARMUP_S = 15                      # let power ramp and frames accumulate before the first page
-HISTORY_S = 12                     # time on the page before capturing, so the charts have a history
+HISTORY_S = 25                     # time on the page before capturing, so the charts have a history
 GIF_FRAMES, GIF_STEP_S, GIF_COLOURS = 12, 0.6, 128
 
-# Relative TxDefaultProfile: steps every 10 simulated minutes (10 s of wall time at time_scale 60).
+# Relative TxDefaultProfile with a step every PERIOD_S seconds of wall time. Charging schedules run on the wall
+# clock (time_scale only speeds up the power model), so short periods keep several steps inside the chart window
+# (which starts small because the page only plots what it has seen). The periods cover the whole script run.
+PERIOD_S, PERIOD_LIMITS = 30, (6000, 3500, 5000, 2500, 4500)
 PROFILE = {
     "chargingProfileId": 101,
     "stackLevel": 0,
@@ -50,13 +53,8 @@ PROFILE = {
     "chargingProfileKind": "Relative",
     "chargingSchedule": {
         "chargingRateUnit": "W",
-        "chargingSchedulePeriod": [
-            {"startPeriod": 0, "limit": 6000},
-            {"startPeriod": 600, "limit": 3500},
-            {"startPeriod": 1200, "limit": 5000},
-            {"startPeriod": 1800, "limit": 2500},
-            {"startPeriod": 2400, "limit": 4500},
-        ],
+        "chargingSchedulePeriod": [{"startPeriod": i * PERIOD_S, "limit": PERIOD_LIMITS[i % len(PERIOD_LIMITS)]}
+                                   for i in range(20)],
     },
 }
 

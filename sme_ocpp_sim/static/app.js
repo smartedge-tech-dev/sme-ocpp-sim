@@ -41,7 +41,13 @@ const TIME_SCALES = [1, 2, 5, 10, 60];
 const MAX_FRAMES = 2000;          // frames kept client side
 const MAX_FRAME_ROWS = 500;       // frame rows in the DOM
 const MAX_HISTORY = 3600;         // chart samples per connector
+// Chart window (wall clock, the clock charging schedules run on; time_scale only speeds up the power model).
+// The history is kept client-side only, from the moment the page started sampling, so it does not survive a
+// reload. The window therefore zooms with the history: the past span grows from CHART_MIN_PAST_MS up to
+// CHART_PAST_MS, and the future span is twice the past span, clamped to [CHART_MIN_FUTURE_MS, CHART_FUTURE_MS].
 const CHART_PAST_MS = 20 * 60e3, CHART_FUTURE_MS = 40 * 60e3;
+const CHART_MIN_PAST_MS = 30e3, CHART_MIN_FUTURE_MS = 90e3;
+const CHART_TICKS_MS = [10e3, 15e3, 30e3, 60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, 3600e3];
 
 const t = Shell.t;
 const tk = (prefix, value) => t(`${prefix}.${value}`);   // enumerated keys (status.*, conn.*)
@@ -463,8 +469,11 @@ function drawChart() {
   const box = $("scChart");
   if (!S.sel) { box.replaceChildren(); return; }
   const W = 800, H = 200, L = 46, R = 40, T = 10, B = 22;
-  const now = Date.now(), t0 = now - CHART_PAST_MS, t1 = now + CHART_FUTURE_MS;
-  const hist = (S.hist.get(histKey()) || []).filter((s) => s.t >= t0);
+  const now = Date.now();
+  const all = S.hist.get(histKey()) || [];
+  const past = Math.min(CHART_PAST_MS, Math.max(CHART_MIN_PAST_MS, all.length ? now - all[0].t : 0));
+  const t0 = now - past, t1 = now + Math.min(CHART_FUTURE_MS, Math.max(CHART_MIN_FUTURE_MS, 2 * past));
+  const hist = all.filter((s) => s.t >= t0);
   const cs = S.composite && S.composite.key === histKey() ? S.composite : null;
   // Future limit steps from the composite schedule.
   const steps = [];
@@ -497,10 +506,13 @@ function drawChart() {
       el("text", { class: "axis", x: L - 4, y: yy + 3, "text-anchor": "end" }, (w / 1000).toFixed(1)),
       el("text", { class: "axis", x: W - R + 4, y: yy + 3 }, `${25 * i}%`));
   }
-  const step = 10 * 60e3;
+  // Wall-clock tick labels: the smallest round step giving at most 8 labels; seconds shown below one minute.
+  const step = CHART_TICKS_MS.find((s) => (t1 - t0) / s <= 8) || CHART_TICKS_MS[CHART_TICKS_MS.length - 1];
+  const fmt = step < 60e3 ? { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
   for (let ms = Math.ceil(t0 / step) * step; ms <= t1; ms += step) {
     svg.append(el("text", { class: "axis", x: x(ms), y: H - 6, "text-anchor": "middle" },
-      new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })));
+      new Date(ms).toLocaleTimeString([], fmt)));
   }
   svg.append(el("text", { class: "axis", x: 2, y: T + 3 }, "kW"),
     el("line", { class: "now", x1: x(now), x2: x(now), y1: T, y2: H - B }));
