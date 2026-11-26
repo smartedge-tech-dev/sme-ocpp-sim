@@ -1,51 +1,114 @@
-# SME OCPPSim
+<p align="center"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/logo.svg" width="112" alt="SME OCPPSim logo"></p>
 
-**English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
+<h1 align="center">SME OCPPSim</h1>
 
-Free OCPP charging station simulator (OCPP 1.6J; 2.0.1 / 2.1 planned) for CSMS and EMS testing, including Smart Charging.
+<p align="center"><strong>Simulate a car park full of EV chargers on your laptop.</strong> OCPP 1.6J charge points with Smart Charging,<br>for CSMS and EMS testing, with a live web UI.</p>
+
+<p align="center"><a href="https://smartedge-tech.com/open-source/#ocpp-sim"><b>Website</b></a> · <a href="https://smartedge-tech-dev.github.io/sme-ocpp-sim/"><b>Docs</b></a> · <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><b>Download</b></a></p>
+
+<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J-2e8b57" alt="OCPP 1.6J"></p>
+
+<p align="center"><strong>English</strong> | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简体中文</a></p>
+
+<p align="center"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/live.gif" alt="Live charging power following a Smart Charging profile" width="100%"></p>
+
+An OCPP charging station simulator with a live web UI. Simulate dozens to hundreds of AC chargers, plug in
+virtual EVs, start and stop transactions, and watch the charging power follow the Smart Charging profiles your
+CSMS (SteVe, your own CSMS, an EMS...) sends.
+
+- **OCPP 1.6J charge points.** Boot, heartbeat, status, authorize, transactions and meter values; remote
+  start / stop, configuration, reset, trigger message, availability, unlock and data transfer. OCPP 2.0.1 / 2.1
+  are planned for v0.2 / v0.3.
+- **Smart Charging with a closed power loop.** SetChargingProfile, ClearChargingProfile and
+  GetCompositeSchedule. The power limit is computed by the same function that answers GetCompositeSchedule,
+  so the schedule and the meter values cannot diverge. Every point the specification leaves open is documented.
+- **EV and power model.** Battery, SoC, charging curve, phases, ramps, Japanese 200 V single-phase and
+  3-phase delta supplies; Charging / SuspendedEV / SuspendedEVSE follow from the model.
+- **200+ chargers in one process**, connected individually or in bulk.
+- **Security profiles 0 / 1 / 2**: `ws://`, HTTP Basic, `wss://` with Basic.
+- **Frame log** of every OCPP frame with filters and JSON Lines export; HTTP API and WebSocket for test scripts.
+- **YAML configuration**, edited in the browser and saved back to the file.
+- **English, Japanese and Simplified Chinese.** The UI follows the browser language.
 
 SME OCPPSim is free and MIT-licensed, developed by [smart-edge (智届科技)](https://smartedge-tech.com) —
 custom development is available, see [Commercial support & custom development](#commercial-support--custom-development).
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview.png" alt="Charger list: connection, OCPP version, connectors and total power"></a><br><sub>Charger list: connection, OCPP version, connectors and total power</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/charger.png" alt="Connector cards: plug, swipe, start, stop and fault"></a><br><sub>Connector cards: plug, swipe, start, stop and fault</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/smart-charging.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/smart-charging.png" alt="Smart Charging panel: limit, power and SoC on one time axis"></a><br><sub>Smart Charging panel: limit, power and SoC on one time axis</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/frames.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/frames.png" alt="OCPP frame log with filters and JSON detail"></a><br><sub>OCPP frame log with filters and JSON detail</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/settings.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/settings.png" alt="Settings: CSMS URL, OCPP version and security profile"></a><br><sub>Settings: CSMS URL, OCPP version and security profile</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview-dark.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview-dark.png" alt="Dark theme"></a><br><sub>Dark theme</sub></td>
+  </tr>
+</table>
+
 ## Quick start
+
+Download the Windows executable from the [latest release](https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest), or install with pip
+(Python 3.11+):
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\pip install sme-ocpp-sim
-.venv\Scripts\sme-ocpp-sim --config configs/demo-site.yaml
+.venv\Scripts\sme-ocpp-sim -c configs/demo-site.yaml
 ```
 
-Open http://127.0.0.1:8082/ . Common options (from sme-sim-common):
+or run the Docker image (linux/amd64, linux/arm64):
 
-| Option | Meaning |
-|---|---|
-| `-c, --config FILE` | YAML config |
-| `--host 127.0.0.1` | Web UI bind address (default localhost only) |
-| `--http-port 8082` | Web UI port |
-| `--no-browser` | Do not open the browser on start |
-| `--version`, `-v` | Show the version / verbose logging |
-
-A Windows single-file executable is attached to every [release](https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases).
-
-## Configuration
-
-TODO
-
-## HTTP API
-
-TODO
-
-## Development
-
-```powershell
-.venv\Scripts\pip install -e ".[dev]"
-.venv\Scripts\python -m pytest -q
+```bash
+docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway ghcr.io/smartedge-tech-dev/sme-ocpp-sim
 ```
+
+Open <http://127.0.0.1:8082/>. The demo configuration connects three chargers to a SteVe CSMS at
+`ws://localhost:8180/steve/websocket/CentralSystemService`; from Docker use `host.docker.internal` instead of
+`localhost`. See the [quick start](https://smartedge-tech-dev.github.io/sme-ocpp-sim/quick-start/) for SteVe setup and all options.
+
+## Documentation
+
+- [Configuration](https://smartedge-tech-dev.github.io/sme-ocpp-sim/configuration/) — every YAML field. Saving from the UI rewrites the whole `chargers:`
+  block, so don't put comments inside individual charger entries.
+- [OCPP 1.6J messages](https://smartedge-tech-dev.github.io/sme-ocpp-sim/messages/) — supported and unsupported actions
+- [Smart Charging](https://smartedge-tech-dev.github.io/sme-ocpp-sim/smart-charging/) — rules and the interpretations in this implementation
+- [Security profiles](https://smartedge-tech-dev.github.io/sme-ocpp-sim/security-profiles/)
+- [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/http-api/) — REST routes and the `/ws` contract
+- [Development](https://smartedge-tech-dev.github.io/sme-ocpp-sim/development/)
+- [Changelog](CHANGELOG.md)
+
+SME OCPPSim implements the publicly available OCPP specification of the Open Charge Alliance. It is not OCA
+certified and has not been tested with OCTT.
 
 ## Commercial support & custom development
 
-TODO: copy this section from the SME BACnetSim README.
+SME OCPPSim is developed by **smart-edge** — Nanjing Smart-Edge Technology Co., Ltd. (南京智届科技有限公司, 智届科技).
+Since its founding in 2023 the company has developed end-to-end software for distributed energy resources
+such as solar, batteries and EVs, from equipment control to the cloud and electricity markets. Its products
+include the AERIS RA platform (リソースアグリゲーター向け) and an AC system (アグリゲーションコーディネーター) for
+the Japanese electricity markets. The team supports projects in Japanese, from requirements definition
+through design, implementation, operation and maintenance.
+
+Services:
+
+- Energy management systems (EMS), cloud and on-site
+- RA / AC systems for electricity markets (JEPX, EPRX, OCCTO)
+- Edge IoT and equipment-control software
+- Equipment integration: Modbus, MQTT, BACnet, ECHONET Lite, OpenADR 2.0b
+- Energy forecasting and data analytics
+- Cloud infrastructure design, build and operation
+
+Need a feature added to SME OCPPSim, or help integrating your devices or EMS? Get in touch:
+
+- Website: <https://smartedge-tech.com>
+- Contact page: <https://smartedge-tech.com/contact/>
+- E-mail: [business@smartedge-tech.com](mailto:business@smartedge-tech.com)
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)

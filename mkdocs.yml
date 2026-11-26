@@ -66,7 +66,6 @@ markdown_extensions:
       base_path: [.]
       check_paths: true
 
-# Product-specific: replace with the real pages.
 nav:
   - index.md
   - Getting started:
@@ -74,7 +73,12 @@ nav:
   - Configuration:
       - configuration.md
   - Reference:
+      - messages.md
+      - smart-charging.md
+      - security-profiles.md
       - http-api.md
+      - development.md
       - changelog.md
   - About:
       - license.md
+      - commercial-support.md

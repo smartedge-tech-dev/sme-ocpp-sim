@@ -1,3 +1,70 @@
-# http-api
+# HTTP API
 
-TODO
+Web UI 使用的 HTTP API 同样可以从测试脚本调用。基础 URL：`http://127.0.0.1:8082`。
+错误：未知充电桩为 `404`；输入无效或当前状态不允许的操作为 `400`（请求校验错误也是 `400`）。
+CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答时为 `502`。
+
+## 通用路由
+
+| 方法 | 路径 | 含义 |
+|---|---|---|
+| GET | `/api/version` | 版本 |
+| GET | `/api/state` | 完整状态快照：充电桩、connector、数值 |
+| GET / PUT | `/api/config` | 当前配置（PUT 应用新配置；只有变化的充电桩会重连） |
+| POST | `/api/config/save` | 把配置写回 YAML 文件（见 [配置](configuration.md#web-ui)） |
+| POST | `/api/simulation` | 运行 / 暂停模拟 |
+| POST | `/api/devices` | 添加充电桩 |
+| GET / PUT | `/api/devices/{id}/config` | 单台充电桩的配置（PUT 整项替换） |
+| POST | `/api/devices/{id}/duplicate` | 复制充电桩（ID 递增） |
+| DELETE | `/api/devices/{id}` | 删除充电桩 |
+
+密码始终以 `********` 返回；原样发回掩码会保留已保存的密码。由于 PUT 整项替换，省略 `password` 表示没有密码。
+
+## 充电桩操作
+
+| 方法 | 路径 | 请求体 |
+|---|---|---|
+| POST | `/api/chargers/{id}/connect` | 无（启动连接循环） |
+| POST | `/api/chargers/{id}/disconnect` | 无（在 `connect` 之前保持断开；交易像网络中断一样保留） |
+| POST | `/api/chargers/{id}/plug` | `{"connector": 1}` |
+| POST | `/api/chargers/{id}/unplug` | `{"connector": 1}` |
+| POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` |
+| POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` |
+| POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——1.6 的 `ChargePointErrorCode`；以原因 `Other` 结束进行中的交易并上报 `Faulted` |
+| POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}`——恢复为 Available / Preparing |
+| POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充电桩 → CSMS） |
+| POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` 或 `{"all": true}` |
+| POST | `/api/chargers/bulk/disconnect` | 同上 |
+
+批量操作不是原子的：逐台处理，出错即停止，之前的充电桩已经被修改。
+
+## Smart Charging
+
+| 方法 | 路径 | 含义 |
+|---|---|---|
+| GET | `/api/chargers/{id}/profiles?connector=` | 已安装的充电 profile |
+| GET | `/api/chargers/{id}/composite?connector=&duration=&unit=` | 在本地计算的 GetCompositeSchedule 应答（`connector` 0 = 整台充电桩；也接受别名 `evse`） |
+
+## 帧日志
+
+| 方法 | 路径 | 含义 |
+|---|---|---|
+| GET | `/api/frames?since=&charger=&action=&dir=&limit=` | 序号 `since` 之后的 OCPP 帧，可按充电桩、action 和方向过滤 |
+| GET | `/api/frames.jsonl?...` | 同样内容的 JSON Lines 流式下载（不指定 `limit` 时为缓冲区中所有匹配的帧） |
+
+帧日志只包含 OCPP 帧，不含 HTTP 头和密码。
+
+## WebSocket `/ws`
+
+需要实时更新的客户端连接 `ws://127.0.0.1:8082/ws`：
+
+1. 第一条消息是 `{"type": "snapshot", "data": ...}`，内容与 `GET /api/state` 相同。
+2. 之后引擎推送 `charger_state`、`values`、`frame` 消息，每条都带有按连接计数 1、2、3 …… 的 `push_seq`。
+3. 引擎事件以 `{"type": "log", "event": {...}}` 推送，使用自己的 `event.seq` 编号（没有 `push_seq`）。
+4. 配置重新加载后会再发送一条 `{"type": "snapshot"}`。
+
+`push_seq` 出现缺号，表示因客户端过慢而丢弃了消息。如果其中有状态推送或重新加载通知，下一条状态推送将是完整推送
+（`"full": true`），状态会自行恢复（也可以重新获取 `/api/state`）。丢失的帧可通过
+`GET /api/frames?since=<最后收到的 frame seq>` 获取。完整的 `charger_state` 列出*所有*充电桩：请用它替换客户端的充电桩列表
+（其中缺少的充电桩已在重新加载时被删除）；完整的 `values` 同样替换全部数值。不要依赖两条完整推送的先后顺序。
