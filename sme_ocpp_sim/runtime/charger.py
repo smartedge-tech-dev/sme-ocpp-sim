@@ -749,6 +749,13 @@ class ChargerRuntime:
                 self._advance(c)
                 self._refresh(c)  # Charging <-> SuspendedEV / SuspendedEVSE
 
+    def set_time_scale(self, time_scale: float) -> None:
+        """Change the power model's simulated-time factor; charging connectors are integrated up to now first."""
+        if time_scale <= 0:
+            raise ValueError("time_scale must be > 0")
+        self._settle()
+        self._time_scale = time_scale
+
     async def _tick_loop(self) -> None:
         """Session task: step the power model of every charging connector each ``tick_s``."""
         while True:

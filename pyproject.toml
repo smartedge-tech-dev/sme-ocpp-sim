@@ -50,3 +50,6 @@ sme_ocpp_sim = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The load test (plan §6.4) runs only on request: pytest -m load
+addopts = "-m 'not load'"
+markers = ["load: long-running multi-charger load test (excluded by default; run with -m load)"]

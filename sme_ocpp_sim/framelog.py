@@ -41,6 +41,15 @@ class FrameLog:
     def last_seq(self) -> int:
         return self._seq
 
+    @property
+    def maxlen(self) -> int:
+        return self._buf.maxlen or 0
+
+    def resize(self, maxlen: int) -> None:
+        """Change the capacity, keeping the newest entries."""
+        if maxlen != self._buf.maxlen:
+            self._buf = deque(self._buf, maxlen=maxlen)
+
     def add(self, charger: str, info: Any) -> FrameEntry:
         """Record one frame. ``info`` is an ``rpc.FrameInfo`` (duck-typed)."""
         self._seq += 1

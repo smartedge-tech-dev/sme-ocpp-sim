@@ -3,11 +3,17 @@
 Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
-``ev_models`` entry). ``template`` / ``evses`` follow in M5; ``behaviors`` is v0.2.
+``ev_models`` entry). Not in v0.1: ``template`` (TemplateRegistry, v0.2), the ``evses`` tree (2.0.1) and
+``behaviors`` (v0.2).
 
 YAML pitfall: unquoted ``0123``, ``1e5``-like numbers, ``ON`` / ``OFF`` / ``yes`` / ``no`` are not strings in
 YAML 1.1. Identity / text fields therefore only accept real strings and tell the user to quote the value,
 instead of silently turning ``0123`` into ``83``.
+
+YAML write-back (:func:`write_back` / :func:`save_file`): every top-level block whose value changed is replaced
+as a whole (``sme_sim_common.config.replace_yaml_block``). Comments outside the replaced blocks are kept;
+comments *inside* a replaced block - e.g. on a single ``chargers:`` entry - are lost (accepted v0.1 trade-off;
+per-item write-back needs sme-sim-common 1.2 ``replace_yaml_list_item``).
 
 Product imports: the version metadata registry (no adapter) and the pure EV model of :mod:`.charging.ev`.
 """
@@ -19,7 +25,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
 from pydantic import AfterValidator, BeforeValidator, Field, field_validator, model_validator
-from sme_sim_common.config import StrictModel
+from sme_sim_common.config import StrictModel, atomic_write_text, replace_yaml_block
 from typing_extensions import Annotated
 
 from .charging.ev import PRESETS, EvModel, validate_curve
@@ -239,3 +245,33 @@ def parse_text(text: str) -> SimConfig:
 
 def load_file(path: Union[str, Path]) -> SimConfig:
     return parse_text(Path(path).read_text(encoding="utf-8"))
+
+
+#: Top-level blocks :func:`write_back` may rewrite, and their value when everything in them is default.
+WRITE_BACK_BLOCKS: Dict[str, Any] = {"simulation": {}, "frame_log": {}, "csms_defaults": {}, "ev_models": [],
+                                     "chargers": []}
+
+
+def _blocks(config: SimConfig) -> Dict[str, Any]:
+    return config.model_dump(mode="json", exclude_defaults=True)
+
+
+def write_back(text: str, config: SimConfig) -> str:
+    """``text`` with every changed top-level block replaced by ``config``'s value (see the module docstring)."""
+    try:
+        old = _blocks(parse_text(text))
+    except Exception:  # noqa: BLE001 - unreadable / invalid text: rewrite every block
+        old = None
+    new = _blocks(config)
+    for key, empty in WRITE_BACK_BLOCKS.items():
+        if old is None or old.get(key, empty) != new.get(key, empty):
+            text = replace_yaml_block(text, key, new.get(key, empty))
+    return text
+
+
+def save_file(path: Union[str, Path], config: SimConfig) -> str:
+    """Write ``config`` back into ``path`` (atomic), keeping comments outside the changed blocks; returns the text."""
+    p = Path(path)
+    text = write_back(p.read_text(encoding="utf-8") if p.exists() else "", config)
+    atomic_write_text(p, text)
+    return text
