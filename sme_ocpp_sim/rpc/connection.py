@@ -97,7 +97,7 @@ class RpcConnection:
     async def call(self, action: str, payload: dict, timeout: Optional[float] = None) -> dict:
         """Send a CALL and return the CALLRESULT payload.
 
-        Raises :class:`CallError` on CALLERROR, :class:`asyncio.TimeoutError` on timeout
+        Raises :class:`CallError` on CALLERROR, :class:`TimeoutError` on timeout
         and :class:`ConnectionError` if the connection is (or gets) closed.
         """
         async with self._call_lock:

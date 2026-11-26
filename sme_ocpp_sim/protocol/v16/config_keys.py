@@ -44,9 +44,9 @@ _PROFILES = frozenset({"Core", "FirmwareManagement", "LocalAuthListManagement", 
 SUPPORTED_FEATURE_PROFILES = "Core,SmartCharging,RemoteTrigger"
 
 
-def _k(name: str, type_: KeyType, readonly: bool, default: str, *, verified: bool = True, **kw) -> ConfigKeyDef:
-    """One key row; ``verified`` = checked against OCPP 1.6 §9 (page per row)."""
-    return ConfigKeyDef(name=name, type=type_, readonly=readonly, default=default, verified=verified, **kw)
+def _k(name: str, type_: KeyType, readonly: bool, default: str, **kw) -> ConfigKeyDef:
+    """One key row; every row is checked against OCPP 1.6 §9 (page per row), hence ``verified=True``."""
+    return ConfigKeyDef(name=name, type=type_, readonly=readonly, default=default, verified=True, **kw)
 
 
 KEYS: Tuple[ConfigKeyDef, ...] = (

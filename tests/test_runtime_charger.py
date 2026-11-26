@@ -89,11 +89,13 @@ def test_local_transaction_with_meter_values():
         assert mv["transaction_id"] == s.starts[0]["transaction_id"]
         measurands = {v["measurand"] for v in mv["meter_value"][0]["sampled_value"]}
         assert measurands == {"Energy.Active.Import.Register", "Power.Active.Import"}
-        assert await rt.stop_tx(1)
+        assert await rt.stop_tx(1)  # queued, never waits for the CSMS
+        await _until(lambda: s.stops)
         stop = s.stops[0]
         assert stop["reason"] == "Local" and stop["meter_stop"] > s.starts[0]["meter_start"]
         assert stop["transaction_data"][0]["sampled_value"][0]["context"] == "Transaction.End"
         await rt.unplug(1)
+        await _until(lambda: len(_statuses(s, 1)) == 5)
         assert _statuses(s, 1) == ["Available", "Preparing", "Charging", "Finishing", "Available"]
         assert s.authorizes == []  # local_only never asks the CSMS
     _scenario(body, cfg_kw={"auth_mode": "local_only", "id_tags": ["TAG1"], "power_w": 36000})
@@ -136,7 +138,8 @@ def test_change_availability_scheduled_during_transaction():
         assert (await peer.change_availability(CP, 1, "Inoperative")).status == "Scheduled"
         assert rt.snapshot()["connectors"][0]["operative"] is True
         await rt.stop_tx(1)
-        assert _statuses(s, 1)[-1] == "Unavailable" and rt.snapshot()["connectors"][0]["operative"] is False
+        await _until(lambda: _statuses(s, 1)[-1] == "Unavailable")
+        assert rt.snapshot()["connectors"][0]["operative"] is False
         assert await rt.swipe(1, "T") == "Unavailable"
         assert (await peer.change_availability(CP, 0, "Operative")).status == "Accepted"
         await _until(lambda: _statuses(s, 1)[-1] == "Finishing")
@@ -168,9 +171,9 @@ def test_misc_remote_control():
         assert res.status.value == "Accepted" and res.data == "pong"
         assert s.data_transfers == [{"vendor_id": "acme", "message_id": "ping", "data": "x"}]
         await rt.fault(1, "GroundFailure")
-        assert s.statuses[-1] == (1, "Faulted", "GroundFailure")
+        await _until(lambda: s.statuses[-1] == (1, "Faulted", "GroundFailure"))
         await rt.clear_fault(1)
-        assert s.statuses[-1] == (1, "Available", "NoError")
+        await _until(lambda: s.statuses[-1] == (1, "Available", "NoError"))
     _scenario(body)
 
 
@@ -215,25 +218,28 @@ def test_stop_while_offline_is_queued_and_delivered_after_reconnect():
     async def main():
         peer = CsmsPeer(hb_interval=30)
         port = await peer.start()
-        rt = ChargerRuntime(_cfg(auth_mode="accept_all", config_keys={"MeterValueSampleInterval": "0"}), peer.url,
-                            reconnect=FAST, call_timeout=5)
+        rt = ChargerRuntime(_cfg(auth_mode="accept_all", connectors=2,
+                                 config_keys={"MeterValueSampleInterval": "0"}), peer.url, reconnect=FAST,
+                            call_timeout=5)
         stop = asyncio.Event()
         task = asyncio.create_task(rt.run(stop))
         try:
             s1 = await _online(peer, rt)
-            await rt.plug(1)
-            assert await rt.swipe(1, "T") == "Accepted"
-            tx = s1.starts[0]["transaction_id"]
+            for cid in (1, 2):
+                await rt.plug(cid)
+                assert await rt.swipe(cid, "T") == "Accepted"
+            tx, tx2 = (st["transaction_id"] for st in s1.starts)
             await peer.stop()
             await _until(lambda: not rt.connected and rt.last_error is not None)
-            assert await rt.stop_tx(1)
-            assert s1.stops == [] and rt.snapshot()["tx_queue"] == 1
+            assert await rt.stop_tx(1) and await rt.stop_tx(2)
+            assert s1.stops == [] and rt.snapshot()["tx_queue"] == 2
             assert rt.snapshot()["connectors"][0]["status"] == "Finishing"
             assert rt.last_error["kind"] == "disconnected"
             await peer.start(port=port)
-            await _until(lambda: len(peer.history) == 2 and peer.history[1].stops)
+            # both queued StopTransactions go out after the boot, in order, with no other trigger (no meter loop)
+            await _until(lambda: len(peer.history) == 2 and len(peer.history[1].stops) == 2)
             s2 = peer.history[1]
-            assert s2.stops[0]["transaction_id"] == tx and s2.stops[0]["reason"] == "Local"
+            assert [x["transaction_id"] for x in s2.stops] == [tx, tx2] and s2.stops[0]["reason"] == "Local"
             await _until(lambda: rt.snapshot()["tx_queue"] == 0)
             assert (1, "Charging", "NoError") not in s2.statuses  # state refreshed before reporting
         finally:
@@ -348,3 +354,110 @@ def test_meter_interval_change_takes_effect_promptly():
         assert (await peer.change_configuration(CP, "MeterValueSampleInterval", "1")).status == "Accepted"
         await _until(lambda: len(s.meter_values) >= 1, timeout=4)
     _scenario(body, cfg_kw={"auth_mode": "accept_all", "config_keys": {"MeterValueSampleInterval": "600"}})
+
+
+def _rx_seen(s, action):
+    return any(d == "rx" and f'"{action}"' in raw for d, raw in s.frames)
+
+
+def test_stop_during_inflight_start_sends_one_stop_after_answer():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        gate = peer.gates["StartTransaction"] = asyncio.Event()
+        swipe = asyncio.create_task(rt.swipe(1, "T"))
+        await _until(lambda: _rx_seen(s, "StartTransaction"))
+        assert await rt.stop_tx(1)  # returns at once although StartTransaction is unanswered
+        gate.set()
+        assert await swipe == "Accepted"
+        await _until(lambda: s.stops)
+        await asyncio.sleep(0.2)
+        assert len(s.stops) == 1 and s.stops[0]["transaction_id"] == s.starts[0]["transaction_id"]
+        await _until(lambda: _statuses(s, 1)[-1] == "Finishing")
+        assert "Charging" not in _statuses(s, 1)
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_cancelled_caller_does_not_lose_stop():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        await rt.swipe(1, "T")
+        peer.delays["StopTransaction"] = 0.2
+        t = asyncio.create_task(rt.stop_tx(1))
+        await asyncio.sleep(0)
+        t.cancel()
+        await asyncio.gather(t, return_exceptions=True)
+        await _until(lambda: s.stops)
+        assert s.stops[0]["transaction_id"] == s.starts[0]["transaction_id"]
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_unplug_returns_promptly_while_csms_is_slow():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        await rt.swipe(1, "T")
+        peer.delays.update({"StopTransaction": 0.5, "StatusNotification": 0.5})
+        t0 = time.monotonic()
+        await rt.unplug(1)
+        await rt.fault(1, "GroundFailure")
+        assert time.monotonic() - t0 < 0.1
+        await _until(lambda: s.stops and _statuses(s, 1)[-1] == "Faulted")
+        assert _statuses(s, 1)[-2:] == ["Available", "Faulted"]
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_lost_answer_keeps_start_queued_and_resends_it():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        gate = peer.gates["StartTransaction"] = asyncio.Event()
+        swipe = asyncio.create_task(rt.swipe(1, "T"))
+        await _until(lambda: _rx_seen(s, "StartTransaction"))
+        rt._abort.set()  # drop the connection while StartTransaction is in flight
+        assert await swipe == "Pending"
+        assert rt.snapshot()["connectors"][0]["status"] == "Preparing" and rt.snapshot()["tx_queue"] == 1
+        gate.set()
+        await _until(lambda: len(peer.history) == 2 and rt.snapshot()["connectors"][0]["status"] == "Charging")
+        s2 = peer.history[1]
+        assert rt.conns[1].tx.tx_id == str(s2.starts[-1]["transaction_id"])
+        await _until(lambda: (1, "Charging", "NoError") in s2.statuses)
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_reset_during_inflight_start():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        gate = peer.gates["StartTransaction"] = asyncio.Event()
+        swipe = asyncio.create_task(rt.swipe(1, "T"))
+        await _until(lambda: _rx_seen(s, "StartTransaction"))
+        reset = asyncio.create_task(peer.reset(CP, "Soft"))  # answered once the peer reads again
+        await _until(lambda: rt.conns[1].tx is None)  # Reset ended the pending transaction
+        gate.set()
+        assert await swipe == "Accepted" and (await reset).status == "Accepted"
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+        stops = [x for h in peer.history for x in h.stops]
+        starts = [x for h in peer.history for x in h.starts]
+        assert len(starts) == 1 and len(stops) == 1
+        assert stops[0]["transaction_id"] == starts[0]["transaction_id"] and stops[0]["reason"] == "SoftReset"
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_queue_bound_drops_oldest_meter_values_only(monkeypatch):
+    from sme_ocpp_sim.runtime import charger as ch
+    monkeypatch.setattr(ch, "MAX_TX_QUEUE", 2)
+
+    async def main():
+        rt = ChargerRuntime(_cfg(), "ws://unused/ocpp")
+
+        def noop():
+            return None
+        kinds = [ch._Kind.STOP, ch._Kind.METER, ch._Kind.METER, ch._Kind.START, ch._Kind.METER]
+        msgs = [ch._OutMsg(k, noop) for k in kinds]
+        for m in msgs:
+            rt._outq_push(m)
+        assert list(rt._outq) == [msgs[0], msgs[2], msgs[3], msgs[4]]
+        assert rt.snapshot()["tx_queue"] == 4
+    asyncio.run(main())

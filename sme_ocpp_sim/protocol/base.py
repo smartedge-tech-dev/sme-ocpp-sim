@@ -344,6 +344,7 @@ class AuthResult(str, Enum):
     BUSY = "Busy"                # connector has a transaction of another id token
     UNAVAILABLE = "Unavailable"  # connector inoperative or faulted
     STOPPED = "Stopped"          # the token ended its own transaction
+    PENDING = "Pending"          # connection lost before the StartTransaction answer; it is resent later
 
 
 @dataclass(frozen=True)

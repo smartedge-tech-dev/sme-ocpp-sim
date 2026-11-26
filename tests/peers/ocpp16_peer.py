@@ -101,6 +101,7 @@ class PeerCP(OcppCP16):
 
     @on("StatusNotification")
     async def on_status(self, connector_id, error_code, status, **_):
+        await self.peer.hold("StatusNotification")
         self.session.statuses.append((connector_id, status, error_code))
         return call_result.StatusNotification()
 
@@ -111,6 +112,7 @@ class PeerCP(OcppCP16):
 
     @on("StartTransaction")
     async def on_start(self, connector_id, id_tag, meter_start, timestamp, **kw):
+        await self.peer.hold("StartTransaction")
         self.peer.next_tx += 1
         tx = self.peer.next_tx
         self.session.starts.append({"connector_id": connector_id, "id_tag": id_tag, "meter_start": meter_start,
@@ -120,6 +122,7 @@ class PeerCP(OcppCP16):
 
     @on("StopTransaction")
     async def on_stop(self, transaction_id, meter_stop, timestamp, **kw):
+        await self.peer.hold("StopTransaction")
         self.session.stops.append({"transaction_id": transaction_id, "meter_stop": meter_stop,
                                    "reason": kw.get("reason"), "transaction_data": kw.get("transaction_data"),
                                    "id_tag": kw.get("id_tag")})
@@ -148,6 +151,8 @@ class CsmsPeer:
         self.retry_interval = retry_interval             # interval answered with Pending / Rejected
         self.tag_statuses = dict(tag_statuses or {})     # id tag -> status (default Accepted)
         self.next_tx = 0
+        self.gates: dict[str, asyncio.Event] = {}        # action -> answer only once the event is set
+        self.delays: dict[str, float] = {}               # action -> answer delay in seconds
         self.history: list = []                          # every Session, oldest first
         self.exercise = exercise
         self.registered = registered      # None = accept any charger id
@@ -172,6 +177,14 @@ class CsmsPeer:
     async def stop(self) -> None:
         self._server.close()
         await self._server.wait_closed()
+
+    async def hold(self, action: str) -> None:
+        """Delay the answer to ``action`` (``gates`` first, then ``delays``); the peer reads nothing meanwhile."""
+        gate = self.gates.get(action)
+        if gate is not None:
+            await gate.wait()
+        if self.delays.get(action):
+            await asyncio.sleep(self.delays[action])
 
     def tag_status(self, id_tag: str) -> str:
         return self.tag_statuses.get(id_tag, "Accepted")
