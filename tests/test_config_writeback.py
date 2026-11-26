@@ -6,7 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from sme_ocpp_sim.config import load_file, parse_text, save_file, write_back
+from sme_ocpp_sim.config import load_file, parse_text, save_file, write_back, write_back_checked
 
 DEMO = Path(__file__).resolve().parent.parent / "configs" / "demo-site.yaml"
 URL = 'csms_defaults: {url: "ws://h/ocpp"}\n'
@@ -53,3 +53,29 @@ def test_write_back_keeps_comments_outside_changed_blocks(tmp_path):
     assert again == cfg
     assert [c["id"] for c in yaml.safe_load(out)["chargers"]] == ["CP-0002", "CP-0003"]
     assert "vendor: SmartEdge" not in out  # defaults are not written out
+
+
+def test_save_file_keeps_crlf_and_bom(tmp_path):
+    text = DEMO.read_text(encoding="utf-8")
+    cfg = load_file(DEMO)
+    cfg.chargers[1].vendor = "Other"
+    path = tmp_path / "site.yaml"
+    path.write_bytes(b"\xef\xbb\xbf" + text.replace("\n", "\r\n").encode("utf-8"))
+    out = save_file(path, cfg)
+    raw = path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and raw[3:].decode("utf-8") == out.replace("\n", "\r\n")
+    assert "\r" not in out and "# SME OCPPSim demo site" in out
+    assert parse_text(out) == cfg
+
+
+def test_write_back_reports_full_redump():
+    cfg = load_file(DEMO)
+    text = DEMO.read_text(encoding="utf-8")
+    assert write_back_checked(text, cfg) == (text, False)
+    cfg.chargers[1].vendor = "Other"
+    assert write_back_checked(text, cfg)[1] is False
+    flow = '{csms_defaults: {url: "ws://h/ocpp"}, chargers: [{id: "A"}]}  # flow style\n'
+    cfg2 = parse_text(flow)
+    cfg2.chargers[0].vendor = "Other"
+    out, redumped = write_back_checked(flow, cfg2)
+    assert redumped and parse_text(out) == cfg2

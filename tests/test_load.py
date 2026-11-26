@@ -5,6 +5,9 @@ Excluded by default; run with ``pytest -m load -s``. Environment:
 * ``SME_LOAD_CHARGERS`` (200), ``SME_LOAD_SECONDS`` (600)
 * ``SME_LOAD_HEARTBEAT_S`` (10) - interval the peer answers in BootNotification
 * ``SME_LOAD_METER_S`` (60) - MeterValueSampleInterval; every charger runs one transaction
+
+The sme-sim-common pytest plugin limits every ``asyncio.run`` to ``SIM_TEST_TIMEOUT`` (60 s); this test raises
+that limit itself to ``SME_LOAD_SECONDS`` + 300 s (connect, charge start and shutdown).
 """
 
 import asyncio
@@ -12,6 +15,7 @@ import os
 import time
 
 import pytest
+import sme_sim_common.testing.plugin as sim_plugin
 from peers.ocpp16_peer import CsmsPeer
 
 from sme_ocpp_sim.config import SimConfig
@@ -24,7 +28,9 @@ METER = int(os.environ.get("SME_LOAD_METER_S", "60"))
 
 
 @pytest.mark.load
-def test_many_chargers_stay_connected():
+def test_many_chargers_stay_connected(monkeypatch):
+    monkeypatch.setattr(sim_plugin, "TEST_TIMEOUT", SECONDS + 300)
+
     async def main():
         peer = CsmsPeer(hb_interval=HEARTBEAT)
         await peer.start()

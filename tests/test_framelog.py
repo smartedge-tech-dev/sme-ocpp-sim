@@ -30,3 +30,19 @@ def test_seq_filters_bound_and_jsonl():
                        "raw": '[3,"1",{}]', "note": ""}
     log.clear()
     assert log.since(0) == [] and log.last_seq == 4
+
+
+def test_since_scans_from_the_right_with_filters_and_limit():
+    from sme_ocpp_sim.framelog import FrameLog
+    from types import SimpleNamespace
+
+    log = FrameLog(maxlen=100)
+    for i in range(250):
+        log.add("A" if i % 2 else "B", SimpleNamespace(direction="tx", raw="[]", message_type=2, uid=str(i),
+                                                     action="Heartbeat"))
+    assert [e.seq for e in log.since(0)] == list(range(151, 251))
+    assert [e.seq for e in log.since(245)] == [246, 247, 248, 249, 250]
+    assert [e.seq for e in log.since(240, charger="A", limit=2)] == [248, 250]
+    assert log.since(250) == [] and log.since(999) == []
+    log.clear()
+    assert log.since(0) == []
