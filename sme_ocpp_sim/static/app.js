@@ -49,6 +49,12 @@ Shell.init({
   ...PRODUCT,
   vendor: Shell.vendors.smartEdge,
   about: [["about.stack", t("about.stack.value")]],
+  menus: () => [
+    { id: "view", label: "common.menu.view", items: [Shell.themeItem(), Shell.langItem()] },
+    Shell.helpMenu(),
+  ],
 });
 
+fetch("/api/version").then((r) => (r.ok ? r.json() : null))
+  .then((v) => { if (v && v.version) Shell.setVersion(v.version); }).catch(() => {});
 loadState();
