@@ -143,6 +143,9 @@ class SessionConfig(StrictModel):
     target_soc: float = Field(90.0, ge=0, le=100)
 
 
+#: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.
+PASSWORD_MASK = "********"
+
 #: Upper bound for ``connectors`` (simulator limit, not an OCPP one).
 MAX_CONNECTORS = 32
 
