@@ -1,0 +1,68 @@
+SME OCPPSim - Third-party notices
+=================================
+
+SME OCPPSim is licensed under the MIT License (see LICENSE). The PyPI package depends on, and the
+Windows executable (PyInstaller) and the Docker image bundle, the third-party components below.
+Licenses are taken from each package's own metadata (License-Expression / License / classifiers).
+Versions are the ones used for development of this release; other versions installed by pip may
+apply instead. The full license texts ship inside each package's *.dist-info directory and at the
+project home pages listed here.
+
+Direct runtime dependencies
+---------------------------
+
+Component            License        Home page
+-------------------  -------------  ---------------------------------------------------------------
+sme-sim-common       MIT            https://github.com/smartedge-tech-dev/sme-sim-common
+fastapi              MIT            https://github.com/fastapi/fastapi
+uvicorn              BSD-3-Clause   https://github.com/Kludex/uvicorn
+pydantic             MIT            https://github.com/pydantic/pydantic
+PyYAML               MIT            https://pyyaml.org/
+websockets           BSD-3-Clause   https://github.com/python-websockets/websockets
+
+Transitive runtime dependencies
+-------------------------------
+
+Component            License        Home page
+-------------------  -------------  ---------------------------------------------------------------
+starlette            BSD-3-Clause   https://github.com/Kludex/starlette
+pydantic-core        MIT            https://github.com/pydantic/pydantic
+typing-extensions    PSF-2.0        https://github.com/python/typing_extensions
+typing-inspection    MIT            https://github.com/pydantic/typing-inspection
+annotated-types      MIT            https://github.com/annotated-types/annotated-types
+annotated-doc        MIT            https://github.com/fastapi/annotated-doc
+anyio                MIT            https://github.com/agronholm/anyio
+idna                 BSD-3-Clause   https://github.com/kjd/idna
+opentelemetry-api    Apache-2.0     https://github.com/open-telemetry/opentelemetry-python
+python-multipart     Apache-2.0     https://github.com/Kludex/python-multipart
+click                BSD-3-Clause   https://github.com/pallets/click
+h11                  MIT            https://github.com/python-hyper/h11
+httptools            MIT            https://github.com/MagicStack/httptools
+watchfiles           MIT            https://github.com/samuelcolvin/watchfiles
+python-dotenv        BSD-3-Clause   https://github.com/theskumar/python-dotenv
+
+Platform-specific (installed only on some platforms)
+----------------------------------------------------
+
+Component            License                 Where
+-------------------  ----------------------  ------------------------------------------------------
+colorama             BSD-3-Clause            Windows (via click); https://github.com/tartley/colorama
+uvloop               MIT OR Apache-2.0       Linux / macOS, incl. the Docker image (via uvicorn[standard]);
+                                             https://github.com/MagicStack/uvloop
+
+Runtime environment
+-------------------
+
+Python               PSF-2.0                 Bundled in the Windows executable; the base of the
+                                             Docker image (python:3.12-slim, Debian packages under
+                                             their own licenses, see /usr/share/doc/*/copyright).
+PyInstaller          GPL-2.0-or-later        Windows executable only: its bootloader and runtime hooks
+                     WITH Bootloader-        are embedded in the exe. The bootloader exception allows
+                     exception               distributing programs built with it under any license.
+                                             https://pyinstaller.org/
+
+Not distributed
+---------------
+
+The `ocpp` package (MIT), jsonschema, pytest, httpx, playwright and the other `dev` extras are used
+only for tests and tooling; they are not runtime dependencies and are not bundled.

@@ -19,6 +19,12 @@ from . import __version__
 
 APP_NAME = "sme-ocpp-sim"
 DEFAULT_HTTP_PORT = 8082  # series port table (sme-sim-common README)
+_PKG = Path(__file__).resolve().parent
+# Default config when started without -c (as sme-modbus-sim / sme-bac-sim).
+# Installed wheel: sme_ocpp_sim/configs; source tree, Docker image and Windows exe (PyInstaller puts the
+# package under sys._MEIPASS, so __file__ resolves there): configs/ beside the package.
+DEFAULT_CONFIG = next((p for p in (_PKG / "configs" / "demo-site.yaml", _PKG.parent / "configs" / "demo-site.yaml")
+                       if p.exists()), _PKG.parent / "configs" / "demo-site.yaml")
 
 
 def main(argv=None) -> int:
@@ -26,7 +32,8 @@ def main(argv=None) -> int:
     if rest[:1] == ["run"]:
         rest = rest[1:]
     ap = argparse.ArgumentParser(prog=APP_NAME,
-                                 description="OCPP charging station simulator with a web UI")
+                                 description="OCPP charging station simulator with a web UI; "
+                                             "default config: the bundled configs/demo-site.yaml")
     add_common_args(ap, default_http_port=DEFAULT_HTTP_PORT, app_name=APP_NAME, version=__version__,
                     templates=False)
     args = ap.parse_args(rest)
@@ -38,6 +45,8 @@ def main(argv=None) -> int:
     from .engine import OcppEngine
 
     path = args.config
+    if path is None and DEFAULT_CONFIG.exists():
+        path = str(DEFAULT_CONFIG)
     try:
         cfg = load_file(path) if path else SimConfig()
         text = Path(path).read_text(encoding="utf-8") if path else None
