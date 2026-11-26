@@ -15,25 +15,37 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
 * ``GET /api/chargers/{id}/composite?connector=&duration=&unit=`` - the GetCompositeSchedule answer computed
   locally. In OCPP 1.6 the plan's ``evse`` is a connectorId, so the parameter is ``connector`` (``evse`` is
   accepted as an alias; 0 = the whole charge point);
-* ``GET /api/frames?since=&charger=&action=&dir=&limit=`` / ``GET /api/frames.jsonl`` - the frame log;
+* ``GET /api/frames?since=&charger=&action=&dir=&limit=`` / ``GET /api/frames.jsonl?<same>`` - the frame log
+  (the JSON Lines export is streamed; without ``limit`` it holds every matching entry in the buffer);
 * ``POST /api/chargers/bulk/{connect,disconnect}`` - body ``{"ids": [...]}`` / ``["A", "B"]`` / ``{"all": true}``
-  (a charger called ``bulk`` cannot be connected / disconnected through the single route).
+  (``ids`` and ``all`` together are rejected). Not atomic: the chargers are handled one after the other and an
+  error stops the request with the earlier ones already changed. ``bulk`` is not a valid charger id
+  (``config.py``), so the single routes never clash with these.
 
 Errors: an unknown charger is 404, invalid input or an operation the current state does not allow is 400 (both
-``sme_sim_common.web.bad``; request validation errors are 400 too instead of FastAPI's 422).
+``sme_sim_common.web.bad``; request validation errors are 400 too instead of FastAPI's 422). A DataTransfer the
+CSMS does not answer in time is 504, one it answers with CALLERROR (or garbage) is 502. A config file that cannot
+be written by ``POST /api/config/save`` is 500.
 
-Secrets: ``/api/state`` and the frame log never contain passwords (frame log: redacted Authorization). The base
-config / device routes are wrapped so that every ``password`` they return is :data:`PASSWORD_MASK`; a config sent
-back with the mask keeps the stored password (``OcppEngine.reload``). ``POST /api/config/save`` writes through
-``config.save_file`` (comments kept) in a worker thread under the engine lock (``OcppEngine.save_config``).
+Secrets: ``/api/state`` and the frame log never contain passwords. The frame log holds OCPP frames only (no HTTP
+headers); the ``Authorization`` header of the handshake is redacted from the ``websockets`` logger in
+``rpc/transport.py``. The base config / device routes are wrapped so that every ``password`` they return is
+:data:`PASSWORD_MASK` (:func:`mask_text` never returns a clear password); a config sent back with the mask keeps
+the stored password (``OcppEngine.reload``), and a ``PUT /api/devices/{id}/config`` that renames a charger keeps
+the password of ``{id}``. Device / config PUTs replace the whole item: an omitted ``password`` means no password.
+``POST /api/config/save`` writes through ``config.save_file`` (comments kept) in a worker thread under the engine
+lock (``OcppEngine.save_config``).
 
 ``/ws`` client contract: the first message is ``{"type": "snapshot", "data": <GET /api/state>}``. Then the
 engine's pushes follow (``charger_state`` / ``values`` / ``frame``, see ``engine.py``), each with ``push_seq``
 counting 1, 2, 3 ... per connection, ``{"type": "log", "event": {...}}`` engine events (numbered by their own
 ``event.seq``, no ``push_seq``) and ``{"type": "snapshot"}`` again after a config reload. A gap in
-``push_seq`` means messages were dropped for a slow client: the next state push is then a full one
-(``full: true``) so state heals by itself, or the client may refetch ``/api/state``; lost frames are fetched with
-``GET /api/frames?since=<last frame seq seen>``.
+``push_seq`` means messages were dropped for a slow client: if a state push or a reload notice was among them,
+the next state push is a full one (``full: true``) so state heals by itself (or the client refetches
+``/api/state``); lost frames are fetched with ``GET /api/frames?since=<last frame seq seen>``. A full
+``charger_state`` lists *every* charger: the client replaces its charger list with it (a charger missing from it
+was removed by a reload); a full ``values`` replaces all values likewise. Clients must not rely on the order of
+the two full pushes.
 """
 
 from __future__ import annotations
@@ -50,21 +62,27 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from sme_sim_common.web import bad, error_response, make_base_app
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
 from . import __version__
 from .charging.profiles import ChargingRateUnit
 from .config import PASSWORD_MASK, SimConfig
-from .engine import OcppEngine
+from .engine import OcppEngine, OperationNotPossible
 from .protocol.base import DataTransferStatus
 from .protocol.v16.enums import ChargePointErrorCode
+from .rpc.errors import CallError
 
 STATIC = Path(__file__).resolve().parent / "static"
 #: Fault codes an operator may set (1.6 ``ChargePointErrorCode`` without ``NoError``).
 FAULT_CODES = tuple(e.value for e in ChargePointErrorCode if e is not ChargePointErrorCode.no_error)
+#: Literal type of :data:`FAULT_CODES` (an enum in the OpenAPI schema).
+FaultCode = Literal[FAULT_CODES]  # type: ignore[valid-type]
 MAX_FRAMES = 5000
 NDJSON = "application/x-ndjson"
+JSONL_CHUNK = 500  # frame log entries per streamed chunk
+#: What :func:`mask_text` returns for text that is not valid YAML (it cannot be masked reliably).
+UNPARSABLE_PLACEHOLDER = "# configuration not shown: it is not valid YAML, so its passwords cannot be masked\n"
 
 
 # ------------------------------------------------------------------ request bodies
@@ -78,7 +96,7 @@ class TagBody(ConnectorBody):
 
 
 class FaultBody(ConnectorBody):
-    error_code: str = "OtherError"
+    error_code: FaultCode = "OtherError"
 
 
 class DataTransferBody(BaseModel):
@@ -94,7 +112,7 @@ class BulkBody(BaseModel):
 
 # ------------------------------------------------------------------ password masking
 
-_PASSWORD_LINE = re.compile(r"(?m)^([ \t]*(?:-[ \t]+)?password[ \t]*:)[ \t]*(?!(?:null|~)?[ \t]*(?:#.*)?$)\S.*$")
+_PASSWORD_LINE = re.compile(r"(?m)^([ \t]*(?:-[ \t]+)?password[ \t]*:)[ \t]*(?!(?:null|Null|NULL|~)?[ \t]*(?:#.*)?$)\S.*$")
 
 
 def mask_obj(obj: Any) -> Any:
@@ -112,17 +130,56 @@ def _unmasked(obj: Any) -> bool:
     return isinstance(obj, list) and any(_unmasked(v) for v in obj)
 
 
+def _secrets(obj: Any) -> List[str]:
+    """The clear (non-null, non-mask) ``password`` values in ``obj`` as text."""
+    if isinstance(obj, dict):
+        return [s for k, v in obj.items()
+                for s in ([str(v)] if k == "password" and v not in (None, PASSWORD_MASK) else _secrets(v))]
+    if isinstance(obj, list):
+        return [s for v in obj for s in _secrets(v)]
+    return []
+
+
+def _single_line_passwords(node: Any) -> bool:
+    """Every ``password`` value in the composed YAML ``node`` is a one-line scalar (no block / multi-line scalar,
+    no collection), i.e. something the line rewrite of :func:`mask_text` replaces completely."""
+    if isinstance(node, yaml.MappingNode):
+        for k, v in node.value:
+            if isinstance(k, yaml.ScalarNode) and k.value == "password":
+                if (not isinstance(v, yaml.ScalarNode) or v.style in ("|", ">")
+                        or v.start_mark.line != v.end_mark.line):
+                    return False
+            elif not _single_line_passwords(v):
+                return False
+        return True
+    if isinstance(node, yaml.SequenceNode):
+        return all(_single_line_passwords(v) for v in node.value)
+    return True
+
+
 def mask_text(text: str) -> str:
-    """YAML ``text`` with every password masked. Block-style ``password:`` lines are rewritten in place (the rest of
-    the line, including a trailing comment, is dropped); if the result still parses to a clear password (flow
-    style, multi-line scalars ...) the document is re-dumped from the masked data (comments lost)."""
+    """YAML ``text`` with every password masked; never returns a clear password.
+
+    One-line block-style ``password:`` values are rewritten in place (the rest of the line, including a trailing
+    comment, is dropped) so the other comments survive. That result is used only if every password value was such
+    a one-line scalar, it parses without a clear password and no clear password occurs in it as text; otherwise
+    (block / multi-line scalars, flow style, quoted keys, aliases ...) the document is re-dumped from the masked
+    data (comments lost). Text that is not valid YAML gives :data:`UNPARSABLE_PLACEHOLDER`, never the raw text."""
+    try:
+        data = yaml.safe_load(text)
+        node = yaml.compose(text)
+    except yaml.YAMLError:
+        return UNPARSABLE_PLACEHOLDER
+    secrets = _secrets(data)
+    if not secrets:
+        return text
     out = _PASSWORD_LINE.sub(lambda m: f'{m.group(1)} "{PASSWORD_MASK}"', text)
     try:
-        if not _unmasked(yaml.safe_load(out)):
-            return out
-        return yaml.safe_dump(mask_obj(yaml.safe_load(text)), allow_unicode=True, sort_keys=False)
+        ok = (_single_line_passwords(node) and not _unmasked(yaml.safe_load(out))
+              and not any(s in out for s in secrets))
     except yaml.YAMLError:
-        return out
+        ok = False
+    return out if ok else yaml.safe_dump(mask_obj(data), allow_unicode=True, sort_keys=False)
 
 
 def _masked(endpoint):
@@ -136,6 +193,35 @@ def _masked(endpoint):
         if "json" in media:
             return JSONResponse(mask_obj(json.loads(resp.body)), status_code=resp.status_code)
         return resp
+    return wrapper
+
+
+def _device_put(endpoint, engine: OcppEngine):
+    """``PUT /api/devices/{id}/config``: a renamed charger whose password is the mask keeps the password of
+    ``{id}`` (the engine's own unmasking matches by the *new* id). The base route reads the current config outside
+    the engine lock as well, so this lookup is no less consistent than the rest of that read-modify-write."""
+    async def wrapper(request: Request):
+        body = await request.body()
+        try:
+            data = yaml.safe_load(body.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError):
+            data = None  # the base route reports it
+        old_id = request.path_params.get("device")
+        if (isinstance(data, dict) and data.get("password") == PASSWORD_MASK and data.get("id") is not None
+                and str(data["id"]) != old_id):
+            old = next((c.password for c in engine.config.chargers if c.id == old_id), None)
+            if old is not None:
+                body = yaml.safe_dump({**data, "password": old}, allow_unicode=True, sort_keys=False).encode("utf-8")
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return await request.receive()
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        return await endpoint(Request(request.scope, receive))
     return wrapper
 
 
@@ -179,11 +265,15 @@ def _router(engine: OcppEngine) -> APIRouter:
     async def engine_op(fn, cid: str) -> bool:
         try:
             return await fn(cid)
-        except RuntimeError as e:
+        except KeyError:
+            raise bad(404, f"unknown charger {cid!r}") from None
+        except OperationNotPossible as e:
             raise bad(400, e) from None
 
     def bulk_ids(body: Union[List[str], BulkBody]) -> List[str]:
         if isinstance(body, BulkBody):
+            if body.all and body.ids:
+                raise bad(400, "give either ids or all: true, not both")
             ids = list(engine.chargers) if body.all else body.ids
         else:
             ids = body
@@ -207,12 +297,10 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.post("/chargers/{cid}/connect", summary="Start the connection loop")
     async def connect(cid: str):
-        runtime(cid)
         return {"ok": True, "changed": await engine_op(engine.connect, cid)}
 
     @r.post("/chargers/{cid}/disconnect", summary="Close the connection and keep it closed")
     async def disconnect(cid: str):
-        runtime(cid)
         return {"ok": True, "changed": await engine_op(engine.disconnect, cid)}
 
     @r.post("/chargers/{cid}/plug", summary="Plug the EV cable in")
@@ -240,6 +328,9 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.post("/chargers/{cid}/start", summary="Plug in and present an id tag (default: the first configured)")
     async def start(cid: str, body: TagBody = Body(default_factory=TagBody)):
+        """Check-then-act: the transaction / fault checks and the plug + swipe that follow are not atomic (a CSMS
+        RemoteStart or another request may run in between); the runtime then answers by its own rules, the checks
+        only give the common mistakes a clear 400."""
         rt = runtime(cid)
         conn_ok(rt, body.connector)
         tag = body.id_tag or (rt.cfg.id_tags[0] if rt.cfg.id_tags else None)
@@ -265,8 +356,6 @@ def _router(engine: OcppEngine) -> APIRouter:
     async def fault(cid: str, body: FaultBody = Body(default_factory=FaultBody)):
         rt = runtime(cid)
         conn_ok(rt, body.connector)
-        if body.error_code not in FAULT_CODES:
-            raise bad(400, f"error_code: one of {', '.join(FAULT_CODES)}")
         await rt.fault(body.connector, body.error_code)
         return {"ok": True}
 
@@ -283,10 +372,14 @@ def _router(engine: OcppEngine) -> APIRouter:
         rt = runtime(cid)
         try:
             res = await rt.send_data_transfer(body.vendor_id, body.message_id, body.data)
-        except ConnectionError as e:
+        except ConnectionError as e:  # not connected: a state the operator can change
             raise bad(400, e) from None
-        except Exception as e:  # noqa: BLE001 - CALLERROR / timeout of the CSMS
-            raise bad(400, f"DataTransfer failed: {type(e).__name__}: {e}") from None
+        except TimeoutError:
+            raise bad(504, "DataTransfer: the CSMS did not answer in time") from None
+        except CallError as e:
+            raise bad(502, f"DataTransfer: the CSMS answered CALLERROR {e}") from None
+        except Exception as e:  # noqa: BLE001 - unparsable answer and other CSMS-side failures
+            raise bad(502, f"DataTransfer failed: {type(e).__name__}: {e}") from None
         return {"ok": res.status is DataTransferStatus.ACCEPTED, "status": res.status.value, "data": res.data}
 
     @r.get("/chargers/{cid}/profiles", summary="Installed charging profiles")
@@ -302,6 +395,8 @@ def _router(engine: OcppEngine) -> APIRouter:
                         evse: Optional[int] = Query(None, ge=0, description="alias of connector"),
                         duration: int = Query(3600, ge=1, le=7 * 86400), unit: Optional[Literal["W", "A"]] = None):
         rt = runtime(cid)
+        if connector is not None and evse is not None and connector != evse:
+            raise bad(400, f"connector={connector} and evse={evse} differ (evse is an alias of connector)")
         cid_ = connector if connector is not None else (evse if evse is not None else 0)
         if cid_:
             conn_ok(rt, cid_)
@@ -317,20 +412,35 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.get("/frames", summary="Frame log entries after since (the newest limit of them)")
     async def frames(since: int = Query(0, ge=0), charger: Optional[str] = None, action: Optional[str] = None,
-                     dir: Optional[str] = None, limit: int = Query(500, ge=1, le=MAX_FRAMES)):
-        f = frame_filters(charger, action, dir)
+                     direction: Optional[str] = Query(None, alias="dir", description="rx or tx"),
+                     limit: int = Query(500, ge=1, le=MAX_FRAMES)):
+        """Matching entries with ``seq > since``, oldest first; at most the newest ``limit``. ``truncated`` means
+        older matching entries after ``since`` were left out: fetch them with a larger ``limit`` (up to
+        :data:`MAX_FRAMES`) or from ``/api/frames.jsonl`` (no limit by default). A client polling for new entries
+        passes the ``seq`` of the last entry it has as ``since``; ``last_seq`` is the newest seq of the whole log
+        (filters ignored)."""
+        f = frame_filters(charger, action, direction)
         rows = engine.frame_log.since(since, limit=limit + 1, **f)
         truncated = len(rows) > limit
         rows = rows[-limit:]
         return {"frames": [e.to_dict() for e in rows], "last_seq": engine.frame_log.last_seq,
                 "truncated": truncated}
 
-    @r.get("/frames.jsonl", summary="Frame log as JSON Lines", response_class=Response)
+    @r.get("/frames.jsonl", summary="Frame log as JSON Lines (streamed)", response_class=StreamingResponse)
     async def frames_jsonl(since: int = Query(0, ge=0), charger: Optional[str] = None,
-                           action: Optional[str] = None, dir: Optional[str] = None):
-        rows = engine.frame_log.since(since, **frame_filters(charger, action, dir))
-        return Response(engine.frame_log.to_jsonl(rows), media_type=NDJSON,
-                        headers={"Content-Disposition": 'attachment; filename="frames.jsonl"'})
+                           action: Optional[str] = None,
+                           direction: Optional[str] = Query(None, alias="dir", description="rx or tx"),
+                           limit: Optional[int] = Query(None, ge=1, description="only the newest limit entries")):
+        """Same selection as ``/api/frames`` (without a default limit), one JSON object per line. The entries are
+        picked when the request arrives and streamed in chunks of :data:`JSONL_CHUNK`."""
+        rows = engine.frame_log.since(since, limit=limit, **frame_filters(charger, action, direction))
+
+        def chunks():
+            for i in range(0, len(rows), JSONL_CHUNK):
+                yield engine.frame_log.to_jsonl(rows[i:i + JSONL_CHUNK])
+
+        return StreamingResponse(chunks(), media_type=NDJSON,
+                                 headers={"Content-Disposition": 'attachment; filename="frames.jsonl"'})
 
     return r
 
@@ -347,7 +457,7 @@ def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> 
         except ValueError as e:
             raise bad(400, e) from None
         except OSError as e:
-            raise bad(400, f"cannot write {engine.config_path}: {e.strerror or e}") from None
+            raise bad(500, f"cannot write {engine.config_path}: {e.strerror or e}") from None
         return JSONResponse({"ok": True, "path": path})
 
     routes = app.router.routes
@@ -357,6 +467,8 @@ def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> 
         methods = sorted((rt.methods or set()) - {"HEAD"})
         if rt.path == "/api/config/save":
             routes[i] = Route(rt.path, config_save, methods=methods, name=rt.name)
+        elif rt.path == "/api/devices/{device}/config" and "PUT" in methods:
+            routes[i] = Route(rt.path, _masked(_device_put(rt.endpoint, engine)), methods=methods, name=rt.name)
         elif rt.path.startswith(("/api/config", "/api/devices")):
             routes[i] = Route(rt.path, _masked(rt.endpoint), methods=methods, name=rt.name)
 

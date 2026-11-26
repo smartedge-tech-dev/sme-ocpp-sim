@@ -38,9 +38,13 @@ message carries ``push_seq``, increasing by one per message *per subscriber*, an
   ``max_frames_per_push``; a client sees a gap from ``seq`` and can fetch the rest from the frame log).
 
 Resync (client contract for the web layer): subscriber queues drop their oldest message when full. If a dropped
-message was a ``charger_state`` / ``values`` delta, the next push to that subscriber is a full one (``full: true``,
-every charger), and so is the first push to a new subscriber; a client therefore never has to refetch state
+message was a ``charger_state`` / ``values`` delta or a ``reload`` notice, the next push to that subscriber is a
+full one (``full: true``, every charger: it replaces the client's charger list, so chargers removed by the lost
+reload disappear too), and so is the first push to a new subscriber; a client therefore never has to refetch state
 itself. A gap in ``push_seq`` only tells it something was lost (frames: fetch them from the frame log).
+
+Operator hold (``disconnect``): ``_held`` lives in memory only. It survives reloads and their rollback, but not a
+restart, and it is not written to the config file.
 """
 
 
@@ -61,7 +65,11 @@ from .runtime.charger import ChargerRuntime
 #: Connector fields pushed as ``values``; the rest of a charger snapshot is ``charger_state``.
 VALUE_KEYS = ("power_w", "meter_wh", "soc_pct")
 #: Push messages whose loss makes the next push to that subscriber a full one.
-_STATE_TYPES = ("charger_state", "values")
+_STATE_TYPES = ("charger_state", "values", "reload")
+
+
+class OperationNotPossible(RuntimeError):
+    """The operation is not possible in the engine's current state (e.g. the engine is not running)."""
 
 
 @dataclass
@@ -135,7 +143,9 @@ class OcppEngine(BaseEngine):
         self._frame_seq = 0
         self._resync: Set[asyncio.Queue] = set()        # subscribers whose next push is a full one
         self._push_seqs: Dict[asyncio.Queue, int] = {}  # last push_seq sent to each subscriber
-        self._held: Set[str] = set()  # chargers disconnected by the operator (not launched until connect)
+        # Chargers disconnected by the operator (not launched until connect). In memory only: survives reloads
+        # and their rollback, not a restart, and is not saved to the config file.
+        self._held: Set[str] = set()
         super().__init__(config, **kwargs)
 
     @property
@@ -398,12 +408,15 @@ class OcppEngine(BaseEngine):
 
     async def connect(self, cid: str) -> bool:
         """Start the connection loop of ``cid`` again after :meth:`disconnect`. ``False`` = it was already running.
-        Serialised against reloads (engine lock). ``RuntimeError`` while the engine is not started."""
+        Serialised against reloads (engine lock). :class:`OperationNotPossible` while the engine is not started,
+        ``KeyError`` for an unknown charger (also one removed by a reload while waiting for the lock)."""
         self.charger(cid)
         async with self._operator_lock():
-            self._held.discard(cid)
             entry = self.state.get(cid)
-            if entry is None or cid in self._runs:
+            if entry is None:
+                raise KeyError(cid)
+            self._held.discard(cid)
+            if cid in self._runs:
                 return False
             self._launch(cid, entry.runtime)
         self.log_event("info", f"charger {cid} connect requested")
@@ -416,8 +429,12 @@ class OcppEngine(BaseEngine):
         loss; queued transaction messages are sent after the next accepted boot. ``False`` = it was not running."""
         self.charger(cid)
         async with self._operator_lock():
+            if cid not in self.state:
+                raise KeyError(cid)
             self._held.add(cid)
             was = cid in self._runs
+            # Halting under the lock (up to stop_grace_s) delays reloads and the push tick briefly, but a reload
+            # can then never relaunch the charger between the hold and the stop.
             await self._halt([cid])
         if was:
             self.log_event("info", f"charger {cid} disconnected by the operator")
@@ -426,18 +443,25 @@ class OcppEngine(BaseEngine):
 
     def _operator_lock(self) -> asyncio.Lock:
         if not self._started or self._lock is None:
-            raise RuntimeError("the engine is not running")
+            raise OperationNotPossible("the engine is not running")
         return self._lock
 
     async def reload(self, config: SimConfig, text: Optional[str] = None) -> None:
         """BaseEngine reload; a charger whose ``password`` is :data:`PASSWORD_MASK` (the Web API shows passwords
-        masked) keeps the password of the current charger with the same id."""
-        await super().reload(self._unmask(config), text)
+        masked) keeps the password of the current charger with the same id (:meth:`validate_config`, under the
+        reload lock). The client's text then still holds the mask, so it is not stored as ``config_text``: the
+        unmasked config is re-dumped instead (comments of that text are lost)."""
+        if any(c.password == PASSWORD_MASK for c in config.chargers):
+            text = None
+        await super().reload(config, text)
 
-    def _unmask(self, config: SimConfig) -> SimConfig:
+    def validate_config(self, config: SimConfig) -> None:
+        """Called by BaseEngine under the reload lock (and once by ``__init__``): replaces masked passwords in
+        ``config`` (in place) by the stored ones, so a concurrent reload cannot slip in between."""
         if not any(c.password == PASSWORD_MASK for c in config.chargers):
-            return config
-        old = {c.id: c.password for c in self.config.chargers}
+            return
+        current = getattr(self, "config", None)
+        old = {c.id: c.password for c in current.chargers} if current is not None else {}
         chargers = []
         for c in config.chargers:
             if c.password == PASSWORD_MASK:
@@ -446,7 +470,7 @@ class OcppEngine(BaseEngine):
                                      "stored password to keep; send the real password")
                 c = c.model_copy(update={"password": old[c.id]})
             chargers.append(c)
-        return config.model_copy(update={"chargers": chargers})
+        config.chargers = chargers
 
     async def save_config(self) -> str:
         """Write the running config back into ``config_path`` (:func:`save_file`: comments outside the changed
