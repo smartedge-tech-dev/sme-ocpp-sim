@@ -47,6 +47,11 @@ not before the CSMS has the answer. ``time_scale`` scales only the power model (
 profile evaluation always uses the wall clock (``clock``), because schedules are in CSMS time and must match what
 GetCompositeSchedule reports. A Relative 60 s period therefore lasts 60 wall-clock seconds at any time_scale.
 
+Pause (:meth:`set_paused`, driven by the engine's run / pause): the power model is frozen - no energy, SoC or
+ramp advance, the power is reported as it was. Pausing integrates up to "now" first, resuming restarts the
+intervals at "now" (the paused interval is not caught up). The OCPP session itself (heartbeats, status, CSMS
+calls, meter readings with the frozen values) keeps running.
+
 Interpretations (not defined by the spec): a limit in A applies to the phases the EV uses while one charges and to
 the supply's phases otherwise (errata 3.34); GetCompositeSchedule periods are capped at the hardware maximum
 (``max_power_w``, times the connector count for connectorId 0), which also stands for "no limit"; ticks are
@@ -227,6 +232,7 @@ class ChargerRuntime:
         self.supply = AcSupply(cfg.voltage_v, cfg.phases, cfg.line_to_line)
         self.profiles = ProfileStore(cfg.connectors)
         self._tick_s, self._time_scale = tick_s, time_scale
+        self._paused = False
         self.adapter: d.VersionAdapter = get_adapter_class(ocpp_version)(strict=strict)
         names = {k.name for k in self.adapter.config_keys}
         derived = {CONNECTORS_KEY: str(cfg.connectors)}
@@ -729,7 +735,7 @@ class ChargerRuntime:
         """Step the power model of a charging connector up to now (power, energy register, SoC, suspension) and
         restart the interval; a connector that is not charging only restarts the interval."""
         now = self._mono()
-        if c.pw is not None:
+        if c.pw is not None and not self._paused:  # paused: frozen, the interval just restarts (no catch-up)
             dt = max(0.0, now - c.last_mono) if c.last_mono is not None else 0.0
             c.pw = power.step(c.pw, dt_s=dt, ev=self.ev, target_soc_pct=self.cfg.session.target_soc,
                               evse_limit_w=self._limit_w(c), evse_max_w=self.cfg.max_power_w, supply=self.supply,
@@ -748,6 +754,27 @@ class ChargerRuntime:
             if c.pw is not None:
                 self._advance(c)
                 self._refresh(c)  # Charging <-> SuspendedEV / SuspendedEVSE
+
+    def set_time_scale(self, time_scale: float) -> None:
+        """Change the power model's simulated-time factor; charging connectors are integrated up to now first."""
+        if time_scale <= 0:
+            raise ValueError("time_scale must be > 0")
+        self._settle()
+        self._time_scale = time_scale
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        """Freeze (``True``) or resume the power model (see the module docstring); the OCPP session keeps running.
+
+        Charging connectors are integrated up to now before freezing; on resume their intervals restart at now,
+        so the paused time is neither lost before the pause nor caught up after it."""
+        paused = bool(paused)
+        if paused != self._paused:
+            self._settle()  # pause: integrate up to now; resume: still paused here, so only restart the intervals
+            self._paused = paused
 
     async def _tick_loop(self) -> None:
         """Session task: step the power model of every charging connector each ``tick_s``."""

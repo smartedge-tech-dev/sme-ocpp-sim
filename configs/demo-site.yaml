@@ -1,0 +1,46 @@
+# SME OCPPSim demo site: three AC chargers against a local SteVe.
+#
+# Always quote ids, id tags and passwords ("0123", "ON" and "1e5" are not strings in unquoted YAML).
+# Saving from the web UI rewrites whole top-level blocks: comments outside a changed block stay,
+# comments inside it (e.g. next to a single charger) are lost.
+
+simulation:
+  tick_seconds: 1
+  time_scale: 1          # speeds up the power model (ramp, energy, SoC) only
+  running: true
+
+frame_log:
+  size: 20000            # frames kept in memory (all chargers)
+
+csms_defaults:
+  url: "ws://localhost:8180/steve/websocket/CentralSystemService"
+  ocpp_version: "1.6"
+  security_profile: 0    # 0 = ws:// without password
+  reconnect: { min_s: 1, max_s: 60, jitter: 0.2 }
+
+ev_models:
+  - id: "demo-60kwh"
+    capacity_kwh: 60
+    max_ac_kw: 11
+    max_current_a: 16
+    phases: 3
+
+chargers:
+  - id: "CP-0001"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    id_tags: ["04A1B2C3", "TAG-0002"]
+    config_keys:
+      HeartbeatInterval: 300
+      MeterValueSampleInterval: 60
+  - id: "CP-0002"
+    connectors: 2
+    max_power_w: 6000
+    auth_mode: accept_all
+  - id: "CP-0003"
+    model: "SIM-AC11"
+    max_power_w: 11000
+    voltage_v: 200
+    phases: 3
+    line_to_line: true
+    session: { ev_model: "demo-60kwh", initial_soc: 20, target_soc: 80 }

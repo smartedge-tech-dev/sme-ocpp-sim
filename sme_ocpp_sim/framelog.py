@@ -6,6 +6,7 @@ Clients poll with ``since(seq)`` and de-duplicate by ``seq``; ``to_jsonl()`` exp
 
 from __future__ import annotations
 
+import itertools
 import json
 import time
 from collections import deque
@@ -41,6 +42,15 @@ class FrameLog:
     def last_seq(self) -> int:
         return self._seq
 
+    @property
+    def maxlen(self) -> int:
+        return self._buf.maxlen or 0
+
+    def resize(self, maxlen: int) -> None:
+        """Change the capacity, keeping the newest entries."""
+        if maxlen != self._buf.maxlen:
+            self._buf = deque(self._buf, maxlen=maxlen)
+
     def add(self, charger: str, info: Any) -> FrameEntry:
         """Record one frame. ``info`` is an ``rpc.FrameInfo`` (duck-typed)."""
         self._seq += 1
@@ -60,11 +70,19 @@ class FrameLog:
 
     def since(self, seq: int = 0, *, charger: Optional[str] = None, action: Optional[str] = None,
               direction: Optional[str] = None, limit: Optional[int] = None) -> list[FrameEntry]:
-        out = [e for e in self._buf if e.seq > seq
-               and (charger is None or e.charger == charger)
-               and (action is None or e.action == action)
-               and (direction is None or e.direction == direction)]
-        return out[-limit:] if limit else out
+        """Entries after ``seq`` (oldest first) matching the filters; with ``limit`` only the newest ``limit``.
+
+        Sequence numbers in the buffer are contiguous, so only the ``last_seq - seq`` newest entries are scanned
+        (from the right), not the whole buffer."""
+        out = []
+        for e in itertools.islice(reversed(self._buf), max(0, self._seq - seq)):
+            if ((charger is None or e.charger == charger) and (action is None or e.action == action)
+                    and (direction is None or e.direction == direction)):
+                out.append(e)
+                if limit and len(out) >= limit:
+                    break
+        out.reverse()
+        return out
 
     def clear(self) -> None:
         self._buf.clear()

@@ -3,27 +3,41 @@
 Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
-``ev_models`` entry). ``template`` / ``evses`` follow in M5; ``behaviors`` is v0.2.
+``ev_models`` entry). Not in v0.1: ``template`` (TemplateRegistry, v0.2), the ``evses`` tree (2.0.1) and
+``behaviors`` (v0.2).
 
 YAML pitfall: unquoted ``0123``, ``1e5``-like numbers, ``ON`` / ``OFF`` / ``yes`` / ``no`` are not strings in
 YAML 1.1. Identity / text fields therefore only accept real strings and tell the user to quote the value,
 instead of silently turning ``0123`` into ``83``.
+
+YAML write-back (:func:`write_back` / :func:`save_file`): every top-level block whose value changed is replaced
+as a whole (``sme_sim_common.config.replace_yaml_block``). Comments outside the replaced blocks are kept;
+comments *inside* a replaced block - e.g. on a single ``chargers:`` entry - are lost (accepted v0.1 trade-off;
+per-item write-back needs sme-sim-common 1.2 ``replace_yaml_list_item``). Blocks are dumped with
+``exclude_defaults``: a value equal to its default is not written out, which keeps the file short but means a
+default changed in a later version applies to such a file too. If ``replace_yaml_block`` cannot splice a block
+(unusual layout) it re-dumps the whole document and *all* comments are lost; :func:`write_back_checked` reports
+that and :func:`write_back` / :func:`save_file` log a warning.
 
 Product imports: the version metadata registry (no adapter) and the pure EV model of :mod:`.charging.ev`.
 """
 
 from __future__ import annotations
 
+import codecs
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
 from pydantic import AfterValidator, BeforeValidator, Field, field_validator, model_validator
-from sme_sim_common.config import StrictModel
+from sme_sim_common.config import StrictModel, atomic_write_text, replace_yaml_block, splice_yaml_block
 from typing_extensions import Annotated
 
 from .charging.ev import PRESETS, EvModel, validate_curve
 from .protocol.registry import check_version
+
+log = logging.getLogger(__name__)
 
 
 def _quoted(v: Any) -> Any:
@@ -239,3 +253,57 @@ def parse_text(text: str) -> SimConfig:
 
 def load_file(path: Union[str, Path]) -> SimConfig:
     return parse_text(Path(path).read_text(encoding="utf-8"))
+
+
+#: Top-level blocks :func:`write_back` may rewrite, and their value when everything in them is default.
+WRITE_BACK_BLOCKS: Dict[str, Any] = {"simulation": {}, "frame_log": {}, "csms_defaults": {}, "ev_models": [],
+                                     "chargers": []}
+
+
+def _blocks(config: SimConfig) -> Dict[str, Any]:
+    return config.model_dump(mode="json", exclude_defaults=True)
+
+
+def write_back_checked(text: str, config: SimConfig) -> Tuple[str, bool]:
+    """``(new_text, redumped)``: ``text`` with every changed top-level block replaced by ``config``'s value (see
+    the module docstring); ``redumped`` is ``True`` when a block could not be spliced and the whole document was
+    re-dumped, losing every comment."""
+    try:
+        old = _blocks(parse_text(text))
+    except Exception:  # noqa: BLE001 - unreadable / invalid text: rewrite every block
+        old = None
+    new = _blocks(config)
+    redumped = False
+    for key, empty in WRITE_BACK_BLOCKS.items():
+        value = new.get(key, empty)
+        if old is None or old.get(key, empty) != value:
+            spliced = splice_yaml_block(text, key, yaml.safe_dump({key: value}, allow_unicode=True,
+                                                                   sort_keys=False))
+            text = replace_yaml_block(text, key, value)
+            redumped = redumped or text != spliced
+    return text, redumped
+
+
+def write_back(text: str, config: SimConfig) -> str:
+    """:func:`write_back_checked` without the flag (a full re-dump is logged as a warning)."""
+    out, redumped = write_back_checked(text, config)
+    if redumped:
+        log.warning("config write-back re-dumped the whole YAML document: comments were lost")
+    return out
+
+
+def save_file(path: Union[str, Path], config: SimConfig) -> str:
+    """Write ``config`` back into ``path`` (atomic), keeping comments outside the changed blocks.
+
+    The file's newline style (LF / CRLF) and a UTF-8 BOM are kept. Returns the new text with ``\n`` newlines and
+    no BOM. Blocking file I/O: async callers run it via ``asyncio.to_thread`` and serialise it against reloads
+    (the web layer does both)."""
+    p = Path(path)
+    raw = p.read_bytes() if p.exists() else b""
+    bom = raw.startswith(codecs.BOM_UTF8)
+    text = raw[len(codecs.BOM_UTF8) if bom else 0:].decode("utf-8")
+    crlf = "\r\n" in text
+    text = write_back(text.replace("\r\n", "\n"), config)
+    out = text.replace("\n", "\r\n") if crlf else text
+    atomic_write_text(p, ("\ufeff" if bom else "") + out)
+    return text
