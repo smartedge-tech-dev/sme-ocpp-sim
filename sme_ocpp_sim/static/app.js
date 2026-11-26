@@ -4,8 +4,11 @@
 //
 // Data flow: GET /api/state once, then the /ws push stream (web.py docstring): "snapshot" first, then
 // "charger_state" / "values" / "frame" with push_seq; a full push replaces the client state, a gap in push_seq
-// refetches /api/state and the lost frames (GET /api/frames?since=). Charger rows are patched in place (never
-// rebuilt on a push) so the list stays smooth with a few hundred chargers.
+// refetches the lost frames (GET /api/frames?since=; frames are de-duplicated by seq and kept sorted, so a late
+// backfill is merged in). Charger rows and the selected charger's connector cards are patched in place (a card is
+// rebuilt only when its state changed) so the list stays smooth with a few hundred chargers. Settings go through
+// the JSON routes /api/csms-defaults and /api/chargers/{id}/settings (validated and reloaded server side); the
+// configuration key table shows the run-time keys (/api/chargers/{id}/configuration).
 //
 // Global entry points (plan §9, used for screenshots / docs): openChargerDialog(id), openSettingsDialog(id),
 // openProfileDialog(id), openFrameDetail(seq), openAddChargerDialog(); About is Shell.openAbout().
@@ -70,8 +73,9 @@ const S = {
   rows: new Map(),       // id -> {tr, badge, version, count, power, chk}
   sel: null,             // selected charger id
   checked: new Set(),
-  frames: [],            // newest last
-  frameSeq: 0,
+  frames: [],            // sorted by seq, newest last
+  frameSet: new Set(),   // seqs in S.frames (de-duplication)
+  frameSeq: 0,           // highest frame seq seen
   hist: new Map(),       // "id/connector" -> [{t, p, soc, lim}]
   composite: null,       // {key, start(ms), duration(s|null), periods}
   running: true,
@@ -84,14 +88,13 @@ const S = {
 async function api(method, url, body) {
   const opt = { method, headers: {} };
   if (body !== undefined) {
-    const yamlBody = typeof body === "string";
-    opt.body = yamlBody ? body : JSON.stringify(body);
-    opt.headers["Content-Type"] = yamlBody ? "application/x-yaml" : "application/json";
+    opt.body = JSON.stringify(body);
+    opt.headers["Content-Type"] = "application/json";
   }
   const r = await fetch(url, opt);
   const text = await r.text();
   let data = text;
-  try { data = text ? JSON.parse(text) : null; } catch { /* YAML / plain text */ }
+  try { data = text ? JSON.parse(text) : null; } catch { /* plain text */ }
   if (!r.ok) {
     const msg = data && typeof data === "object" ? (data.error || data.detail) : data;
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg || r.status));
@@ -105,62 +108,7 @@ async function op(id, name, body) {
   try { await api("POST", chargerUrl(id, name), body || {}); } catch (e) { fail(e); }
 }
 
-// Line-based edits of the YAML the config routes return (block style, as written by yaml.safe_dump / the config
-// file). Only scalar keys directly under `block` (null = top level) are touched; values are written as JSON
-// scalars, which are valid YAML. A block in flow style ({...}) cannot be edited this way and raises.
-function yamlBlock(lines, block) {
-  if (!block) return { start: 0, end: lines.length, indent: "" };
-  const head = lines.findIndex((l) => new RegExp(`^${block}:`).test(l));
-  if (head < 0) return null;
-  if (!/^[^:]+:\s*(#.*)?$/.test(lines[head])) throw new Error(t("settings.err.flow", { block }));
-  let end = head + 1;
-  while (end < lines.length && (/^\s/.test(lines[end]) || !lines[end].trim())) end++;
-  return { start: head + 1, end, indent: "  " };
-}
-function yamlScalar(v) {
-  v = v.trim();
-  if (v.startsWith('"')) { try { return JSON.parse(v); } catch { return v.slice(1, -1); } }
-  if (v.startsWith("'")) return v.slice(1, v.lastIndexOf("'")).replace(/''/g, "'");
-  v = v.replace(/\s+#.*$/, "");
-  return v === "null" || v === "~" || v === "" ? null : v;
-}
-function yamlKeyIndex(lines, b, key) {
-  const re = new RegExp(`^${b.indent}${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:(\\s|$)`);
-  for (let i = b.start; i < b.end; i++) if (re.test(lines[i])) return i;
-  return -1;
-}
-function yamlGet(text, block, key) {
-  const lines = text.split(/\r?\n/);
-  const b = yamlBlock(lines, block);
-  const i = b ? yamlKeyIndex(lines, b, key) : -1;
-  return i < 0 ? null : yamlScalar(lines[i].slice(lines[i].indexOf(":") + 1));
-}
-function yamlSet(text, block, values) {
-  let lines = text.split(/\r?\n/);
-  let b = yamlBlock(lines, block);
-  if (!b) { lines = lines.concat([`${block}:`]); b = { start: lines.length, end: lines.length, indent: "  " }; }
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) continue;
-    const i = yamlKeyIndex(lines, b, key);
-    const line = `${b.indent}${key}: ${JSON.stringify(value)}`;
-    if (i >= 0 && value === null) { lines.splice(i, 1); b.end--; }
-    else if (i >= 0) lines[i] = line;
-    else if (value !== null) { lines.splice(b.end, 0, line); b.end++; }
-  }
-  return lines.join("\n");
-}
-// The config_keys mapping of a device YAML ({} or an indented block).
-function yamlMap(text, key) {
-  const lines = text.split(/\r?\n/);
-  const i = lines.findIndex((l) => l.startsWith(`${key}:`));
-  const out = [];
-  if (i < 0) return out;
-  for (let j = i + 1; j < lines.length && /^\s+\S/.test(lines[j]); j++) {
-    const m = /^\s+([^:]+):\s*(.*)$/.exec(lines[j]);
-    if (m) out.push([yamlScalar(m[1]), yamlScalar(m[2])]);
-  }
-  return out;
-}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ------------------------------------------------------------------ charger list (rows patched in place)
 
@@ -256,40 +204,47 @@ function syncCount() {
   $("chargerCount").textContent = st ? t("chargers.count_online", { n: st.chargers, online: st.online ?? st.connected })
     : t("chargers.count", { n: S.chargers.size });
 }
+const visibleIds = () => [...S.rows].filter(([, r]) => !r.tr.hidden).map(([id]) => id);
 function syncSelAll() {
-  const all = $("selAll");
-  all.checked = S.chargers.size > 0 && S.checked.size === S.chargers.size;
+  const all = $("selAll"), vis = visibleIds();
+  all.checked = vis.length > 0 && vis.every((id) => S.checked.has(id));
   all.indeterminate = S.checked.size > 0 && !all.checked;
 }
 
-function applyValues(values) {
+const VALUE_KEYS = ["power_w", "meter_wh", "soc_pct"];
+function applyValues(values, full) {
   for (const [id, conns] of Object.entries(values || {})) {
     const c = S.chargers.get(id);
     if (!c) continue;
-    for (const v of conns) {
-      const x = (c.connectors || []).find((k) => k.id === v.id);
-      if (x) Object.assign(x, v);
+    for (const x of c.connectors || []) {
+      const v = conns.find((k) => k.id === x.id);
+      if (v) Object.assign(x, v);
+      else if (full) for (const k of VALUE_KEYS) x[k] = null;   // a full push replaces every value
     }
     patchPower(c);
     if (id === S.sel) { patchCards(c); sample(c); }
   }
 }
 
+// Checked chargers, or (nothing checked) the rows the filter shows, after a confirmation for more than one.
 async function bulk(action) {
-  const ids = S.checked.size ? [...S.checked] : null;
+  const ids = S.checked.size ? [...S.checked] : visibleIds();
+  if (!ids.length) return;
+  if (!S.checked.size && ids.length > 1
+    && !window.confirm(t(action === "connect" ? "bulk.confirm.connect" : "bulk.confirm.disconnect", { n: ids.length }))) return;
   try {
-    await api("POST", `/api/chargers/bulk/${action}`, ids ? { ids } : { all: true });
-    Shell.toast(t(action === "connect" ? "bulk.done.connect" : "bulk.done.disconnect",
-      { n: ids ? ids.length : S.chargers.size }), "ok");
+    await api("POST", `/api/chargers/bulk/${action}`, { ids });
+    Shell.toast(t(action === "connect" ? "bulk.done.connect" : "bulk.done.disconnect", { n: ids.length }), "ok");
   } catch (e) { fail(e); }
 }
 
 // ------------------------------------------------------------------ charger detail
 
 function selectCharger(id, scroll) {
+  if (id != null && !S.chargers.has(id)) return;   // unknown id: keep the current selection
   const prev = S.sel && S.rows.get(S.sel);
   if (prev) prev.tr.classList.remove("sel");
-  S.sel = id && S.chargers.has(id) ? id : null;
+  S.sel = id == null ? null : id;
   const r = S.sel && S.rows.get(S.sel);
   if (r) { r.tr.classList.add("sel"); if (scroll) r.tr.scrollIntoView({ block: "nearest" }); }
   S.composite = null;
@@ -320,12 +275,31 @@ function renderDetail(fresh) {
   $("dError").textContent = c.last_error ? t("detail.last_error", { e: errText(c.last_error) }) : "";
   $("dConnect").disabled = c.enabled !== false;
   $("dDisconnect").disabled = c.enabled === false;
-  $("connectors").replaceChildren(...(c.connectors || []).map((x) => card(c, x)));
-  const sel = $("scConnector");
-  const want = fresh ? "1" : sel.value;
-  sel.replaceChildren(...(c.connectors || []).map((x) => h("option", { value: x.id }, String(x.id))));
-  sel.value = (c.connectors || []).some((x) => String(x.id) === want) ? want : sel.options[0] && sel.options[0].value;
+  renderConnectors(c, fresh);
   drawChart();
+}
+
+// The cards and the connector select are rebuilt only when the charger or its connector set changes; otherwise a
+// card is replaced only when its state (status, plug, transaction, error) changed.
+const cardSig = (x) => JSON.stringify([x.status, x.plugged, x.error_code, x.transaction, x.pending_tag]);
+function renderConnectors(c, fresh) {
+  const box = $("connectors"), conns = c.connectors || [];
+  const sig = JSON.stringify([c.id, conns.map((x) => x.id)]);
+  if (fresh || box.dataset.sig !== sig) {
+    box.dataset.sig = sig;
+    box.replaceChildren(...conns.map((x) => card(c, x)));
+    const sel = $("scConnector");
+    const want = fresh ? "1" : sel.value;
+    sel.replaceChildren(...conns.map((x) => h("option", { value: x.id }, String(x.id))));
+    sel.value = conns.some((x) => String(x.id) === want) ? want : sel.options[0] && sel.options[0].value;
+    return;
+  }
+  for (const x of conns) {
+    const el = box.querySelector(`.card[data-conn="${CSS.escape(String(x.id))}"]`);
+    if (el && el.dataset.sig === cardSig(x)) continue;
+    const next = card(c, x);
+    if (el) el.replaceWith(next); else box.append(next);
+  }
 }
 
 function card(c, x) {
@@ -336,11 +310,13 @@ function card(c, x) {
     disabled: opts && opts.disabled, onclick: fn }, t(key));
   const id = c.id, conn = x.id;
   const kv = (key, val, k) => [h("dt", null, t(key)), h("dd", k ? { "data-k": k } : null, val)];
-  return h("div", { class: "card", "data-conn": conn },
+  const bar = h("i", { "data-k": "socbar" });
+  bar.style.width = `${x.soc_pct || 0}%`;
+  return h("div", { class: "card", "data-conn": conn, "data-sig": cardSig(x) },
     h("div", { class: "card-head" }, t("detail.connector", { n: conn }),
       h("span", { class: `badge ${statusClass(x.status)}` }, tk("status", x.status)),
       x.plugged ? h("span", { class: "muted" }, t("detail.plugged")) : null),
-    h("div", { class: "soc" }, h("i", { "data-k": "socbar", style: `width:${x.soc_pct || 0}%` })),
+    h("div", { class: "soc" }, bar),
     h("dl", { class: "card-kv" },
       x.error_code && x.error_code !== "NoError" ? kv("detail.error_code", x.error_code) : null,
       kv("detail.id_tag", tag || "-"),
@@ -362,7 +338,7 @@ function card(c, x) {
 // Values pushes only touch the numbers of the selected charger's cards.
 function patchCards(c) {
   for (const x of c.connectors || []) {
-    const el = document.querySelector(`#connectors .card[data-conn="${x.id}"]`);
+    const el = document.querySelector(`#connectors .card[data-conn="${CSS.escape(String(x.id))}"]`);
     if (!el) continue;
     const set = (k, v) => { const e = el.querySelector(`[data-k="${k}"]`); if (e) e.textContent = v; };
     set("power", `${kw(x.power_w)} kW`);
@@ -385,7 +361,16 @@ async function tagThen(id, conn, action) {
   $("tagTitle").textContent = t(action === "swipe" ? "op.swipe.title" : "op.start.title", { id, n: conn });
   const input = $("tagValue");
   input.value = input.value || "TAG-0001";
-  if (await ask($("dlgTag"))) op(id, action, { connector: conn, id_tag: input.value.trim() });
+  checkTag();
+  if (!(await ask($("dlgTag")))) return;
+  const tag = input.value.trim();
+  if (tag) op(id, action, { connector: conn, id_tag: tag });
+  else Shell.toast(t("op.id_tag.required"), "error");
+}
+// Form validation blocks the OK button while the tag is empty or blank.
+function checkTag() {
+  const input = $("tagValue");
+  input.setCustomValidity(input.value.trim() ? "" : t("op.id_tag.required"));
 }
 
 async function faultThen(id, conn) {
@@ -396,21 +381,20 @@ async function faultThen(id, conn) {
 async function loadKeys() {
   const id = S.sel;
   const rows = $("keyRows");
-  rows.replaceChildren();
+  if (!id) return;
   try {
-    const text = await api("GET", `/api/devices/${enc(id)}/config`);
+    const [conf, set] = await Promise.all([api("GET", chargerUrl(id, "configuration")), api("GET", chargerUrl(id, "settings"))]);
     if (id !== S.sel) return;
-    const keys = yamlMap(String(text), "config_keys");
-    rows.replaceChildren(...(keys.length ? keys.map(([k, v]) => h("tr", null, h("td", null, k), h("td", null, v ?? "")))
-      : [h("tr", null, h("td", { colspan: 2, class: "muted" }, t("keys.none")))]));
-    const list = $("tagList");
-    const tags = String(text).split(/\r?\n/);
-    const i = tags.findIndex((l) => l.startsWith("id_tags:"));
-    const opts = [];
-    for (let j = i + 1; i >= 0 && j < tags.length && /^- /.test(tags[j]); j++) opts.push(yamlScalar(tags[j].slice(2)));
-    list.replaceChildren(...opts.map((v) => h("option", { value: v })));
-    if (opts.length) $("tagValue").value = opts[0];
-  } catch (e) { rows.replaceChildren(h("tr", null, h("td", { colspan: 2, class: "err" }, String(e.message)))); }
+    const keys = conf.keys || [];
+    rows.replaceChildren(...(keys.length ? keys.map((k) => h("tr", null, h("td", null, k.key), h("td", null, k.value ?? ""),
+      h("td", { class: "muted" }, t(k.readonly ? "keys.readonly" : "keys.readwrite"))))
+      : [h("tr", null, h("td", { colspan: 3, class: "muted" }, t("keys.none")))]));
+    const tags = set.id_tags || [];
+    $("tagList").replaceChildren(...tags.map((v) => h("option", { value: v })));
+    if (tags.length) $("tagValue").value = tags[0];
+  } catch (e) {
+    if (id === S.sel) rows.replaceChildren(h("tr", null, h("td", { colspan: 3, class: "err" }, String(e.message))));
+  }
 }
 
 // ------------------------------------------------------------------ Smart Charging (profiles + one time axis)
@@ -446,13 +430,15 @@ async function loadSmartCharging() {
       api("GET", `${chargerUrl(id, "profiles")}`),
       api("GET", `${chargerUrl(id, "composite")}?connector=${enc(conn)}&duration=${CHART_FUTURE_MS / 1000}&unit=W`),
     ]);
-    if (id !== S.sel) return;
+    if (id !== S.sel || conn !== $("scConnector").value) return;   // stale answer
     S.composite = { key: `${id}/${conn}`, start: Date.parse(cs.start || cs.schedule_start), duration: cs.duration,
       periods: cs.periods || [] };
     renderProfileList(prof.profiles || []);
     const c = S.chargers.get(id);
     if (c) sample(c);
-  } catch (e) { $("scList").replaceChildren(h("li", { class: "err" }, String(e.message))); }
+  } catch (e) {
+    if (id === S.sel && conn === $("scConnector").value) $("scList").replaceChildren(h("li", { class: "err" }, String(e.message)));
+  }
 }
 
 function profileLine(p) {
@@ -564,21 +550,43 @@ function toggleFrame(tr, f) {
       h("button", { type: "button", class: "btn small", onclick: () => openFrameDetail(f.seq) }, t("frames.details"))))));
 }
 
+// navigator.clipboard needs a secure origin (https / localhost); elsewhere (http://<lan-ip>) use execCommand.
 function copyText(text) {
-  navigator.clipboard.writeText(text).then(() => Shell.toast(t("frames.copied"), "ok"), fail);
+  const ok = () => Shell.toast(t("frames.copied"), "ok");
+  const legacy = () => {
+    const ta = h("textarea", { readonly: true });
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    (document.querySelector("dialog[open]") || document.body).append(ta);   // a modal dialog makes the body inert
+    ta.select();
+    let done = false;
+    try { done = document.execCommand("copy"); } catch { /* reported below */ }
+    ta.remove();
+    if (done) ok(); else Shell.toast(t("frames.copy_failed"), "error");
+  };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(ok, legacy);
+  else legacy();
 }
 
 function addFrames(list) {
-  if (!list.length) return;
-  for (const f of list) if (f.seq > S.frameSeq) { S.frames.push(f); S.frameSeq = f.seq; }
-  if (S.frames.length > MAX_FRAMES) S.frames.splice(0, S.frames.length - MAX_FRAMES);
+  const fresh = list.filter((f) => !S.frameSet.has(f.seq)).sort((a, b) => a.seq - b.seq);
+  if (!fresh.length) return;
+  const tail = S.frames.length ? S.frames[S.frames.length - 1].seq : 0;
+  const atTail = fresh[0].seq > tail;
+  for (const f of fresh) { S.frameSet.add(f.seq); S.frames.push(f); }
+  if (!atTail) S.frames.sort((a, b) => a.seq - b.seq);   // backfill that arrived after newer frames
+  S.frameSeq = Math.max(S.frameSeq, S.frames[S.frames.length - 1].seq);
+  if (S.frames.length > MAX_FRAMES) for (const f of S.frames.splice(0, S.frames.length - MAX_FRAMES)) S.frameSet.delete(f.seq);
+  if (!atTail) { renderFrames(); return; }
+  list = fresh;
   const flt = frameFilter();
   const body = $("frameRows");
   const rows = list.filter((f) => frameMatches(f, flt)).map(frameRow);
   if (!rows.length) return;
   body.append(...rows);
   while (body.rows.length > MAX_FRAME_ROWS) body.rows[0].remove();
-  if ($("fFollow").checked) body.parentElement.parentElement.scrollTop = body.parentElement.parentElement.scrollHeight;
+  if ($("fFollow").checked) $("frameWrap").scrollTop = $("frameWrap").scrollHeight;
 }
 
 function renderFrames() {
@@ -587,8 +595,7 @@ function renderFrames() {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(flt)) if (v) q.set(k, v);
   $("fExport").href = `/api/frames.jsonl${q.toString() ? `?${q}` : ""}`;
-  const wrap = $("frameRows").parentElement.parentElement;
-  wrap.scrollTop = wrap.scrollHeight;
+  if ($("fFollow").checked) $("frameWrap").scrollTop = $("frameWrap").scrollHeight;
 }
 
 function syncChargerFilter() {
@@ -608,7 +615,7 @@ async function fetchFrames(since) {
 
 // ------------------------------------------------------------------ dialogs (global entry points, plan §9)
 
-function openChargerDialog(id) { selectCharger(id, true); }
+function openChargerDialog(id) { if (S.chargers.has(id)) selectCharger(id, true); }
 
 function versionOptions(sel, withDefault) {
   sel.replaceChildren(
@@ -618,46 +625,50 @@ function versionOptions(sel, withDefault) {
     h("option", { value: "2.1", disabled: true }, t("settings.version.v21")));
 }
 
-const SET = { config: "", device: "", id: null };
+// The dialog state: the csms_defaults block and the charger settings as loaded (masked password).
+const SET = { id: null, defaults: null, charger: null };
 async function openSettingsDialog(id) {
   id = id === undefined ? S.sel : id;
   $("setErr").textContent = "";
+  SET.id = id && S.chargers.has(id) ? id : null;
   try {
-    SET.config = String(await api("GET", "/api/config"));
-    SET.id = id && S.chargers.has(id) ? id : null;
-    SET.device = SET.id ? String(await api("GET", `/api/devices/${enc(SET.id)}/config`)) : "";
+    [SET.defaults, SET.charger] = await Promise.all([api("GET", "/api/csms-defaults"),
+      SET.id ? api("GET", chargerUrl(SET.id, "settings")) : null]);
   } catch (e) { fail(e); return; }
-  $("setUrl").value = yamlGet(SET.config, "csms_defaults", "url") || "";
-  $("setVersion").value = yamlGet(SET.config, "csms_defaults", "ocpp_version") || "1.6";
-  $("setProfile").value = yamlGet(SET.config, "csms_defaults", "security_profile") || "0";
+  const d = SET.defaults;
+  $("setUrl").value = d.url || "";
+  $("setVersion").value = d.ocpp_version || "1.6";
+  $("setProfile").value = String(d.security_profile ?? 0);
   $("setChargerBox").hidden = !SET.id;
-  if (SET.id) {
+  const c = SET.charger;
+  if (c) {
     $("setChargerLegend").textContent = t("settings.charger", { id: SET.id });
-    $("setCUrl").value = yamlGet(SET.device, null, "csms_url") || "";
-    $("setCVersion").value = yamlGet(SET.device, null, "ocpp_version") || "";
-    $("setPassword").value = yamlGet(SET.device, null, "password") || "";
-    $("setCa").value = yamlGet(SET.device, null, "ca_file") || "";
+    $("setCUrl").value = c.csms_url || "";
+    $("setCUrl").placeholder = (c.effective && c.effective.csms_url) || "";
+    $("setCVersion").value = c.ocpp_version || "";
+    $("setPassword").value = c.password || "";   // the mask "********" keeps the stored password (web.py)
+    $("setCa").value = c.ca_file || "";
   }
   $("dlgSettings").showModal();
 }
 
+// Only changed fields are sent: PATCH for the charger, PUT of the whole (loaded + edited) csms_defaults block.
 async function applySettings() {
-  if (SET.id) {
-    const dev = yamlSet(SET.device, null, {
-      csms_url: $("setCUrl").value.trim() || null,
-      ocpp_version: $("setCVersion").value || null,
-      password: $("setPassword").value || null,   // the mask "********" keeps the stored password (web.py)
-      ca_file: $("setCa").value.trim() || null,
-    });
-    if (dev !== SET.device) await api("PUT", `/api/devices/${enc(SET.id)}/config`, dev);
+  const c = SET.charger;
+  if (SET.id && c) {
+    const want = { csms_url: $("setCUrl").value.trim() || null, ocpp_version: $("setCVersion").value || null,
+      password: $("setPassword").value || null, ca_file: $("setCa").value.trim() || null };
+    const patch = {};
+    for (const [k, v] of Object.entries(want)) if (v !== (c[k] ?? null)) patch[k] = v;
+    if (Object.keys(patch).length) SET.charger = await api("PATCH", chargerUrl(SET.id, "settings"), patch);
   }
-  const fresh = String(await api("GET", "/api/config"));
-  const cfg = yamlSet(fresh, "csms_defaults", {
-    url: $("setUrl").value.trim() || null,
-    ocpp_version: $("setVersion").value,
-    security_profile: Number($("setProfile").value),
-  });
-  if (cfg !== fresh) await api("PUT", "/api/config", cfg);
+  const d = SET.defaults;
+  const next = { ...d, url: $("setUrl").value.trim() || null, ocpp_version: $("setVersion").value,
+    security_profile: Number($("setProfile").value) };
+  if (["url", "ocpp_version", "security_profile"].some((k) => next[k] !== d[k])) {
+    SET.defaults = await api("PUT", "/api/csms-defaults", next);
+  }
+  if (SET.id === S.sel) loadKeys();
 }
 
 async function openProfileDialog(id) {
@@ -676,9 +687,11 @@ async function openProfileDialog(id) {
 }
 
 async function openFrameDetail(seq) {
-  let f = S.frames.find((x) => x.seq === Number(seq));
-  if (!f) {
-    try { f = ((await api("GET", `/api/frames?since=${Number(seq) - 1}&limit=1`)).frames || [])[0]; } catch (e) { fail(e); return; }
+  const n = Number(seq);
+  let f = S.frames.find((x) => x.seq === n);
+  if (!f && n >= 1) {
+    try { f = ((await api("GET", `/api/frames?since=${n - 1}&until=${n}&limit=1`)).frames || []).find((x) => x.seq === n); }
+    catch (e) { fail(e); return; }
   }
   if (!f) { Shell.toast(t("frames.not_found", { seq }), "error"); return; }
   $("frameTitle").textContent = t("frames.detail.title", { seq: f.seq, charger: f.charger,
@@ -703,7 +716,17 @@ async function addCharger() {
   if (tags.length) dev.id_tags = tags;
   await api("POST", "/api/devices", dev);
   Shell.toast(t("add.done", { id: dev.id }), "ok");
-  setTimeout(() => openChargerDialog(dev.id), 300);
+  selectWhenListed(dev.id);
+}
+
+// A new charger reaches the list with the next push; poll /api/state briefly, then select it (or say so).
+async function selectWhenListed(id) {
+  for (let i = 0; i < 12 && !S.chargers.has(id); i++) {
+    await sleep(250);
+    if (!S.chargers.has(id)) await loadState();
+  }
+  if (S.chargers.has(id)) openChargerDialog(id);
+  else Shell.toast(t("add.pending", { id }), "info");
 }
 
 function openDataTransfer() {
@@ -750,22 +773,29 @@ async function loadState() {
   try { applyState(await api("GET", "/api/state")); } catch { /* server not reachable: keep the placeholder */ }
 }
 
-let refetchTimer = null;
-function onGap() {
+// A push_seq gap: frames are always refetched; state too unless the message itself is a full one.
+let refetchTimer = null, refetchState = false;
+function onGap(full) {
+  refetchState = refetchState || !full;
   clearTimeout(refetchTimer);
-  refetchTimer = setTimeout(() => { loadState(); fetchFrames(S.frameSeq); }, 200);
+  refetchTimer = setTimeout(() => {
+    if (refetchState) loadState();
+    refetchState = false;
+    fetchFrames(S.frameSeq);
+  }, 200);
 }
 
 function handle(m) {
   switch (m.type) {
-    case "snapshot":
+    case "snapshot":   // first message of a (re)connect, and after a reload
       if (m.data) applyState(m.data); else loadState();
+      fetchFrames(S.frameSeq);
       break;
     case "charger_state":
       if (m.full) replaceChargers(m.chargers || []); else updateChargers(m.chargers || []);
       break;
     case "values":
-      applyValues(m.values);
+      applyValues(m.values, m.full);
       break;
     case "frame": {
       const fr = m.frames || [];
@@ -773,7 +803,7 @@ function handle(m) {
       addFrames(fr);
       break;
     }
-    case "stats":
+    case "stats":   // BaseEngine pushes stats_snapshot() every stats_interval
       S.stats = m.stats || null;
       syncCount();
       break;
@@ -789,21 +819,27 @@ function setWs(state) {
   el.textContent = tk("common.backend", state);
 }
 
+// Reconnect with exponential back-off and jitter (1 s doubling up to 30 s, reset once connected).
+let wsDelay = 1000;
 function connectWs() {
   setWs("connecting");
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   let last = 0;
-  ws.onopen = () => setWs("connected");
+  ws.onopen = () => { setWs("connected"); wsDelay = 1000; };
   ws.onmessage = (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     if (m.push_seq) {
-      if (last && m.push_seq !== last + 1 && !m.full) onGap();
+      if (last && m.push_seq !== last + 1) onGap(m.full);
       last = m.push_seq;
     }
     handle(m);
   };
-  ws.onclose = () => { setWs("disconnected"); setTimeout(connectWs, 2000); };
+  ws.onclose = () => {
+    setWs("disconnected");
+    setTimeout(connectWs, wsDelay * (0.5 + Math.random() / 2));
+    wsDelay = Math.min(30000, wsDelay * 2);
+  };
 }
 
 // ------------------------------------------------------------------ simulation / menus
@@ -861,9 +897,10 @@ Shell.init({
 });
 
 Shell.setStatus(`<span class="simstat"><span id="simState"></span>
-  <select id="simScale" aria-label="${t("common.sim.time_scale")}">${TIME_SCALES.map((s) => `<option value="${s}">×${s}</option>`).join("")}</select>
+  <select id="simScale">${TIME_SCALES.map((s) => `<option value="${s}">×${s}</option>`).join("")}</select>
   <button type="button" class="btn small" id="simBtn"></button>
   <span id="wsBadge" class="badge"></span></span>`);
+$("simScale").setAttribute("aria-label", t("common.sim.time_scale"));
 $("simBtn").addEventListener("click", () => setSim({ running: !S.running }));
 $("simScale").addEventListener("change", (e) => setSim({ time_scale: Number(e.target.value) }));
 
@@ -875,10 +912,16 @@ versionOptions($("setVersion"), false);
 versionOptions($("setCVersion"), true);
 $("setPassword").placeholder = t("settings.password.ph");
 
-$("chargerFilter").addEventListener("input", () => { for (const c of S.chargers.values()) S.rows.get(c.id).tr.hidden = !matchesFilter(c); });
+$("chargerFilter").addEventListener("input", () => {
+  for (const c of S.chargers.values()) S.rows.get(c.id).tr.hidden = !matchesFilter(c);
+  syncSelAll();
+});
+// Select all = the rows the filter shows; hidden rows keep their state.
 $("selAll").addEventListener("change", (e) => {
-  S.checked = e.target.checked ? new Set(S.chargers.keys()) : new Set();
-  for (const [id, r] of S.rows) r.chk.checked = S.checked.has(id);
+  for (const id of visibleIds()) {
+    if (e.target.checked) S.checked.add(id); else S.checked.delete(id);
+    S.rows.get(id).chk.checked = e.target.checked;
+  }
   syncSelAll();
 });
 $("bulkConnect").addEventListener("click", () => bulk("connect"));
@@ -892,14 +935,19 @@ $("scProfiles").addEventListener("click", () => openProfileDialog(S.sel));
 $("scConnector").addEventListener("change", () => { S.composite = null; drawChart(); loadSmartCharging(); });
 for (const id of ["fCharger", "fDir"]) $(id).addEventListener("change", renderFrames);
 $("fAction").addEventListener("input", renderFrames);
-$("fClear").addEventListener("click", () => $("frameRows").replaceChildren());
+// Clear drops the frames kept client side too (newer ones still arrive; Details refetches older ones).
+$("fClear").addEventListener("click", () => { S.frames = []; S.frameSet.clear(); $("frameRows").replaceChildren(); });
+$("tagValue").addEventListener("input", checkTag);
+$("keysBox").addEventListener("toggle", () => { if ($("keysBox").open) loadKeys(); });
 bindForm("setForm", "setErr", applySettings);
 bindForm("addForm", "addErr", addCharger);
 bindForm("dtForm", "dtErr", sendDataTransfer, true);
 
 // Composite schedule and chart refresh for the selected charger (the "now" line moves even without pushes).
-setInterval(() => { if (S.sel) loadSmartCharging(); }, 15000);
-setInterval(() => { if (S.sel) scheduleDraw(); }, 5000);
+// Paused while the tab is hidden; refreshed at once when it becomes visible again.
+setInterval(() => { if (S.sel && !document.hidden) loadSmartCharging(); }, 15000);
+setInterval(() => { if (S.sel && !document.hidden) scheduleDraw(); }, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.sel) loadSmartCharging(); });
 
 fetch("/api/version").then((r) => (r.ok ? r.json() : null))
   .then((v) => { if (v && v.version) Shell.setVersion(v.version); }).catch(() => {});

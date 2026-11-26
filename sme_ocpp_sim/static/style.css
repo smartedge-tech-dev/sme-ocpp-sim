@@ -57,8 +57,7 @@ select option:disabled { color: var(--muted); }
 .tbl th { position: sticky; top: 0; background: var(--pale); color: var(--muted); font-weight: 600; text-align: left; padding: 4px 6px; z-index: 1; }
 .tbl td { padding: 3px 6px; border-top: 1px solid var(--line); white-space: nowrap; }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
-/* 200+ rows: the browser skips layout / paint of rows outside the viewport. */
-.clist tbody tr { content-visibility: auto; contain-intrinsic-size: auto 25px; cursor: pointer; }
+.clist tbody tr { cursor: pointer; }
 .clist tbody tr:hover { background: var(--pale); }
 .clist tbody tr.sel { background: var(--accent-weak); }
 .clist tbody tr.flash td.num { background: var(--flash); transition: background .6s; }

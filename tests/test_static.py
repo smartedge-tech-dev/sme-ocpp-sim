@@ -80,3 +80,12 @@ def test_global_dialog_functions_exposed():
     assert names == {"openChargerDialog", "openSettingsDialog", "openProfileDialog", "openFrameDetail",
                      "openAddChargerDialog"}
     assert "vendor: Shell.vendors.smartEdge" in js
+
+
+def test_settings_use_json_routes():
+    # The settings dialog and the key table go through the JSON routes (validated server side); no client-side YAML
+    # editing is left in the UI.
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "yaml" not in js.lower()
+    for route in ("/api/csms-defaults", 'chargerUrl(SET.id, "settings")', 'chargerUrl(id, "configuration")'):
+        assert route in js, route

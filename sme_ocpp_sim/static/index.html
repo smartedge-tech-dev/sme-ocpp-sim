@@ -78,9 +78,9 @@
 
         <details class="keys" id="keysBox">
           <summary data-i18n="keys.title">Configuration keys</summary>
-          <table class="tbl"><thead><tr><th data-i18n="common.col.name">Name</th><th data-i18n="common.col.value">Value</th></tr></thead>
+          <table class="tbl"><thead><tr><th data-i18n="common.col.name">Name</th><th data-i18n="common.col.value">Value</th><th data-i18n="keys.access">Access</th></tr></thead>
             <tbody id="keyRows"></tbody></table>
-          <p class="hint" data-i18n="keys.hint">Values from the configuration file; keys changed by the CSMS at run time are not shown.</p>
+          <p class="hint" data-i18n="keys.hint">Run-time values, as the CSMS sees them with GetConfiguration (incl. changes made by ChangeConfiguration).</p>
         </details>
       </div>
     </section>
@@ -101,7 +101,7 @@
         <button class="btn small" id="fClear" type="button" data-i18n="frames.clear">Clear view</button>
         <a class="btn small" id="fExport" href="/api/frames.jsonl" download="frames.jsonl" data-i18n="frames.export">Export JSONL</a>
       </div>
-      <div class="tablewrap flog">
+      <div class="tablewrap flog" id="frameWrap">
         <table class="tbl">
           <thead><tr><th class="num">#</th><th data-i18n="frames.col.time">Time</th><th data-i18n="frames.col.charger">Charger</th>
             <th data-i18n="frames.col.dir">Dir</th><th data-i18n="frames.col.type">Type</th><th data-i18n="frames.col.action">Action</th>

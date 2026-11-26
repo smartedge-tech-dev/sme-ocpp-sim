@@ -15,8 +15,22 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
 * ``GET /api/chargers/{id}/composite?connector=&duration=&unit=`` - the GetCompositeSchedule answer computed
   locally. In OCPP 1.6 the plan's ``evse`` is a connectorId, so the parameter is ``connector`` (``evse`` is
   accepted as an alias; 0 = the whole charge point);
-* ``GET /api/frames?since=&charger=&action=&dir=&limit=`` / ``GET /api/frames.jsonl?<same>`` - the frame log
-  (the JSON Lines export is streamed; without ``limit`` it holds every matching entry in the buffer);
+* ``GET /api/frames?since=&until=&charger=&action=&dir=&limit=`` / ``GET /api/frames.jsonl?<same>`` - the frame
+  log (the JSON Lines export is streamed; without ``limit`` it holds every matching entry in the buffer; ``until``
+  = only entries with ``seq <= until``, so ``since=n-1&until=n`` is the exact entry ``n``);
+* ``GET|PUT /api/csms-defaults`` - the ``csms_defaults`` block as JSON (PUT replaces the whole block: an omitted
+  field is its model default, so a client sends back what GET returned with its changes);
+* ``GET|PATCH /api/chargers/{id}/settings`` - the connection / authorization subset of a charger's config
+  (:data:`SETTINGS_FIELDS`, the password masked). PATCH changes only the fields it contains (``null`` = unset;
+  the mask keeps the stored password) and leaves every other field of the charger as it is;
+* ``GET /api/chargers/{id}/configuration`` - the run-time configuration keys (what the CSMS sees with
+  GetConfiguration, incl. values it changed with ChangeConfiguration and the ``readonly`` flags).
+
+The JSON config routes validate with the pydantic models (the whole :class:`SimConfig` again, so cross-field rules
+such as the security profile apply) and go through ``engine.reload`` (the engine lock; a changed charger restarts).
+Like the YAML routes they read the current config before taking the lock, so two concurrent edits can overwrite
+each other. Nothing is written to the file until ``POST /api/config/save`` (block write-back, comments outside the
+changed blocks kept, values equal to their defaults not written);
 * ``POST /api/chargers/bulk/{connect,disconnect}`` - body ``{"ids": [...]}`` / ``["A", "B"]`` / ``{"all": true}``
   (``ids`` and ``all`` together are rejected). Not atomic: the chargers are handled one after the other and an
   error stops the request with the earlier ones already changed. ``bulk`` is not a valid charger id
@@ -53,13 +67,13 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
 from fastapi import APIRouter, Body, FastAPI, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sme_sim_common.web import bad, error_response, make_base_app
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -67,7 +81,7 @@ from starlette.routing import Route
 
 from . import __version__
 from .charging.profiles import ChargingRateUnit
-from .config import PASSWORD_MASK, SimConfig
+from .config import PASSWORD_MASK, CsmsDefaults, SimConfig
 from .engine import OcppEngine, OperationNotPossible
 from .protocol.base import DataTransferStatus
 from .protocol.v16.enums import ChargePointErrorCode
@@ -82,6 +96,8 @@ MAX_FRAMES = 5000
 NDJSON = "application/x-ndjson"
 JSONL_CHUNK = 500  # frame log entries per streamed chunk
 #: What :func:`mask_text` returns for text that is not valid YAML (it cannot be masked reliably).
+#: Charger config fields of ``/api/chargers/{id}/settings``.
+SETTINGS_FIELDS = ("csms_url", "ocpp_version", "password", "ca_file", "verify_tls", "id_tags", "config_keys")
 UNPARSABLE_PLACEHOLDER = "# configuration not shown: it is not valid YAML, so its passwords cannot be masked\n"
 
 
@@ -103,6 +119,18 @@ class DataTransferBody(BaseModel):
     vendor_id: str = Field(min_length=1, max_length=255)
     message_id: Optional[str] = Field(None, max_length=50)
     data: Optional[str] = None
+
+
+class ChargerSettingsBody(BaseModel):
+    """PATCH body of ``/api/chargers/{id}/settings``: only the fields present are changed (``null`` = unset)."""
+    model_config = ConfigDict(extra="forbid")
+    csms_url: Optional[str] = None
+    ocpp_version: Optional[str] = None
+    password: Optional[str] = None
+    ca_file: Optional[str] = None
+    verify_tls: Optional[bool] = None
+    id_tags: Optional[List[str]] = None
+    config_keys: Optional[Dict[str, Union[str, int, float, bool]]] = None
 
 
 class BulkBody(BaseModel):
@@ -405,13 +433,75 @@ def _router(engine: OcppEngine) -> APIRouter:
             raise bad(400, f"composite schedule rejected ({res.status.value})")
         return {"connector": cid_, "schedule_start": res.schedule_start, **jsonable_encoder(res.schedule)}
 
+    async def apply(data: dict) -> None:
+        """Validate ``data`` (a whole config dump) and reload the engine with it; any rejection is a 400."""
+        try:
+            cfg = SimConfig.model_validate(data)
+        except ValueError as e:  # pydantic ValidationError
+            raise bad(400, e) from None
+        try:
+            await engine.reload(cfg)
+        except Exception as e:  # noqa: BLE001 - build / apply errors: the old config keeps running
+            raise bad(400, e) from None
+
+    def charger_cfg(cid: str):
+        for i, c in enumerate(engine.config.chargers):
+            if c.id == cid:
+                return i, c
+        raise bad(404, f"unknown charger {cid!r}")
+
+    def settings_view(c) -> dict:
+        out = {k: getattr(c, k) for k in SETTINGS_FIELDS}
+        if out["password"] is not None:
+            out["password"] = PASSWORD_MASK
+        url, version = engine.config.resolve_csms(c)
+        return {"id": c.id, **jsonable_encoder(out), "effective": {"csms_url": url, "ocpp_version": version}}
+
+    @r.get("/csms-defaults", summary="The csms_defaults block")
+    async def csms_defaults_get():
+        return engine.config.csms_defaults.model_dump(mode="json")
+
+    @r.put("/csms-defaults", summary="Replace the csms_defaults block (reload)")
+    async def csms_defaults_put(body: CsmsDefaults):
+        data = engine.config.model_dump()
+        data["csms_defaults"] = body.model_dump()
+        await apply(data)
+        return {"ok": True, **engine.config.csms_defaults.model_dump(mode="json")}
+
+    @r.get("/chargers/{cid}/settings", summary="Connection / authorization settings of a charger")
+    async def settings_get(cid: str):
+        return settings_view(charger_cfg(cid)[1])
+
+    @r.patch("/chargers/{cid}/settings", summary="Change some settings of a charger (reload)")
+    async def settings_patch(cid: str, body: ChargerSettingsBody = Body(default_factory=ChargerSettingsBody)):
+        i, c = charger_cfg(cid)
+        changes = body.model_dump(include=body.model_fields_set)
+        if changes.get("password") == PASSWORD_MASK:
+            del changes["password"]  # the mask keeps the stored password
+        if "verify_tls" in changes and changes["verify_tls"] is None:
+            raise bad(400, "verify_tls: true or false")
+        for k, empty in (("id_tags", []), ("config_keys", {})):
+            if k in changes and changes[k] is None:
+                changes[k] = empty
+        if changes:
+            data = engine.config.model_dump()
+            data["chargers"][i] = {**c.model_dump(), **changes}
+            await apply(data)
+        return {"ok": True, **settings_view(charger_cfg(cid)[1])}
+
+    @r.get("/chargers/{cid}/configuration", summary="Run-time configuration keys (as GetConfiguration sees them)")
+    async def configuration(cid: str):
+        known, _ = runtime(cid).store.get()
+        return {"keys": [{"key": e.key, "readonly": e.readonly, "value": e.value} for e in known]}
+
     def frame_filters(charger, action, dir_):
         if dir_ not in (None, "rx", "tx"):
             raise bad(400, "dir: rx or tx")
         return {"charger": charger or None, "action": action or None, "direction": dir_}
 
     @r.get("/frames", summary="Frame log entries after since (the newest limit of them)")
-    async def frames(since: int = Query(0, ge=0), charger: Optional[str] = None, action: Optional[str] = None,
+    async def frames(since: int = Query(0, ge=0), until: Optional[int] = Query(None, ge=0, description="seq <= until"),
+                     charger: Optional[str] = None, action: Optional[str] = None,
                      direction: Optional[str] = Query(None, alias="dir", description="rx or tx"),
                      limit: int = Query(500, ge=1, le=MAX_FRAMES)):
         """Matching entries with ``seq > since``, oldest first; at most the newest ``limit``. ``truncated`` means
@@ -420,7 +510,10 @@ def _router(engine: OcppEngine) -> APIRouter:
         passes the ``seq`` of the last entry it has as ``since``; ``last_seq`` is the newest seq of the whole log
         (filters ignored)."""
         f = frame_filters(charger, action, direction)
-        rows = engine.frame_log.since(since, limit=limit + 1, **f)
+        if until is None:
+            rows = engine.frame_log.since(since, limit=limit + 1, **f)
+        else:
+            rows = [e for e in engine.frame_log.since(since, **f) if e.seq <= until]
         truncated = len(rows) > limit
         rows = rows[-limit:]
         return {"frames": [e.to_dict() for e in rows], "last_seq": engine.frame_log.last_seq,
