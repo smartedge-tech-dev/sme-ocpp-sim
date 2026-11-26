@@ -7,15 +7,35 @@ layer (UpdateFirmware, GetDiagnostics, Reservation, LocalAuthList, ...).
 
 Outbound: ``send_*`` build 1.6 requests from domain events and parse the responses (``kind="response"``).
 Transaction ids are 1.6 integers on the wire and strings in the domain.
+
+Smart charging (1.6 §3.13, §5.7, §5.16, §6.13, §7.13; errata v4.0): ``csChargingProfiles`` / ``chargingProfile``
+become :class:`charging.profiles.ChargingProfile` (naive datetimes are taken as UTC). An invalid
+``chargingRateUnit`` (like any other invalid enum value) is CALLERROR PropertyConstraintViolation (errata 3.24),
+raised by the codec.
+
+Interpretations (not defined by the spec)
+-----------------------------------------
+- RemoteStartTransaction.chargingProfile must be a TxProfile without transactionId (§5.16.2: it "SHALL NOT be
+  set"); anything else is answered Rejected without starting a transaction. The runtime also rejects a profile
+  the profile store would refuse (first period not 0, ...).
+- SetChargingProfile / ClearChargingProfile with a connectorId outside 0..N are CALLERROR
+  PropertyConstraintViolation like the other connector-addressed requests; GetCompositeSchedule answers Rejected
+  for an unknown connector or a duration < 1 (§5.7 "not able to report the requested schedule").
+- GetCompositeSchedule.conf: ``scheduleStart`` = ``chargingSchedule.startSchedule`` = the time of the request,
+  ``duration`` = the requested duration, limits rounded to 1 decimal (§7.13 at most one fraction digit),
+  adjacent periods that become equal after rounding are merged. The runtime reports unconstrained intervals as
+  the charger's hardware maximum, so the answer is Accepted even when no profile is installed (the hardware
+  limit is a real limit; 1.6 has no encoding for "no limit").
 """
 
 from __future__ import annotations
 
 import functools
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from ...charging import profiles as cp
 from ...rpc.errors import OCPP16_ERRORS, CallError
 from .. import base as d
 from . import models as m
@@ -25,7 +45,6 @@ from .config_keys import KEYS
 log = logging.getLogger(__name__)
 
 _NO_ERROR = "NoError"
-_SMART_CHARGING = ("SetChargingProfile", "ClearChargingProfile", "GetCompositeSchedule")
 
 #: Domain stop reason -> 1.6 ``Reason`` of StopTransaction.req.
 _REASON_16: Dict[d.StopReason, str] = {
@@ -61,6 +80,48 @@ def _meter_values(evse_id: int, tx_id: Optional[str], ts: datetime, samples: Seq
     return m.MeterValuesRequest(
         connector_id=evse_id, transaction_id=int(tx_id) if tx_id is not None else None,
         meter_value=[m.MeterValueNonEmpty(timestamp=ts, sampled_value=_sampled(samples, context))])
+
+
+def _utc(t: Optional[datetime]) -> Optional[datetime]:
+    return t.replace(tzinfo=timezone.utc) if t is not None and t.tzinfo is None else t
+
+
+def _profile(p: m.ChargingProfile) -> cp.ChargingProfile:
+    """1.6 ChargingProfile -> domain profile."""
+    sch = p.charging_schedule
+    return cp.ChargingProfile(
+        profile_id=p.charging_profile_id,
+        stack_level=p.stack_level,
+        purpose=cp.ChargingProfilePurpose(p.charging_profile_purpose.value),
+        kind=cp.ChargingProfileKind(p.charging_profile_kind.value),
+        schedule=cp.ChargingSchedule(
+            unit=cp.ChargingRateUnit(sch.charging_rate_unit.value),
+            periods=tuple(cp.SchedulePeriod(x.start_period, x.limit, x.number_phases)
+                          for x in sch.charging_schedule_period),
+            duration=sch.duration,
+            start_schedule=_utc(sch.start_schedule),
+            min_charging_rate=sch.min_charging_rate),
+        transaction_id=p.transaction_id,
+        recurrency_kind=cp.RecurrencyKind(p.recurrency_kind.value) if p.recurrency_kind is not None else None,
+        valid_from=_utc(p.valid_from),
+        valid_to=_utc(p.valid_to))
+
+
+def _schedule(res: d.GetCompositeResult) -> m.ChargingSchedule:
+    """Domain composite schedule -> 1.6 ChargingSchedule (1-decimal limits, equal neighbours merged)."""
+    sched = res.schedule
+    assert sched is not None
+    periods: List[m.ChargingSchedulePeriod] = []
+    for x in sched.periods:
+        if x.limit is None:
+            raise ValueError("composite period without limit")  # the runtime fills these in
+        period = m.ChargingSchedulePeriod(start_period=x.start_period, limit=round(x.limit, 1),
+                                          number_phases=x.number_phases)
+        if periods and (periods[-1].limit, periods[-1].number_phases) == (period.limit, period.number_phases):
+            continue
+        periods.append(period)
+    return m.ChargingSchedule(charging_rate_unit=sched.unit.value, charging_schedule_period=periods,
+                              duration=sched.duration, start_schedule=res.schedule_start)
 
 
 def _accepted(status: d.CommandStatus) -> str:
@@ -99,19 +160,23 @@ class Adapter16(d.VersionAdapter):
             "UnlockConnector": self._unlock,
             "ChangeAvailability": self._change_availability,
             "DataTransfer": self._data_transfer,
+            "SetChargingProfile": self._set_profile,
+            "ClearChargingProfile": self._clear_profile,
+            "GetCompositeSchedule": self._get_composite,
         }
-        out: Dict[str, d.Handler] = {a: functools.partial(h, runtime) for a, h in table.items()}
-        for action in _SMART_CHARGING:
-            out[action] = functools.partial(self._smart_charging, action)
-        return out
+        return {a: functools.partial(h, runtime) for a, h in table.items()}
 
     async def _remote_start(self, runtime: d.CommandSink, payload: dict) -> dict:
         req = self._parse("RemoteStartTransaction", payload)
         if req.connector_id is not None:
             # TODO(spec): connectorId 0 on RemoteStartTransaction is treated as out of range (must be > 0).
             _check_connector(req.connector_id, runtime, allow_zero=False)
-        # M4: convert chargingProfile into charging.profiles; until then the 1.6 model is passed through.
-        st = await runtime.handle(d.RequestStart(req.connector_id, req.id_tag, req.charging_profile))
+        profile = None
+        if req.charging_profile is not None:
+            profile = _profile(req.charging_profile)
+            if profile.purpose is not cp.ChargingProfilePurpose.TX or profile.transaction_id is not None:
+                return dump(m.RemoteStartTransactionResponse(status="Rejected"))
+        st = await runtime.handle(d.RequestStart(req.connector_id, req.id_tag, profile))
         return dump(m.RemoteStartTransactionResponse(status=_accepted(st)))
 
     async def _remote_stop(self, runtime: d.CommandSink, payload: dict) -> dict:
@@ -167,9 +232,36 @@ class Adapter16(d.VersionAdapter):
         res: d.DataTransferResult = await runtime.handle(d.DataTransfer(req.vendor_id, req.message_id, req.data))
         return dump(m.DataTransferResponse(status=res.status.value, data=res.data))
 
-    async def _smart_charging(self, action: str, payload: dict) -> dict:
-        # M4: SetChargingProfile / ClearChargingProfile / GetCompositeSchedule with charging.profiles.
-        raise CallError(OCPP16_ERRORS.not_implemented, f"{action} is not implemented yet")
+    async def _set_profile(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("SetChargingProfile", payload)
+        _check_connector(req.connector_id, runtime, allow_zero=True)
+        st = await runtime.handle(d.SetProfile(req.connector_id, _profile(req.cs_charging_profiles)))
+        status = {d.CommandStatus.ACCEPTED: "Accepted", d.CommandStatus.NOT_SUPPORTED: "NotSupported"}.get(
+            st, "Rejected")
+        return dump(m.SetChargingProfileResponse(status=status))
+
+    async def _clear_profile(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("ClearChargingProfile", payload)
+        if req.connector_id is not None:
+            _check_connector(req.connector_id, runtime, allow_zero=True)
+        purpose = req.charging_profile_purpose
+        st = await runtime.handle(d.ClearProfiles(
+            req.id, req.connector_id, cp.ChargingProfilePurpose(purpose.value) if purpose is not None else None,
+            req.stack_level))
+        return dump(m.ClearChargingProfileResponse(
+            status="Accepted" if st is d.CommandStatus.ACCEPTED else "Unknown"))
+
+    async def _get_composite(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("GetCompositeSchedule", payload)
+        if not 0 <= req.connector_id <= runtime.connector_count or req.duration < 1:
+            return dump(m.GetCompositeScheduleResponse(status="Rejected"))
+        unit = cp.ChargingRateUnit(req.charging_rate_unit.value) if req.charging_rate_unit is not None else None
+        res: d.GetCompositeResult = await runtime.handle(d.GetComposite(req.connector_id, req.duration, unit))
+        if res.status is not d.CommandStatus.ACCEPTED or res.schedule is None:
+            return dump(m.GetCompositeScheduleResponse(status="Rejected"))
+        return dump(m.GetCompositeScheduleResponse(
+            status="Accepted", connector_id=res.evse_id, schedule_start=res.schedule_start,
+            charging_schedule=_schedule(res)))
 
     # ------------------------------------------------------------------ outbound
 

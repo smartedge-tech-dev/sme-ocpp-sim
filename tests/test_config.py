@@ -116,3 +116,29 @@ def test_charger_id_colon_connectors_bound_and_float_boot_retry():
     assert ChargerConfig(id="A", boot_retry_s=0.5).boot_retry_s == 0.5
     with pytest.raises(ValidationError):
         ChargerConfig(id="A", boot_retry_s=0)
+
+
+def test_power_and_ev_fields():
+    from sme_ocpp_sim.charging.ev import PRESETS
+    from sme_ocpp_sim.config import parse_text
+
+    c = ChargerConfig(id="A")
+    assert (c.max_power_w, c.voltage_v, c.phases, c.line_to_line) == (6000.0, 200.0, 1, False)
+    assert c.session.ev_model == "compact-40kwh" and (c.session.initial_soc, c.session.target_soc) == (30, 90)
+    cfg = parse_text("""
+csms_defaults: { url: "ws://x/ocpp" }
+ev_models:
+  - { id: "van", capacity_kwh: 75, max_ac_kw: 11, max_current_a: 16, phases: 3, curve: [[0, 1.0], [90, 0.5]] }
+chargers:
+  - { id: "A", phases: 3, voltage_v: 200, line_to_line: true, session: { ev_model: "van", target_soc: 80 } }
+  - { id: "B" }
+""")
+    van = cfg.resolve_ev(cfg.chargers[0])
+    assert (van.max_ac_w, van.phases, van.curve) == (11000.0, 3, ((0, 1.0), (90, 0.5)))
+    assert cfg.resolve_ev(cfg.chargers[1]) is PRESETS["compact-40kwh"]
+    with pytest.raises(ValidationError, match="unknown session.ev_model"):
+        parse_text('csms_defaults: { url: "ws://x" }\nchargers: [{ id: "A", session: { ev_model: "nope" } }]')
+    with pytest.raises(ValidationError, match="strictly increasing"):
+        parse_text('ev_models: [{ id: "e", capacity_kwh: 1, max_ac_kw: 1, curve: [[50, 1], [10, 1]] }]')
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", power_w=6000)  # M3 placeholder removed

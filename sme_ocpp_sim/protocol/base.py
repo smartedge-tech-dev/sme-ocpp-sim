@@ -4,8 +4,8 @@ The runtime only speaks these types; a :class:`VersionAdapter` translates them t
 messages. Domain shape follows 2.0.1 (Station -> EVSE -> Connector); 1.6 projects 1 connector per EVSE with
 ``connectorId == evse_id`` and ``evse_id == 0`` meaning the whole charger.
 
-Nothing product-specific is imported here. Charging profile payloads are ``Any`` until M4 brings
-``charging.profiles``.
+The only product imports are the version-neutral charging types (``charging.profiles`` / ``charging.composite``),
+which the smart-charging commands carry.
 """
 
 from __future__ import annotations
@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+
+from ..charging.composite import CompositeSchedule
+from ..charging.profiles import ChargingProfile, ChargingProfilePurpose, ChargingRateUnit
 
 # --------------------------------------------------------------------------------------------- status
 
@@ -73,7 +76,8 @@ class ConfigStatus(str, Enum):
 class RequestStart:
     evse_id: Optional[int]
     id_token: str
-    profile: Any = None
+    #: TxProfile without transactionId; bound to the transaction this request starts (1.6 §5.16.2).
+    profile: Optional[ChargingProfile] = None
 
 
 @dataclass(frozen=True)
@@ -119,23 +123,23 @@ class Trigger:
 
 @dataclass(frozen=True)
 class SetProfile:
-    evse_id: int
-    profile: Any
+    evse_id: int  # 0 = whole charger
+    profile: ChargingProfile
 
 
 @dataclass(frozen=True)
 class ClearProfiles:
     profile_id: Optional[int] = None
     evse_id: Optional[int] = None
-    purpose: Optional[str] = None
+    purpose: Optional[ChargingProfilePurpose] = None
     stack_level: Optional[int] = None
 
 
 @dataclass(frozen=True)
 class GetComposite:
     evse_id: int
-    duration: int
-    unit: Optional[str] = None  # "W" | "A"
+    duration: int  # seconds
+    unit: Optional[ChargingRateUnit] = None  # None = W
 
 
 @dataclass(frozen=True)
@@ -188,7 +192,8 @@ class GetCompositeResult:
     status: CommandStatus
     evse_id: Optional[int] = None
     schedule_start: Optional[datetime] = None
-    schedule: Any = None
+    #: Every period has a limit (the runtime fills unconstrained intervals with the hardware maximum).
+    schedule: Optional[CompositeSchedule] = None
 
 
 @dataclass(frozen=True)

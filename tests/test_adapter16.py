@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from sme_ocpp_sim.charging import profiles as cp
+from sme_ocpp_sim.charging.composite import CompositePeriod, CompositeSchedule
 from sme_ocpp_sim.protocol import base as d
 from sme_ocpp_sim.protocol.v16.adapter import Adapter16
 from sme_ocpp_sim.rpc import CallError
@@ -142,10 +144,87 @@ def test_data_transfer():
     assert out == {"status": "Accepted", "data": "r"}
 
 
-@pytest.mark.parametrize("action, payload", [
-    ("SetChargingProfile", {}), ("ClearChargingProfile", {}), ("GetCompositeSchedule", {})])
-def test_smart_charging_not_implemented_yet(action, payload):
-    assert _error(action, payload, A) == "NotImplemented"
+def _wire_profile(purpose="TxDefaultProfile", unit="W", **kw):
+    return {"chargingProfileId": 7, "stackLevel": 1, "chargingProfilePurpose": purpose,
+            "chargingProfileKind": "Absolute",
+            "chargingSchedule": {"chargingRateUnit": unit, "startSchedule": "2026-11-26T00:00:00",
+                                 "chargingSchedulePeriod": [{"startPeriod": 0, "limit": 16, "numberPhases": 1},
+                                                            {"startPeriod": 60, "limit": 8.5}]},
+            **kw}
+
+
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected"), (d.CommandStatus.NOT_SUPPORTED, "NotSupported")])
+def test_set_charging_profile(st, wire):
+    out, cmds = _call("SetChargingProfile", {"connectorId": 0, "csChargingProfiles": _wire_profile(unit="A")}, st)
+    assert out == {"status": wire}
+    cmd = cmds[0]
+    assert isinstance(cmd, d.SetProfile) and cmd.evse_id == 0
+    p = cmd.profile
+    assert (p.profile_id, p.stack_level, p.purpose, p.kind) == (
+        7, 1, cp.ChargingProfilePurpose.TX_DEFAULT, cp.ChargingProfileKind.ABSOLUTE)
+    assert p.schedule.unit is cp.ChargingRateUnit.A
+    assert p.schedule.periods == (cp.SchedulePeriod(0, 16, 1), cp.SchedulePeriod(60, 8.5, None))
+    assert p.schedule.start_schedule == datetime(2026, 11, 26, tzinfo=timezone.utc)  # naive -> UTC
+
+
+def test_set_charging_profile_errors():
+    good = _wire_profile()
+    assert _error("SetChargingProfile", {"connectorId": 3, "csChargingProfiles": good}, A) == PCV
+    # errata 3.24: an invalid chargingRateUnit is PropertyConstraintViolation
+    assert _error("SetChargingProfile", {"connectorId": 1, "csChargingProfiles": _wire_profile(unit="kW")}, A) == PCV
+    assert _error("GetCompositeSchedule", {"connectorId": 1, "duration": 60, "chargingRateUnit": "kW"}, A) == PCV
+
+
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (d.CommandStatus.UNKNOWN, "Unknown")])
+def test_clear_charging_profile(st, wire):
+    out, cmds = _call("ClearChargingProfile", {"connectorId": 1, "chargingProfilePurpose": "TxProfile",
+                                               "stackLevel": 2}, st)
+    assert out == {"status": wire}
+    assert cmds == [d.ClearProfiles(None, 1, cp.ChargingProfilePurpose.TX, 2)]
+    _, cmds = _call("ClearChargingProfile", {"id": 5}, st)
+    assert cmds == [d.ClearProfiles(5)]
+    assert _error("ClearChargingProfile", {"connectorId": 9}, A) == PCV
+
+
+def test_get_composite_schedule():
+    sched = CompositeSchedule(1, TS, 300, cp.ChargingRateUnit.A, (
+        CompositePeriod(0, 10.04, 1), CompositePeriod(60, 9.96, 1), CompositePeriod(120, 6.0, 1)))
+    res = d.GetCompositeResult(A, 1, TS, sched)
+    out, cmds = _call("GetCompositeSchedule", {"connectorId": 1, "duration": 300, "chargingRateUnit": "A"}, res)
+    assert cmds == [d.GetComposite(1, 300, cp.ChargingRateUnit.A)]
+    assert out == {"status": "Accepted", "connectorId": 1, "scheduleStart": "2026-11-26T01:02:03.456Z",
+                   "chargingSchedule": {
+                       "chargingRateUnit": "A", "duration": 300, "startSchedule": "2026-11-26T01:02:03.456Z",
+                       "chargingSchedulePeriod": [  # 1-decimal rounding merges 10.04 / 9.96
+                           {"startPeriod": 0, "limit": 10.0, "numberPhases": 1},
+                           {"startPeriod": 120, "limit": 6.0, "numberPhases": 1}]}}
+    _, cmds = _call("GetCompositeSchedule", {"connectorId": 0, "duration": 5}, res)
+    assert cmds[0].unit is None
+
+
+@pytest.mark.parametrize("payload", [{"connectorId": 3, "duration": 60}, {"connectorId": 1, "duration": 0}])
+def test_get_composite_schedule_rejected_without_runtime(payload):
+    out, cmds = _call("GetCompositeSchedule", payload, None)
+    assert out == {"status": "Rejected"} and cmds == []
+
+
+def test_get_composite_schedule_runtime_rejects():
+    out, _ = _call("GetCompositeSchedule", {"connectorId": 1, "duration": 60}, d.GetCompositeResult(R))
+    assert out == {"status": "Rejected"}
+
+
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected")])
+def test_remote_start_with_tx_profile(st, wire):
+    out, cmds = _call("RemoteStartTransaction",
+                      {"idTag": "T1", "connectorId": 1, "chargingProfile": _wire_profile("TxProfile")}, st)
+    assert out == {"status": wire}
+    assert cmds[0].profile.purpose is cp.ChargingProfilePurpose.TX and cmds[0].profile.transaction_id is None
+
+
+@pytest.mark.parametrize("profile", [_wire_profile("TxDefaultProfile"), _wire_profile("TxProfile", transactionId=4)])
+def test_remote_start_with_invalid_profile_rejected(profile):
+    out, cmds = _call("RemoteStartTransaction", {"idTag": "T1", "chargingProfile": profile}, A)
+    assert out == {"status": "Rejected"} and cmds == []
 
 
 def test_unlisted_actions_have_no_handler():
