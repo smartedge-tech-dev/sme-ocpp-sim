@@ -1,0 +1,84 @@
+import pytest
+from pydantic import ValidationError
+
+from sme_ocpp_sim.config import ChargerConfig, SimConfig, parse_text
+
+URL = "ws://localhost:8180/steve/websocket/CentralSystemService"
+
+
+def _yaml(chargers: str, defaults: str = f'csms_defaults: {{ url: "{URL}" }}\n') -> SimConfig:
+    return parse_text(defaults + "chargers:\n" + chargers)
+
+
+def test_ids_stay_strings():
+    cfg = _yaml('  - id: "0123"\n  - id: "1e5"\n')
+    assert [c.id for c in cfg.chargers] == ["0123", "1e5"]
+
+
+@pytest.mark.parametrize("raw", ["0123", "1", "1.5", "yes", "ON"])
+def test_unquoted_non_string_id_rejected(raw):
+    with pytest.raises(ValidationError, match="quoted string"):
+        _yaml(f"  - id: {raw}\n")
+
+
+def test_yaml_booleans_in_string_fields_not_misparsed():
+    cfg = _yaml('  - id: "CP-1"\n    vendor: "ON"\n    model: "no"\n    id_tags: ["yes", "OFF"]\n')
+    c = cfg.chargers[0]
+    assert (c.vendor, c.model, c.id_tags) == ("ON", "no", ["yes", "OFF"])
+    with pytest.raises(ValidationError, match="quoted string"):
+        _yaml('  - id: "CP-1"\n    vendor: ON\n')
+    with pytest.raises(ValidationError, match="quoted string"):
+        _yaml('  - id: "CP-1"\n    id_tags: [yes]\n')
+
+
+def test_config_key_values_coerced_to_wire_strings():
+    cfg = _yaml('  - id: "CP-1"\n    config_keys: { HeartbeatInterval: 300, LocalPreAuthorize: yes,'
+                ' MeterValuesSampledData: "SoC" }\n')
+    assert cfg.chargers[0].config_keys == {"HeartbeatInterval": "300", "LocalPreAuthorize": "true",
+                                           "MeterValuesSampledData": "SoC"}
+
+
+@pytest.mark.parametrize("version,msg", [("2.0.1", "coming in v0.2"), ("2.1", "coming in v0.3"),
+                                         ("1.5", "unknown OCPP version")])
+def test_unavailable_version_rejected(version, msg):
+    with pytest.raises(ValidationError, match=msg):
+        ChargerConfig(id="CP-1", ocpp_version=version)
+    with pytest.raises(ValidationError, match=msg):
+        SimConfig.model_validate({"csms_defaults": {"url": URL, "ocpp_version": version}})
+
+
+def test_password_not_in_repr():
+    c = ChargerConfig(id="CP-1", password="s3cr3t-pw")
+    assert "s3cr3t-pw" not in repr(c) and "s3cr3t-pw" not in str(c)
+    assert c.password == "s3cr3t-pw"
+
+
+def test_duplicate_ids_rejected():
+    with pytest.raises(ValidationError, match="duplicate charger id"):
+        _yaml('  - id: "CP-1"\n  - id: "CP-1"\n')
+
+
+def test_url_resolution_and_required():
+    cfg = _yaml('  - id: "A"\n  - id: "B"\n    csms_url: "wss://other/ocpp"\n')
+    assert cfg.resolve_csms(cfg.chargers[0]) == (URL, "1.6")
+    assert cfg.resolve_csms(cfg.chargers[1]) == ("wss://other/ocpp", "1.6")
+    with pytest.raises(ValidationError, match="no csms_url"):
+        _yaml('  - id: "A"\n', defaults="")
+    with pytest.raises(ValidationError, match="ws://"):
+        ChargerConfig(id="A", csms_url="http://x")
+
+
+def test_field_constraints():
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", connectors=0)
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", auth_mode="whatever")
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", behaviors={})  # v0.2
+    with pytest.raises(ValidationError, match="duplicate id_tags"):
+        ChargerConfig(id="A", id_tags=["T1", "T1"])
+
+
+def test_empty_config_and_defaults():
+    cfg = parse_text("")
+    assert cfg.chargers == [] and cfg.simulation.running and cfg.frame_log.size == 20000
