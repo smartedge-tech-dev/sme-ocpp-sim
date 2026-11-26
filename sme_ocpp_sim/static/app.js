@@ -172,13 +172,16 @@ function connState(c) {
   if (reg === "pending" || reg === "rejected") return [reg, "b-warn"];
   return ["booting", "b-warn"];
 }
+// last_error is a string or an object ({type, message, ...}) depending on where the error came from.
+const errText = (e) => (e == null ? "" : typeof e === "string" ? e
+  : e.message || e.detail || [e.type, e.reason].filter(Boolean).join(": ") || JSON.stringify(e));
 const totalPower = (c) => (c.connectors || []).reduce((s, x) => s + (x.power_w || 0), 0);
 
 function setBadge(el, c) {
   const [key, cls] = connState(c);
   el.className = `badge ${cls}`;
   el.textContent = tk("conn", key);
-  el.title = c.last_error || "";
+  el.title = errText(c.last_error);
 }
 
 function makeRow(id) {
@@ -314,7 +317,7 @@ function renderDetail(fresh) {
   if (c.last_heartbeat) info.push(t("detail.heartbeat", { t: hhmmss(Date.parse(c.last_heartbeat)) }));
   if (c.tx_queue) info.push(t("detail.tx_queue", { n: c.tx_queue }));
   $("dInfo").textContent = info.join(" · ");
-  $("dError").textContent = c.last_error ? t("detail.last_error", { e: c.last_error }) : "";
+  $("dError").textContent = c.last_error ? t("detail.last_error", { e: errText(c.last_error) }) : "";
   $("dConnect").disabled = c.enabled !== false;
   $("dDisconnect").disabled = c.enabled === false;
   $("connectors").replaceChildren(...(c.connectors || []).map((x) => card(c, x)));
