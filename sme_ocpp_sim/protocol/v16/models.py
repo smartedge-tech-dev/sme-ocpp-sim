@@ -120,7 +120,13 @@ class MeterValue(OcppModel):
 
 
 class MeterValueNonEmpty(MeterValue):
-    """MeterValue as used in MeterValues.req: the schema requires at least one sampledValue."""
+    """MeterValue as used in MeterValues.req: at least one sampledValue.
+
+    Core spec 1.6 ed.2 §7.33 MeterValue (p.88): sampledValue is 1..*; §6.31
+    MeterValues.req (p.67): meterValue is 1..*. The official OCA JSON schema has no
+    minItems here, so this is stricter than the schema on purpose (allowlisted in
+    tests/test_v16_schema_conformance.py).
+    """
 
     sampled_value: Annotated[list[SampledValue], Field(min_length=1)]
 
@@ -227,7 +233,9 @@ class StopTransactionRequest(OcppModel):
     meter_stop: int
     id_tag: Optional[IdToken] = None
     reason: Optional[Reason] = None
-    # The schema has no minItems on transactionData or its sampledValue arrays.
+    # The schema has no minItems on transactionData or its sampledValue arrays. §7.33
+    # (p.88) makes sampledValue 1..* in every MeterValue, but transactionData is kept
+    # schema-lenient so CSMS-side parsing accepts what the schema accepts.
     transaction_data: Optional[list[MeterValue]] = None
 
 

@@ -27,9 +27,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 # Deliberate model/schema differences: (action, kind, path) -> enum values only the model has.
-KNOWN_EXTRA_ENUM_VALUES = {
-    # TODO(spec): UnitOfMeasure is one enum; only the MeterValues schema lists "Hertz".
-    ("StopTransaction", "request", "transactionData[].sampledValue[].unit"): {"Hertz"},
+KNOWN_EXTRA_ENUM_VALUES: dict = {}
+
+# Deliberate model/schema differences: (action, kind, path) -> minItems the model enforces
+# although the official schema has none. Source: OCPP 1.6 core spec ed.2 §6.31
+# MeterValues.req (p.67) "meterValue ... 1..*" and §7.33 MeterValue (p.88)
+# "sampledValue ... 1..*". Neither errata sheet relaxes this.
+KNOWN_STRICTER_MIN_ITEMS = {
+    ("MeterValues", "request", "meterValue"): 1,
+    ("MeterValues", "request", "meterValue[].sampledValue"): 1,
 }
 
 
@@ -63,7 +69,8 @@ def _compare(oca, mine, defs, key, path, problems):
         problems.append(f"{where}: type {mine.get('type')!r} != schema {oca.get('type')!r}")
     if oca.get("maxLength") != mine.get("maxLength"):
         problems.append(f"{where}: maxLength {mine.get('maxLength')} != {oca.get('maxLength')}")
-    if oca.get("minItems") != mine.get("minItems"):
+    expected_min = KNOWN_STRICTER_MIN_ITEMS.get(key + (path,), oca.get("minItems"))
+    if expected_min != mine.get("minItems"):
         problems.append(f"{where}: minItems {mine.get('minItems')} != {oca.get('minItems')}")
     if "enum" in oca or "enum" in mine:
         extra = set(mine.get("enum", ())) - set(oca.get("enum", ()))
@@ -113,9 +120,6 @@ INVALID = [
     ("UnlockConnector", "request", {"connectorId": 1.5}),
     ("Reset", "request", {"type": "Warm"}),
     ("Heartbeat", "request", {"foo": 1}),
-    ("MeterValues", "request", {"connectorId": 1, "meterValue": []}),
-    ("MeterValues", "request",
-     {"connectorId": 1, "meterValue": [{"timestamp": T1, "sampledValue": []}]}),
     ("Authorize", "response", {"idTagInfo": {"status": "Accepted", "foo": 1}}),
     ("StatusNotification", "request",
      {"connectorId": 1, "errorCode": "NoError", "status": "Available", "info": None}),
@@ -127,5 +131,21 @@ INVALID = [
 def test_schema_invalid_payloads_rejected(action, kind, payload):
     schema = _schema(action, kind)
     assert not jsonschema.Draft4Validator(schema).is_valid(payload)
+    with pytest.raises(CallError):
+        parse(action, payload, kind, strict=True)
+
+
+# Payloads the official schema accepts but the spec text forbids (see
+# KNOWN_STRICTER_MIN_ITEMS): the model must reject them.
+SPEC_STRICTER = [
+    ("MeterValues", "request", {"connectorId": 1, "meterValue": []}),
+    ("MeterValues", "request",
+     {"connectorId": 1, "meterValue": [{"timestamp": T1, "sampledValue": []}]}),
+]
+
+
+@pytest.mark.parametrize("action,kind,payload", SPEC_STRICTER)
+def test_spec_stricter_than_schema(action, kind, payload):
+    assert jsonschema.Draft4Validator(_schema(action, kind)).is_valid(payload)
     with pytest.raises(CallError):
         parse(action, payload, kind, strict=True)

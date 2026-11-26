@@ -131,9 +131,12 @@ class Location(str, Enum):
 
 
 class UnitOfMeasure(str, Enum):
-    # TODO(spec): "Hertz" is in the MeterValues schema but not in the StopTransaction
-    # (transactionData) schema; this enum is the superset. "Celcius" (sic) and
-    # "Celsius" are both listed by the schemas.
+    # Follows the official OCA schemas (MeterValues.json / StopTransaction.json), which
+    # list both "Celcius" (sic) and "Celsius"; OCPP-J errata 2025-04 §2.1 (p.2-3) advises
+    # a Charge Point to send "Celcius" and a Central System to accept both. There is deliberately no "Hertz": core
+    # spec 1.6 ed.2 §7.31 Measurand "Frequency" (p.87) and errata sheet 3.86 (§7.45,
+    # p.35) say 1.6 has no UnitOfMeasure for frequency, the implied unit is Hertz, so
+    # a Frequency sample is sent without a unit. (The ``ocpp`` library adds "Hertz".)
     wh = "Wh"
     kwh = "kWh"
     varh = "varh"
@@ -151,7 +154,6 @@ class UnitOfMeasure(str, Enum):
     celsius = "Celsius"
     fahrenheit = "Fahrenheit"
     percent = "Percent"
-    hertz = "Hertz"
 
 
 class DataTransferStatus(str, Enum):
