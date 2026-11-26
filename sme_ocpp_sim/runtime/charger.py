@@ -17,15 +17,19 @@ sent by ONE worker per session that runs once the boot is accepted:
   cancelled cannot lose a StopTransaction (it is queued before the caller can be interrupted). Only
   ``_start_tx`` waits, on a future of its StartTransaction item, because it needs the transactionId.
 * The worker sends strictly in order and removes an item only once it is done. A lost connection is not a
-  failure: the worker stops and the item stays at the head for the next session (a StartTransaction in flight
-  is resent; its waiting caller gets ``Pending``). StatusNotification items are dropped at the end of a session
-  because the state is reported afresh after the next accepted boot.
+  failure: the worker stops (and ends the session) and the item stays at the head for the next session. Any
+  in-flight item whose answer was lost (StartTransaction, StopTransaction, MeterValues) is resent after the next
+  accepted boot, so the CSMS may see it twice (§3.7 p.17; 1.6 has no idempotency key). A waiting
+  StartTransaction caller gets ``Pending``. StatusNotification items are dropped at the end of a session because
+  the state is reported afresh after the next accepted boot.
 * A CSMS "failure to process" (CALLERROR, timeout, unparsable answer) of a transaction message is retried
   ``TransactionMessageAttempts`` times, waiting ``TransactionMessageRetryInterval`` x preceding transmissions
   before each retry (§3.7.1 p.17-18, §9.1.31 / §9.1.32 p.105). Any other exception is a local bug: it is logged
-  and the item dropped. A failed StatusNotification is not retried.
+  and the item dropped. A failed StatusNotification is not retried. An exception while applying an answer
+  (also a local bug) ends the session; a waiting StartTransaction caller gets ``Error``.
 * The queue holds at most ``MAX_TX_QUEUE`` MeterValues; the oldest one is dropped first. StartTransaction /
-  StopTransaction are never dropped.
+  StopTransaction are never dropped *by this bound*; they are still dropped after ``TransactionMessageAttempts``
+  failed attempts or an internal error.
 
 Concurrency invariant: there is no lock around connector state. Every state check and the mutation that depends
 on it run without an ``await`` in between (single-threaded asyncio), so they are atomic.
@@ -34,6 +38,8 @@ on it run without an ``await`` in between (single-threaded asyncio), so they are
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
 import time
 from collections import deque
@@ -136,6 +142,12 @@ class _Delivery(Enum):
     OFFLINE = "offline"  # connection lost; keep queued for the next session
 
 
+@dataclass
+class _Outcome:
+    delivery: _Delivery
+    value: Any = None  # the answer when delivered
+
+
 @dataclass(eq=False)  # identity semantics: items are removed from the queue by identity
 class _OutMsg:
     kind: _Kind
@@ -144,6 +156,12 @@ class _OutMsg:
     tx: Optional[_Tx] = None
     result: Optional[asyncio.Future] = None  # StartTransaction: AuthResult for the waiting caller
     failures: int = 0
+
+    @property
+    def transactional(self) -> bool:
+        """Transaction messages are retried, kept across sessions and counted as queued; StatusNotification is
+        neither (the state is reported afresh after the next accepted boot)."""
+        return self.kind is not _Kind.STATUS
 
 
 class ChargerRuntime:
@@ -272,7 +290,9 @@ class ChargerRuntime:
             await asyncio.wait([rx, *waits], return_when=asyncio.FIRST_COMPLETED)
         finally:
             rx_error = await self._close_session(rpc, rx, waits)
-        if not self._reset_done.is_set() and not stop.is_set() and not self._abort.is_set():
+        # An abort that recorded no error of its own (the outbox worker lost the connection) is a disconnect.
+        aborted = self._abort.is_set() and self.last_error is not None
+        if not self._reset_done.is_set() and not stop.is_set() and not aborted:
             self.last_error = {"kind": "disconnected", "message": self._close_text(ws, rx_error)}
         return self._reset_done.is_set()
 
@@ -330,17 +350,15 @@ class ChargerRuntime:
         for c in self.conns.values():
             c.meter_task = None
 
-    def _after_reply(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Run ``coro`` after the CALLRESULT of the current CSMS CALL went out."""
+    def _after_reply(self, fn: Callable[[], Any]) -> None:
+        """Call ``fn`` (awaiting its result when it is awaitable) after the CALLRESULT of the current CSMS CALL
+        went out. Bind arguments now (``functools.partial``): state read at call time may have changed."""
         async def later() -> None:
-            try:
-                await asyncio.sleep(REPLY_DELAY_S)
-            except asyncio.CancelledError:
-                coro.close()  # never started: close it so it is not reported as "never awaited"
-                raise
-            await coro
-        if self._spawn(later()) is None:
-            coro.close()
+            await asyncio.sleep(REPLY_DELAY_S)
+            res = fn()
+            if inspect.isawaitable(res):
+                await res
+        self._spawn(later())
 
     async def _safe(self, aw: Awaitable[Any], what: str) -> Any:
         try:
@@ -457,17 +475,17 @@ class ChargerRuntime:
         self._outq_wake.set()
 
     def _outq_remove(self, msg: _OutMsg) -> None:
+        # Idle is set only by the worker, once applying the answer (which may queue a StopTransaction) is done.
         if msg in self._outq:
             self._outq.remove(msg)
-        if not self._outq:
-            self._outq_idle.set()
 
     def _outq_session_ended(self) -> None:
         """Drop stale StatusNotifications; tell StartTransaction callers that the answer is pending."""
-        # TODO(spec): a StartTransaction whose answer was lost with the connection stays queued and is resent
-        # after the next accepted boot (§3.7 p.17); 1.6 has no idempotency key, so the CSMS may see it twice.
+        # TODO(spec): any in-flight item whose answer was lost with the connection (StartTransaction,
+        # StopTransaction, MeterValues) stays queued and is resent after the next accepted boot (§3.7 p.17); 1.6
+        # has no idempotency key, so the CSMS may see it twice.
         for msg in list(self._outq):
-            if msg.kind is _Kind.STATUS:
+            if not msg.transactional:
                 self._outq.remove(msg)
             elif msg.result is not None and not msg.result.done():
                 msg.result.set_result(A.PENDING)
@@ -483,42 +501,66 @@ class ChargerRuntime:
                 try:
                     if msg.failures:
                         await asyncio.sleep(self.store.get_int(RETRY_INTERVAL_KEY) * msg.failures)
-                    res, value = await self._deliver(msg)
+                    out = await self._deliver(msg)
                 finally:
                     self._outq_busy = None
-                if res is _Delivery.OFFLINE:
-                    return  # the session is ending; the next accepted boot starts a new worker
-                if res is _Delivery.DONE:
+                if out.delivery is _Delivery.OFFLINE:
+                    # End the session: a stalled outbox must never coexist with a live session. The next
+                    # accepted boot starts a new worker.
+                    self._abort.set()
+                    return
+                if out.delivery is _Delivery.DONE:
                     self._outq_remove(msg)
-                    self._delivered(msg, value)
-            # No await between the empty check above and clear(): a push after clear() wakes the wait.
+                    if not self._delivered_guarded(msg, out.value):
+                        return
+            # No await between the empty check above and set() / clear(): a later push clears idle and wakes the
+            # wait.
+            self._outq_idle.set()
             self._outq_wake.clear()
             await self._outq_wake.wait()
 
-    async def _deliver(self, msg: _OutMsg) -> Tuple[_Delivery, Any]:
+    async def _deliver(self, msg: _OutMsg) -> _Outcome:
         what = msg.kind.value
         try:
-            return _Delivery.DONE, await msg.send()
+            return _Outcome(_Delivery.DONE, await msg.send())
         except asyncio.CancelledError:
             raise
         except ConnectionError as e:
             log.info("%s: %s kept queued (%r)", self.cfg.id, what, e)
-            return _Delivery.OFFLINE, None
+            return _Outcome(_Delivery.OFFLINE)
         except (CallError, TimeoutError, ValueError) as e:
             # Failure to process: CALLERROR, no answer in time, unparsable / invalid answer (§3.7.1 p.17-18).
-            if msg.kind is _Kind.STATUS:
+            if not msg.transactional:
                 log.warning("%s: %s failed: %r", self.cfg.id, what, e)
-                return _Delivery.DONE, None
+                return _Outcome(_Delivery.DONE)
             msg.failures += 1
             attempts = max(1, self.store.get_int(ATTEMPTS_KEY))
             if msg.failures >= attempts:
                 log.warning("%s: %s discarded after %d failed attempts: %r", self.cfg.id, what, msg.failures, e)
-                return _Delivery.DONE, None
+                return _Outcome(_Delivery.DONE)
             log.warning("%s: %s failed (%d/%d): %r", self.cfg.id, what, msg.failures, attempts, e)
-            return _Delivery.RETRY, None
+            return _Outcome(_Delivery.RETRY)
         except Exception:  # noqa: BLE001 - a local bug, not the CSMS: drop the item, keep the worker alive
             log.exception("%s: %s dropped (internal error)", self.cfg.id, what)
-            return _Delivery.DONE, None
+            return _Outcome(_Delivery.DONE)
+
+    def _delivered_guarded(self, msg: _OutMsg, value: Any) -> bool:
+        """Apply an answer; on a local bug end the session (no zombie worker) and return False."""
+        try:
+            self._delivered(msg, value)
+            return True
+        except Exception as e:  # noqa: BLE001 - the item is already removed: fail loudly, restart the session
+            log.exception("%s: applying the %s answer failed", self.cfg.id, msg.kind.value)
+            self.last_error = {"kind": "internal", "message": repr(e)}
+            if msg.result is not None and not msg.result.done():
+                msg.result.set_result(A.ERROR)
+            if msg.kind is _Kind.START and msg.conn is not None and msg.tx is not None and msg.tx.tx_id is None:
+                try:  # the answer was not applied: do not leave the connector stuck in Preparing
+                    self._abort_tx(msg.conn, msg.tx, finishing=False)
+                except Exception:  # noqa: BLE001
+                    log.exception("%s: detaching the failed transaction failed", self.cfg.id)
+            self._abort.set()
+            return False
 
     def _delivered(self, msg: _OutMsg, value: Any) -> None:
         if msg.kind is _Kind.START:
@@ -638,8 +680,6 @@ class ChargerRuntime:
         tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self._clock())
         c.last_mono = self._mono()
         self._refresh(c)  # Preparing
-        if c.tx is not tx:
-            return A.STOPPED  # ended meanwhile (defensive: _refresh does not await): nothing to send
         ev = d.TxStarted(c.id, tx.id_tag, tx.meter_start_wh, tx.started_at)
         result: asyncio.Future = asyncio.get_running_loop().create_future()
         self._outq_push(_OutMsg(_Kind.START, lambda: self.adapter.send_tx_started(ev), c, tx, result))
@@ -651,14 +691,15 @@ class ChargerRuntime:
         if res is None:  # discarded after TransactionMessageAttempts failures, or dropped
             self._abort_tx(c, tx, finishing=False)
             return A.ERROR
-        self._accumulate(c)  # restart the energy interval: charging starts now
-        tx.tx_id = res.tx_id
         if c.tx is not tx:
             # unplug / stop / fault / Reset while StartTransaction was in flight: the CSMS now knows the
             # transaction, so its StopTransaction goes out next.
+            tx.tx_id = res.tx_id
             if tx.ended is not None:
                 self._outq_push(self._stop_msg(c, tx), front=True)
             return A.ACCEPTED
+        self._accumulate(c)  # restart the energy interval (tx_id unset: nothing added); charging starts now
+        tx.tx_id = res.tx_id
         if not res.id_token_info.accepted and self.store.get_bool(STOP_ON_INVALID_KEY):
             # TODO(spec): MaxEnergyOnInvalidId / suspending instead of stopping is not simulated.
             self._end_tx_now(c, R.DE_AUTHORIZED, tx)
@@ -683,7 +724,7 @@ class ChargerRuntime:
             ev = d.TxUpdated(c.id, tx.tx_id, self._clock(), self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)))
             self._outq_push(_OutMsg(_Kind.METER, lambda ev=ev: self.adapter.send_tx_updated(ev), c, tx))
 
-    async def _end_tx(self, c: _Conn, reason: R, *, tx: Optional[_Tx] = None) -> None:
+    def _end_tx(self, c: _Conn, reason: R, *, tx: Optional[_Tx] = None) -> None:
         """End the running transaction (only if it is ``tx`` when given). Never waits for the CSMS."""
         cur = c.tx
         if cur is not None and (tx is None or cur is tx):
@@ -734,13 +775,13 @@ class ChargerRuntime:
         return d.GetConfigResult(known, unknown)
 
     def _reset(self, cmd: d.Reset) -> d.CommandStatus:
-        self._after_reply(self._do_reset(cmd.kind))
+        self._after_reply(functools.partial(self._do_reset, cmd.kind))
         return d.CommandStatus.ACCEPTED
 
     def _unlock(self, cmd: d.Unlock) -> d.UnlockStatus:
         c = self.conns[cmd.evse_id]
         if c.tx is not None:
-            self._after_reply(self._end_tx(c, R.UNLOCK_COMMAND, tx=c.tx))
+            self._after_reply(functools.partial(self._end_tx, c, R.UNLOCK_COMMAND, tx=c.tx))
         return d.UnlockStatus.UNLOCKED  # TODO(spec): UnlockFailed / NotSupported answers are not configurable yet
 
     def _data_transfer(self, cmd: d.DataTransfer) -> d.DataTransferResult:
@@ -763,13 +804,14 @@ class ChargerRuntime:
         if c is None or not free(c):
             return d.CommandStatus.REJECTED
         c.pending_tag = cmd.id_token  # reserve until the follow-up runs
-        self._after_reply(self._remote_start_go(c, cmd.id_token))
+        self._after_reply(functools.partial(self._remote_start_go, c, cmd.id_token))
         return d.CommandStatus.ACCEPTED
 
     async def _remote_start_go(self, c: _Conn, tag: str) -> None:
         if self.store.get_bool(AUTHORIZE_REMOTE_KEY) and await self._authorize(tag) is not A.ACCEPTED:
-            c.pending_tag = None
-            self._refresh(c)
+            if c.pending_tag == tag:  # still our reservation (the await may have let another start in)
+                c.pending_tag = None
+                self._refresh(c)
             return
         # TODO(spec): ConnectionTimeOut (cable not plugged in time) is not enforced.
         await self._start_tx(c, tag)
@@ -777,7 +819,7 @@ class ChargerRuntime:
     def _remote_stop(self, cmd: d.RequestStop) -> d.CommandStatus:
         for c in self.conns.values():
             if c.tx is not None and c.tx.tx_id == cmd.tx_id:
-                self._after_reply(self._end_tx(c, R.REMOTE, tx=c.tx))
+                self._after_reply(functools.partial(self._end_tx, c, R.REMOTE, tx=c.tx))
                 return d.CommandStatus.ACCEPTED
         return d.CommandStatus.REJECTED
 
@@ -787,11 +829,17 @@ class ChargerRuntime:
         try:
             reason = R.SOFT_RESET if kind is d.ResetKind.SOFT else R.HARD_RESET
             for c in self.conns.values():
-                await self._end_tx(c, reason)
+                self._end_tx(c, reason)
                 c.pending_tag = None
-            # Let the StopTransactions go out before closing; bounded, a silent CSMS must not block the Reset
-            # (anything left stays queued for the next session).
-            await wait_event(self._outq_idle, self._call_timeout)
+            # Let the StopTransactions go out before closing, including one queued by a StartTransaction answer
+            # that arrives meanwhile; bounded, a silent CSMS must not block the Reset (anything left stays queued
+            # for the next session). Idle is set only when the queue is empty and no answer is being applied.
+            try:
+                async with asyncio.timeout(self._call_timeout):
+                    while self._outq:
+                        await self._outq_idle.wait()
+            except TimeoutError:
+                log.info("%s: Reset closes with %d queued message(s)", self.cfg.id, len(self._outq))
         finally:
             self._reset_done.set()
 
@@ -801,17 +849,17 @@ class ChargerRuntime:
             if self.registration != d.BootStatus.ACCEPTED.value:
                 self._boot_kick.set()
             else:
-                self._after_reply(self._send_boot(triggered=True))
+                self._after_reply(functools.partial(self._send_boot, triggered=True))
         elif what is d.TriggerWhat.HEARTBEAT:
-            self._after_reply(self._heartbeat())
+            self._after_reply(self._heartbeat)
         elif what is d.TriggerWhat.STATUS:
             targets = ([self.station] if cmd.evse_id in (None, 0) else []) + [
                 c.state for c in self.conns.values() if cmd.evse_id in (None, c.id)]
-            self._after_reply(self._send_statuses(targets))
+            self._after_reply(functools.partial(self._send_statuses, targets))
         elif what is d.TriggerWhat.METER_VALUES:
             # TODO(spec): connectorId 0 / absent triggers a reading per connector (no main meter is simulated).
             targets = [c for c in self.conns.values() if cmd.evse_id in (None, 0, c.id)]
-            self._after_reply(self._send_readings(targets))
+            self._after_reply(functools.partial(self._send_readings, targets))
         else:
             return d.CommandStatus.NOT_IMPLEMENTED
         return d.CommandStatus.ACCEPTED
@@ -848,10 +896,11 @@ class ChargerRuntime:
                 self._station_pending = cmd.operative
             else:
                 self._station_operative, self._station_pending = cmd.operative, None
-        self._after_reply(self._refresh_after_availability(station and not scheduled, changed))
+        self._after_reply(functools.partial(self._refresh_after_availability, station and not scheduled,
+                                            changed))
         return d.AvailabilityStatus.SCHEDULED if scheduled else d.AvailabilityStatus.ACCEPTED
 
-    async def _refresh_after_availability(self, station: bool, changed: List[_Conn]) -> None:
+    def _refresh_after_availability(self, station: bool, changed: List[_Conn]) -> None:
         if station:
             self._refresh_station()
         for c in changed:
@@ -883,7 +932,7 @@ class ChargerRuntime:
         c.plugged, c.finishing = False, False
         if c.tx is not None:
             # TODO(spec): StopTransactionOnEVSideDisconnect=false (SuspendedEV) is not simulated; always stop.
-            await self._end_tx(c, R.EV_DISCONNECTED)
+            self._end_tx(c, R.EV_DISCONNECTED)
         else:
             self._refresh(c)
 
@@ -892,12 +941,15 @@ class ChargerRuntime:
         transaction started (or the tag waits for the cable), ``Stopped`` when it ended its own transaction,
         ``Pending`` when the connection was lost before the StartTransaction answer (the transaction is kept and
         StartTransaction resent after the next accepted boot), ``Busy`` / ``Unavailable`` / ``Offline`` /
-        ``Error`` when no transaction could be started."""
+        ``Error`` when no transaction could be started.
+
+        ``Accepted`` means the CSMS accepted the start, even when the transaction was ended locally (unplug, stop,
+        fault, Reset) while the StartTransaction answer was outstanding; its StopTransaction then follows."""
         c = self._conn(connector)
         tx = c.tx
         if tx is not None:
             if tx.id_tag == id_tag:
-                await self._end_tx(c, R.LOCAL, tx=tx)
+                self._end_tx(c, R.LOCAL, tx=tx)
                 return A.STOPPED
             return A.BUSY  # TODO(spec): stopping with a different tag of the same parent id is not simulated
         if c.fault or not c.operative:
@@ -912,7 +964,7 @@ class ChargerRuntime:
         c = self._conn(connector)
         if c.tx is None:
             return False
-        await self._end_tx(c, R.LOCAL)
+        self._end_tx(c, R.LOCAL)
         return True
 
     async def fault(self, connector: int, error_code: str) -> None:
@@ -920,7 +972,7 @@ class ChargerRuntime:
         c = self._conn(connector)
         c.fault = error_code
         if c.tx is not None:
-            await self._end_tx(c, R.OTHER)  # TODO(spec): a fault ends the transaction with reason Other
+            self._end_tx(c, R.OTHER)  # TODO(spec): a fault ends the transaction with reason Other
         self._refresh(c)
 
     async def clear_fault(self, connector: int) -> None:
@@ -954,7 +1006,7 @@ class ChargerRuntime:
             "boots": self.boots,
             "clock_offset_s": self.clock_offset_s,
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
-            "tx_queue": sum(1 for m in self._outq if m.kind is not _Kind.STATUS),
+            "tx_queue": sum(1 for m in self._outq if m.transactional),
             "station": {"status": self.station.status.value, "operative": self._station_operative},
             "connectors": [conn(c) for c in self.conns.values()],
         }

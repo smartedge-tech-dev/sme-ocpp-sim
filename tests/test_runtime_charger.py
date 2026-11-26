@@ -7,6 +7,7 @@ from peers.ocpp16_peer import CsmsPeer
 
 from sme_ocpp_sim.config import ChargerConfig, ReconnectConfig
 from sme_ocpp_sim.framelog import FrameLog
+from sme_ocpp_sim.protocol.base import AuthResult
 from sme_ocpp_sim.runtime.charger import ChargerRuntime
 
 CP = "CP1"
@@ -443,6 +444,70 @@ def test_reset_during_inflight_start():
         assert len(starts) == 1 and len(stops) == 1
         assert stops[0]["transaction_id"] == starts[0]["transaction_id"] and stops[0]["reason"] == "SoftReset"
     _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def _rx_index(s, action):
+    return next(i for i, (d, raw) in enumerate(s.frames) if d == "rx" and f'"{action}"' in raw)
+
+
+def test_reset_waits_for_stop_queued_by_inflight_start_answer():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        gate = peer.gates["StartTransaction"] = asyncio.Event()
+        swipe = asyncio.create_task(rt.swipe(1, "T"))
+        await _until(lambda: _rx_seen(s, "StartTransaction"))
+        reset = asyncio.create_task(peer.reset(CP, "Soft"))
+        await _until(lambda: rt.conns[1].tx is None)  # Reset ended the pending transaction, no Stop queued yet
+        gate.set()
+        assert await swipe == "Accepted" and (await reset).status == "Accepted"
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+        # The StopTransaction queued by the StartTransaction answer went out on the first session, after it.
+        assert len(s.stops) == 1 and peer.history[1].stops == []
+        assert s.stops[0]["transaction_id"] == s.starts[0]["transaction_id"]
+        assert _rx_index(s, "StartTransaction") < _rx_index(s, "StopTransaction")
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_exception_applying_start_answer_restarts_session():
+    async def body(peer, rt):
+        await _online(peer, rt)
+        await rt.plug(1)
+        real = rt._on_started
+
+        def boom(c, tx, res):
+            rt._on_started = real
+            raise RuntimeError("injected")
+        rt._on_started = boom
+        async with asyncio.timeout(5):
+            assert await rt.swipe(1, "T") == "Error"
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+        assert rt.conns[1].tx is None and rt.snapshot()["tx_queue"] == 0
+        assert rt.snapshot()["connectors"][0]["status"] == "Preparing"  # plugged, no transaction
+        assert await rt.swipe(1, "T") == "Accepted"  # the new session's worker runs
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_rejected_remote_start_keeps_newer_pending_tag():
+    async def body(peer, rt):
+        await _online(peer, rt)
+        c = rt.conns[1]
+
+        async def other_start_then_reject(tag):
+            assert await rt._start_tx(c, "OTHER") == "Accepted"  # unplugged: OTHER waits for the cable
+            return AuthResult.INVALID
+        c.pending_tag = "R1"  # reserved by RequestStartTransaction
+        rt._authorize = other_start_then_reject
+        await rt._remote_start_go(c, "R1")
+        assert c.pending_tag == "OTHER"
+        c.pending_tag = "R2"
+
+        async def reject(tag):
+            return AuthResult.INVALID
+        rt._authorize = reject
+        await rt._remote_start_go(c, "R2")
+        assert c.pending_tag is None
+    _scenario(body, cfg_kw={"auth_mode": "accept_all", "config_keys": {"AuthorizeRemoteTxRequests": "true"}})
 
 
 def test_queue_bound_drops_oldest_meter_values_only(monkeypatch):
