@@ -1,10 +1,7 @@
-# OCPP 1.6J RPC spike
+# SteVe interop check (manual)
 
-- `rpc.py` - self-written OCPP-J RPC framer
-- `cp.py` - minimal charge point; `csms_peer.py` - ocpp-lib based peer; `test_spike.py` - tests
-- `steve_check.py` - interop check against a real CSMS (SteVe)
-
-## SteVe interop check
+`scripts/e2e_steve.py` arrives with the charger runtime (M3). Until then the spike version is in git history:
+`git show abc3067:spikes/rpc16/steve_check.py` (and `load_spike.py` for the 200-charger load check, M5).
 
 SteVe (GPL-3.0) is used only as an external process; its checkout lives outside this repo.
 
@@ -16,7 +13,7 @@ git -c core.autocrlf=false clone --depth 1 --branch steve-3.15.0 \
 # start (first run builds with Maven inside the container, several minutes)
 cd <steve-dir> && docker compose up -d
 # wait until `docker compose logs app` shows the application started, then:
-cd spikes/rpc16 && ../../.venv/Scripts/python steve_check.py --compose-dir <steve-dir>
+.venv/Scripts/python scripts/e2e_steve.py --compose-dir <steve-dir>
 
 # stop (keeps containers, images and the db-data volume)
 cd <steve-dir> && docker compose stop
