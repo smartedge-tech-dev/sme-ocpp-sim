@@ -17,13 +17,215 @@
 <!-- Shell.init() inserts the header before .sh-body and the footer after it. -->
 <div class="sh-body">
   <main class="main">
-    <section class="chargers">
-      <h2 data-i18n="chargers.title">Chargers</h2>
-      <ul id="chargerList" class="charger-list"></ul>
-      <p id="chargerEmpty" class="empty" data-i18n="chargers.empty">No chargers configured yet.</p>
+    <!-- Charger list (left): rows are patched in place on every push, never rebuilt. -->
+    <section class="pane chargers">
+      <div class="panehead">
+        <h2 data-i18n="chargers.title">Chargers</h2>
+        <span id="chargerCount" class="muted"></span>
+        <button class="btn small" id="btnAdd" type="button" data-i18n="chargers.add">Add</button>
+      </div>
+      <input id="chargerFilter" class="filter" type="search" data-i18n-placeholder="chargers.filter">
+      <div class="bulkbar">
+        <label class="chk"><input type="checkbox" id="selAll"> <span data-i18n="chargers.select_all">All</span></label>
+        <button class="btn small" id="bulkConnect" type="button" data-i18n="bulk.connect">Connect</button>
+        <button class="btn small" id="bulkDisconnect" type="button" data-i18n="bulk.disconnect">Disconnect</button>
+      </div>
+      <div class="tablewrap">
+        <table class="tbl clist">
+          <thead><tr>
+            <th></th><th data-i18n="col.id">ID</th><th data-i18n="col.conn">Connection</th>
+            <th data-i18n="col.version">OCPP</th><th class="num" data-i18n="col.connectors">Conn.</th>
+            <th class="num" data-i18n="col.power">kW</th>
+          </tr></thead>
+          <tbody id="chargerRows"></tbody>
+        </table>
+        <p id="chargerEmpty" class="empty" data-i18n="chargers.empty">No chargers configured yet.</p>
+      </div>
+    </section>
+
+    <!-- Selected charger (center): connectors, Smart Charging, config keys. -->
+    <section class="pane detail" id="detail">
+      <p id="detailEmpty" class="empty" data-i18n="detail.none">Select a charger.</p>
+      <div id="detailBody" hidden>
+        <div class="panehead">
+          <h2 id="dTitle"></h2>
+          <span id="dBadge" class="badge"></span>
+          <span id="dInfo" class="muted"></span>
+          <span class="spacer"></span>
+          <button class="btn small" id="dConnect" type="button" data-i18n="op.connect">Connect</button>
+          <button class="btn small" id="dDisconnect" type="button" data-i18n="op.disconnect">Disconnect</button>
+          <button class="btn small" id="dDataTransfer" type="button" data-i18n="op.datatransfer">DataTransfer</button>
+          <button class="btn small" id="dSettings" type="button" data-i18n="settings.open">Settings</button>
+        </div>
+        <p id="dError" class="err"></p>
+        <div id="connectors" class="cards"></div>
+
+        <div class="sc">
+          <div class="panehead">
+            <h3 data-i18n="sc.title">Smart Charging</h3>
+            <label class="inline"><span data-i18n="sc.connector">Connector</span> <select id="scConnector"></select></label>
+            <span class="spacer"></span>
+            <button class="btn small" id="scProfiles" type="button" data-i18n="sc.profiles.open">Profiles</button>
+          </div>
+          <div class="legend">
+            <span class="lg lg-limit" data-i18n="sc.legend.limit">Composite limit</span>
+            <span class="lg lg-power" data-i18n="sc.legend.power">Actual power</span>
+            <span class="lg lg-soc" data-i18n="sc.legend.soc">SoC</span>
+          </div>
+          <div id="scChart" class="chart"></div>
+          <ul id="scList" class="plist"></ul>
+        </div>
+
+        <details class="keys" id="keysBox">
+          <summary data-i18n="keys.title">Configuration keys</summary>
+          <table class="tbl"><thead><tr><th data-i18n="common.col.name">Name</th><th data-i18n="common.col.value">Value</th></tr></thead>
+            <tbody id="keyRows"></tbody></table>
+          <p class="hint" data-i18n="keys.hint">Values from the configuration file; keys changed by the CSMS at run time are not shown.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- Frame log (bottom). -->
+    <section class="pane frames">
+      <div class="panehead">
+        <h2 data-i18n="frames.title">Frame log</h2>
+        <select id="fCharger"><option value="" data-i18n="frames.all_chargers">All chargers</option></select>
+        <input id="fAction" type="search" data-i18n-placeholder="frames.action">
+        <select id="fDir">
+          <option value="" data-i18n="frames.dir.all">Both directions</option>
+          <option value="tx" data-i18n="frames.dir.tx">CP → CSMS</option>
+          <option value="rx" data-i18n="frames.dir.rx">CSMS → CP</option>
+        </select>
+        <label class="chk"><input type="checkbox" id="fFollow" checked> <span data-i18n="frames.follow">Follow</span></label>
+        <span class="spacer"></span>
+        <button class="btn small" id="fClear" type="button" data-i18n="frames.clear">Clear view</button>
+        <a class="btn small" id="fExport" href="/api/frames.jsonl" download="frames.jsonl" data-i18n="frames.export">Export JSONL</a>
+      </div>
+      <div class="tablewrap flog">
+        <table class="tbl">
+          <thead><tr><th class="num">#</th><th data-i18n="frames.col.time">Time</th><th data-i18n="frames.col.charger">Charger</th>
+            <th data-i18n="frames.col.dir">Dir</th><th data-i18n="frames.col.type">Type</th><th data-i18n="frames.col.action">Action</th>
+            <th data-i18n="frames.col.payload">Payload</th></tr></thead>
+          <tbody id="frameRows"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 </div>
+
+<dialog id="dlgFrame" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform">
+    <h3 id="frameTitle"></h3>
+    <pre id="frameJson" class="json"></pre>
+    <div class="dlgbtns">
+      <button class="btn" type="button" id="frameCopy" data-i18n="frames.copy">Copy</button>
+      <button class="btn primary" value="cancel" data-i18n="common.dlg.close">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgProfiles" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform">
+    <h3 id="profTitle"></h3>
+    <div id="profBody"></div>
+    <div class="dlgbtns"><button class="btn primary" value="cancel" data-i18n="common.dlg.close">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgSettings" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform" id="setForm">
+    <h3 data-i18n="settings.title">Connection settings</h3>
+    <fieldset>
+      <legend data-i18n="settings.defaults">CSMS defaults (all chargers)</legend>
+      <label><span data-i18n="settings.url">CSMS URL</span> <input id="setUrl" type="url" placeholder="ws://host:port/path"></label>
+      <div class="row2">
+        <label><span data-i18n="settings.version">OCPP version</span> <select id="setVersion" class="vsel"></select></label>
+        <label><span data-i18n="settings.profile">Security Profile</span>
+          <select id="setProfile">
+            <option value="0" data-i18n="settings.profile.0">0 - ws://, no password</option>
+            <option value="1" data-i18n="settings.profile.1">1 - ws:// + Basic auth</option>
+            <option value="2" data-i18n="settings.profile.2">2 - wss:// (TLS) + Basic auth</option>
+          </select></label>
+      </div>
+    </fieldset>
+    <fieldset id="setChargerBox">
+      <legend id="setChargerLegend"></legend>
+      <label><span data-i18n="settings.url_override">CSMS URL (empty = default)</span> <input id="setCUrl" type="url"></label>
+      <div class="row2">
+        <label><span data-i18n="settings.version_override">OCPP version (empty = default)</span> <select id="setCVersion" class="vsel"></select></label>
+        <label><span data-i18n="settings.password">Password (Basic auth)</span> <input id="setPassword" type="password" autocomplete="new-password"></label>
+      </div>
+      <label><span data-i18n="settings.ca_file">CA file (wss://, PEM)</span> <input id="setCa" data-i18n-placeholder="settings.ca_file.ph"></label>
+    </fieldset>
+    <p class="hint" data-i18n="settings.hint">Applied immediately; use File &gt; Save configuration to write it to the YAML file.</p>
+    <div class="err" id="setErr"></div>
+    <div class="dlgbtns">
+      <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
+      <button class="btn primary" id="setApply" value="default" data-i18n="common.dlg.apply">Apply</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgAdd" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform" id="addForm">
+    <h3 data-i18n="add.title">Add charger</h3>
+    <div class="row2">
+      <label><span data-i18n="add.id">Charger ID</span> <input id="addId" required maxlength="48"></label>
+      <label><span data-i18n="add.model">Model</span> <input id="addModel" value="SIM-AC6" maxlength="20"></label>
+    </div>
+    <div class="row2">
+      <label><span data-i18n="add.connectors">Connectors</span> <input id="addConnectors" type="number" min="1" max="8" value="1" required></label>
+      <label><span data-i18n="add.max_power">Max power (W)</span> <input id="addPower" type="number" min="1" step="100" value="6000" required></label>
+    </div>
+    <label><span data-i18n="add.id_tags">Local id tags (comma separated)</span> <input id="addTags"></label>
+    <div class="err" id="addErr"></div>
+    <div class="dlgbtns">
+      <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
+      <button class="btn primary" id="addApply" value="default" data-i18n="add.submit">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgDataTransfer" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform" id="dtForm">
+    <h3 data-i18n="dt.title">DataTransfer (CP → CSMS)</h3>
+    <div class="row2">
+      <label><span data-i18n="dt.vendor">Vendor ID</span> <input id="dtVendor" required maxlength="255"></label>
+      <label><span data-i18n="dt.message">Message ID</span> <input id="dtMessage" maxlength="50"></label>
+    </div>
+    <label><span data-i18n="dt.data">Data</span> <textarea id="dtData" rows="4" spellcheck="false"></textarea></label>
+    <pre id="dtResult" class="json" hidden></pre>
+    <div class="err" id="dtErr"></div>
+    <div class="dlgbtns">
+      <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.close">Close</button>
+      <button class="btn primary" id="dtSend" value="default" data-i18n="dt.send">Send</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgTag" class="dialog sh-dialog narrow">
+  <form method="dialog" class="dlgform" id="tagForm">
+    <h3 id="tagTitle"></h3>
+    <label><span data-i18n="op.id_tag">Id tag</span> <input id="tagValue" required maxlength="20" list="tagList"></label>
+    <datalist id="tagList"></datalist>
+    <div class="dlgbtns">
+      <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
+      <button class="btn primary" value="default" data-i18n="common.dlg.ok">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgFault" class="dialog sh-dialog narrow">
+  <form method="dialog" class="dlgform" id="faultForm">
+    <h3 id="faultTitle"></h3>
+    <label><span data-i18n="op.error_code">Error code</span> <select id="faultCode"></select></label>
+    <div class="dlgbtns">
+      <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
+      <button class="btn primary danger" value="default" data-i18n="op.fault">Fault</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Vendor preset (Shell.vendors.smartEdge + vendor.* strings) and common.* strings, then product strings. -->
 <script src="/sme-sim-common/vendor/vendor.js?v=__SME_SIM_COMMON_VERSION__"></script>
 <script src="/sme-sim-common/i18n/common.js?v=__SME_SIM_COMMON_VERSION__"></script>
