@@ -12,7 +12,7 @@ Download `sme-ocpp-sim-vX.Y.Z-windows.exe` from the
 <http://127.0.0.1:8082/>.
 
 ```powershell
-.\sme-ocpp-sim-v0.1.0-windows.exe -c my-site.yaml
+.\sme-ocpp-sim-v0.2.0-windows.exe -c my-site.yaml
 ```
 
 ## pip
