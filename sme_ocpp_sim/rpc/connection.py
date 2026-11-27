@@ -58,9 +58,13 @@ class RpcConnection:
         on_frame: Optional[FrameCallback] = None,
         name: str = "",
         uid_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
+        call_guard: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._ws = ws
         self.handlers: dict[str, Handler] = dict(handlers or {})
+        #: Called with the action of every inbound CALL before its handler is looked up; a :class:`CallError` it
+        #: raises is the answer (e.g. a station that refuses every CALL in some state).
+        self._call_guard = call_guard
         self.codes = error_codes
         self._timeout = call_timeout
         self._on_frame = on_frame
@@ -218,6 +222,12 @@ class RpcConnection:
         await self._send_error(e.uid, code, e.reason)
 
     async def _handle_call(self, frame: framer.Call) -> None:
+        if self._call_guard is not None:
+            try:
+                self._call_guard(frame.action)
+            except CallError as e:
+                await self._send_error(frame.uid, e.code, e.description, e.details, frame.action)
+                return
         handler = self.handlers.get(frame.action)
         if handler is None:
             await self._send_error(frame.uid, self.codes.not_implemented,

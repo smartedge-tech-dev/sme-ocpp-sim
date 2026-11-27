@@ -7,25 +7,34 @@ Rules implemented from the OCPP 2.0.1 JSON schemas: purposes ChargingStationMaxP
 TxProfile / ChargingStationExternalConstraints, ``evseId`` 0 = the whole station, a ``chargingSchedule`` array of
 1..3 schedules each with its own ``id``, string ``transactionId`` (maxLength 36), ``phaseToUse``.
 
-Interpretations (not defined by the schemas; the 2.0.1 spec text was not available locally, so the rules
-recalled from it are marked UNVERIFIED)
---------------------------------------------------------------------------------------------------------
-- ChargingStationMaxProfile only on evseId 0; TxProfile only on evseId > 0 while a transaction runs there
-  (UNVERIFIED, as 1.6 §3.13.1). A TxProfile of SetChargingProfile must carry the ``transactionId`` of that
-  transaction (UNVERIFIED, recalled K01.FR.03 / FR.09); the profile of RequestStartTransaction has none and is
-  bound to the transaction it starts (:meth:`ProfileStore.validate` with ``for_remote_start``).
-- ChargingStationExternalConstraints cannot be set by the CSMS (Rejected, UNVERIFIED); only the operator's
-  external limit (``external=True``) installs one, and ClearChargingProfile never removes one.
-- Replacement: a profile replaces an installed one with the same ``id`` (on any EVSE). Another profile with the
-  same EVSE, purpose and stackLevel (and, for TxProfile, the same transaction) whose validity period
-  (validFrom..validTo) overlaps is a conflict: Rejected (UNVERIFIED, recalled K01.FR.39), not replaced as in 1.6.
-- Only the first ``chargingSchedule`` is evaluated (it is the one without ISO 15118, which the simulator does not
-  model); the others are kept and reported. Every schedule is validated.
-- Rejected besides: a non-zero first ``startPeriod``, non-increasing ``startPeriod`` values, a negative
-  ``limit`` / ``minChargingRate``, ``numberPhases`` outside 1..3, ``phaseToUse`` other than 1..3 or without
-  ``numberPhases`` 1, ``duration <= 0``, Recurring without ``recurrencyKind``, ``validTo <= validFrom``, a
-  negative stackLevel, an evseId outside ``0..evse_count``, and the Device Model limits the station passes in
-  (SmartChargingCtrlr ProfileStackLevel / PeriodsPerSchedule / RateUnit, see :class:`Limits`).
+Rules (OCPP 2.0.1 Part 2 K01; errata 2026-09)
+--------------------------------------------
+- ChargingStationMaxProfile only on evseId 0 (as 1.6 §3.13.1; the 2.0.1 text was not found) and never Relative
+  (K01.FR.38). TxProfile only on evseId > 0 (K01.FR.16) while a transaction runs there, and a TxProfile of
+  SetChargingProfile must carry the ``transactionId`` of that transaction (K01.FR.03; otherwise Rejected with
+  reasonCode ``TxNotFound``, K01.FR.09); the profile of RequestStartTransaction has none and is bound to the
+  transaction it starts (:meth:`ProfileStore.validate` with ``for_remote_start``).
+- ChargingStationExternalConstraints cannot be set by the CSMS (K01.FR.35 / FR.36; Rejected with reasonCode
+  ``UnsupportedPurpose``, errata K01.FR.62); only the operator's external limit (``external=True``) installs one,
+  and ClearChargingProfile never removes one (K10.FR.08 / FR.09).
+- Replacement: a profile replaces an installed one with the same ``id`` (on any EVSE, K01.FR.05). Another
+  profile with the same EVSE, purpose and stackLevel whose validity period (validFrom..validTo) overlaps is a
+  conflict (K01.FR.06): Rejected with reasonCode ``DuplicateProfile`` (the Appendices reason code for it), not
+  replaced as in 1.6. For TxProfile the same stackLevel and ``transactionId`` conflicts whatever the validity
+  (K01.FR.39). A TxDefaultProfile on evseId 0 and one on an EVSE with the same stackLevel and another id
+  conflict as well (K01.FR.52 / FR.53, ``DuplicateProfile``).
+- Exactly one ``chargingSchedule`` (K01.FR.34: more are only allowed with ISO 15118, which the simulator does
+  not model).
+- ``startSchedule`` is required for Absolute / Recurring (K01.FR.40) and forbidden for Relative (K01.FR.41);
+  Recurring needs ``recurrencyKind`` (K01.FR.60).
+- A unit not in SmartChargingCtrlr.RateUnit is Rejected with reasonCode ``UnsupportedRateUnit`` (K01.FR.37).
+- Rejected besides (simulator checks, not spelled out as requirements): a non-zero first ``startPeriod``,
+  non-increasing ``startPeriod`` values, a negative ``limit`` / ``minChargingRate``, ``numberPhases`` outside
+  1..3, ``phaseToUse`` other than 1..3 or without ``numberPhases`` 1, ``duration <= 0``, ``validTo <=
+  validFrom``, a negative stackLevel, an evseId outside ``0..evse_count``, and the other Device Model limits the
+  station passes in (SmartChargingCtrlr ProfileStackLevel / PeriodsPerSchedule, see :class:`Limits`).
+- The reasonCode of a Rejected profile is :meth:`ProfileStore.reject_reason`: the codes above, else
+  ``InvalidProfile`` (a simulator code).
 - ClearChargingProfile: no fields clears every CSMS profile; ``chargingProfileId`` given -> the criteria are
   ignored; otherwise the given criteria are ANDed (as 1.6 errata 3.25 / 3.26). Nothing matched -> Unknown.
 """
@@ -42,9 +51,18 @@ from .enums import ChargingProfilePurposeEnumType as ChargingProfilePurpose
 from .enums import ChargingRateUnitEnumType as ChargingRateUnit
 from .enums import RecurrencyKindEnumType as RecurrencyKind
 
-__all__ = ["ChargingProfile", "ChargingProfileKind", "ChargingProfilePurpose", "ChargingRateUnit",
+__all__ = ["REASON_DUPLICATE", "REASON_INVALID", "REASON_TX_NOT_FOUND", "REASON_UNSUPPORTED_PURPOSE",
+           "REASON_UNSUPPORTED_RATE_UNIT", "ChargingProfile", "ChargingProfileKind", "ChargingProfilePurpose", "ChargingRateUnit",
            "ChargingSchedule", "ClearStatus", "InstalledProfile", "Limits", "ProfileStatus", "ProfileStore",
            "RecurrencyKind", "SchedulePeriod"]
+
+
+#: ``statusInfo.reasonCode`` of a Rejected profile (Appendices reason codes, except ``InvalidProfile``).
+REASON_DUPLICATE = "DuplicateProfile"
+REASON_UNSUPPORTED_PURPOSE = "UnsupportedPurpose"
+REASON_UNSUPPORTED_RATE_UNIT = "UnsupportedRateUnit"
+REASON_TX_NOT_FOUND = "TxNotFound"
+REASON_INVALID = "InvalidProfile"
 
 
 class ProfileStatus(str, Enum):
@@ -81,13 +99,13 @@ class ChargingProfile:
     stack_level: int
     purpose: ChargingProfilePurpose
     kind: ChargingProfileKind
-    #: The evaluated schedule: the first of the ``chargingSchedule`` array (see Interpretations).
+    #: The one ``chargingSchedule`` (K01.FR.34).
     schedule: ChargingSchedule
     transaction_id: Optional[str] = None
     recurrency_kind: Optional[RecurrencyKind] = None
     valid_from: Optional[datetime] = None
     valid_to: Optional[datetime] = None
-    #: The 2nd / 3rd ``chargingSchedule`` entries, kept for reporting only.
+    #: The 2nd / 3rd ``chargingSchedule`` entries of the wire profile; any is Rejected (K01.FR.34).
     other_schedules: Tuple[ChargingSchedule, ...] = ()
 
 
@@ -119,8 +137,6 @@ def _schedule_ok(sched: ChargingSchedule, limits: Limits) -> bool:
         return False
     if limits.max_periods is not None and len(starts) > limits.max_periods:
         return False
-    if limits.units is not None and sched.unit not in limits.units:
-        return False
     for period in sched.periods:
         if period.limit < 0:
             return False
@@ -134,9 +150,16 @@ def _schedule_ok(sched: ChargingSchedule, limits: Limits) -> bool:
 
 
 def _profile_ok(profile: ChargingProfile, limits: Limits) -> bool:
-    if not all(_schedule_ok(s, limits) for s in (profile.schedule, *profile.other_schedules)):
+    if profile.other_schedules:  # K01.FR.34: one schedule without ISO 15118
         return False
-    if profile.kind is ChargingProfileKind.recurring and profile.recurrency_kind is None:
+    if not _schedule_ok(profile.schedule, limits):
+        return False
+    relative = profile.kind is ChargingProfileKind.relative
+    if (profile.schedule.start_schedule is None) != relative:  # K01.FR.40 / FR.41
+        return False
+    if profile.kind is ChargingProfileKind.recurring and profile.recurrency_kind is None:  # K01.FR.60
+        return False
+    if relative and profile.purpose is ChargingProfilePurpose.charging_station_max_profile:  # K01.FR.38
         return False
     if profile.valid_from and profile.valid_to and profile.valid_to <= profile.valid_from:
         return False
@@ -168,10 +191,59 @@ class ProfileStore:
         return tuple(ip for ip in self._installed if evse_id is None or ip.evse_id == evse_id)
 
     def _conflict(self, evse_id: int, profile: ChargingProfile) -> bool:
-        return any(ip.evse_id == evse_id and ip.profile.profile_id != profile.profile_id
-                   and ip.profile.purpose is profile.purpose and ip.profile.stack_level == profile.stack_level
-                   and ip.profile.transaction_id == profile.transaction_id and _overlap(ip.profile, profile)
-                   for ip in self._installed)
+        """K01.FR.06 (same EVSE, purpose and stackLevel, overlapping validity), K01.FR.39 (TxProfile: same
+        stackLevel and transactionId) and K01.FR.52 / FR.53 (TxDefaultProfile: same stackLevel on evseId 0 and
+        on an EVSE); always against another ``id`` (the same id replaces, K01.FR.05)."""
+        tx_default = ChargingProfilePurpose.tx_default_profile
+        for ip in self._installed:
+            other = ip.profile
+            if other.profile_id == profile.profile_id or other.purpose is not profile.purpose \
+                    or other.stack_level != profile.stack_level:
+                continue
+            if ip.evse_id == evse_id:
+                if profile.purpose is ChargingProfilePurpose.tx_profile:
+                    if other.transaction_id == profile.transaction_id:
+                        return True
+                elif _overlap(other, profile):
+                    return True
+            elif profile.purpose is tx_default and (ip.evse_id == 0) != (evse_id == 0):
+                return True
+        return False
+
+    def reject_reason(
+        self,
+        evse_id: int,
+        profile: ChargingProfile,
+        *,
+        active_transaction: Optional[str] = None,
+        for_remote_start: bool = False,
+        external: bool = False,
+        limits: Limits = Limits(),
+    ) -> Optional[str]:
+        """The ``statusInfo.reasonCode`` why ``profile`` is Rejected, ``None`` when it is accepted (see
+        :meth:`validate`)."""
+        purpose = profile.purpose
+        is_external = purpose is ChargingProfilePurpose.charging_station_external_constraints
+        if is_external and not external:
+            return REASON_UNSUPPORTED_PURPOSE  # errata K01.FR.62
+        if limits.units is not None and any(s.unit not in limits.units
+                                            for s in (profile.schedule, *profile.other_schedules)):
+            return REASON_UNSUPPORTED_RATE_UNIT  # K01.FR.37
+        if not 0 <= evse_id <= self.evse_count or not _profile_ok(profile, limits) or is_external != external:
+            return REASON_INVALID
+        if purpose is ChargingProfilePurpose.charging_station_max_profile and evse_id != 0:
+            return REASON_INVALID
+        if for_remote_start:
+            ok = purpose is ChargingProfilePurpose.tx_profile and evse_id != 0 and profile.transaction_id is None
+            return None if ok else REASON_INVALID
+        if purpose is ChargingProfilePurpose.tx_profile:
+            if evse_id == 0:  # K01.FR.16
+                return REASON_INVALID
+            if active_transaction is None or profile.transaction_id != active_transaction:  # K01.FR.03 / FR.09
+                return REASON_TX_NOT_FOUND
+        if self._conflict(evse_id, profile):
+            return REASON_DUPLICATE
+        return None
 
     def validate(
         self,
@@ -189,22 +261,9 @@ class ProfileStore:
         (must be a TxProfile without ``transactionId``; ``active_transaction`` is ignored). ``external``: the
         operator's ChargingStationExternalConstraints (the only way to install that purpose).
         """
-        purpose = profile.purpose
-        if not 0 <= evse_id <= self.evse_count or not _profile_ok(profile, limits):
-            return ProfileStatus.REJECTED
-        if (purpose is ChargingProfilePurpose.charging_station_external_constraints) != external:
-            return ProfileStatus.REJECTED
-        if purpose is ChargingProfilePurpose.charging_station_max_profile and evse_id != 0:
-            return ProfileStatus.REJECTED
-        if for_remote_start:
-            ok = purpose is ChargingProfilePurpose.tx_profile and evse_id != 0 and profile.transaction_id is None
-            return ProfileStatus.ACCEPTED if ok else ProfileStatus.REJECTED
-        if purpose is ChargingProfilePurpose.tx_profile:
-            if evse_id == 0 or active_transaction is None or profile.transaction_id != active_transaction:
-                return ProfileStatus.REJECTED
-        if self._conflict(evse_id, profile):
-            return ProfileStatus.REJECTED
-        return ProfileStatus.ACCEPTED
+        reason = self.reject_reason(evse_id, profile, active_transaction=active_transaction,
+                                    for_remote_start=for_remote_start, external=external, limits=limits)
+        return ProfileStatus.ACCEPTED if reason is None else ProfileStatus.REJECTED
 
     def install(
         self,
@@ -221,7 +280,8 @@ class ProfileStore:
                          limits=limits) is ProfileStatus.REJECTED:
             return ProfileStatus.REJECTED
         ext = ChargingProfilePurpose.charging_station_external_constraints
-        # The same id replaces, except across the CSMS / operator boundary (a CSMS id never hits an external one).
+        # The same id replaces (K01.FR.05), except across the CSMS / operator boundary (a CSMS id never hits an
+        # external one, K01.FR.05 remark).
         self._installed = [ip for ip in self._installed
                            if ip.profile.profile_id != profile.profile_id or (ip.profile.purpose is ext) != external]
         self._installed.append(InstalledProfile(evse_id, profile, wire))
@@ -236,7 +296,7 @@ class ProfileStore:
         stack_level: Optional[int] = None,
     ) -> ClearStatus:
         """ClearChargingProfile; ``profile_id`` given -> the other filters are ignored. External constraints are
-        never cleared here (see :meth:`clear_external`)."""
+        never cleared here (K10.FR.08 / FR.09; see :meth:`clear_external`)."""
 
         def matches(ip: InstalledProfile) -> bool:
             if ip.profile.purpose is ChargingProfilePurpose.charging_station_external_constraints:

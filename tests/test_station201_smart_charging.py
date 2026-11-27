@@ -18,10 +18,18 @@ METERED = {"meter_sample_interval_s": 1, "auth_mode": "accept_all",
            "variables": [{"component": "SampledDataCtrlr", "variable": "TxUpdatedMeasurands", "value": MEASURANDS}]}
 
 
+#: startSchedule of the Absolute profiles (a ChargingStationMaxProfile cannot be Relative, K01.FR.38).
+ABSOLUTE_START = "2026-01-01T00:00:00Z"
+
+
 def _profile(limit, unit="W", purpose="TxProfile", pid=1, tx=None, stack=0, first_period=0, **kw):
-    p = {"id": pid, "stack_level": stack, "charging_profile_purpose": purpose, "charging_profile_kind": "Relative",
-         "charging_schedule": [{"id": 1, "charging_rate_unit": unit,
-                                "charging_schedule_period": [{"start_period": first_period, "limit": limit}]}], **kw}
+    absolute = purpose == "ChargingStationMaxProfile"
+    sched = {"id": 1, "charging_rate_unit": unit,
+             "charging_schedule_period": [{"start_period": first_period, "limit": limit}]}
+    if absolute:
+        sched["start_schedule"] = ABSOLUTE_START  # K01.FR.40
+    p = {"id": pid, "stack_level": stack, "charging_profile_purpose": purpose,
+         "charging_profile_kind": "Absolute" if absolute else "Relative", "charging_schedule": [sched], **kw}
     if tx is not None:
         p["transaction_id"] = tx
     return p
@@ -128,19 +136,20 @@ def test_tx_profile_dropped_at_transaction_end_and_rules():
             == "Accepted"
         await _until(lambda: _conn(rt)["power_w"] == 3000)
         rejected = [
-            _set(1, _profile(3000, pid=3)),                                   # TxProfile without transactionId
-            _set(1, _profile(3000, pid=3, tx="other")),                       # another transaction
-            _set(2, _profile(3000, pid=3, tx=tx)),                            # no transaction on EVSE 2
-            _set(1, _profile(3000, purpose="ChargingStationMaxProfile", pid=3)),  # station max on an EVSE
-            _set(0, _profile(3000, purpose="ChargingStationExternalConstraints", pid=3)),  # CSMS cannot set it
-            _set(0, _profile(3000, purpose="TxDefaultProfile", pid=3)),       # same stackLevel + purpose: conflict
-            _set(0, _profile(3000, purpose="TxDefaultProfile", pid=3, stack=101)),  # > ProfileStackLevel
-            _set(0, _profile(3000, purpose="TxDefaultProfile", pid=3, stack=1, first_period=5)),
-            _set(3, _profile(3000, purpose="TxDefaultProfile", pid=3, stack=1)),   # unknown EVSE
+            (_set(1, _profile(3000, pid=3)), "TxNotFound"),                   # no transactionId (K01.FR.09)
+            (_set(1, _profile(3000, pid=3, tx="other")), "TxNotFound"),       # another transaction
+            (_set(2, _profile(3000, pid=3, tx=tx)), "TxNotFound"),            # no transaction on EVSE 2
+            (_set(1, _profile(3000, purpose="ChargingStationMaxProfile", pid=3)), "InvalidProfile"),  # on an EVSE
+            (_set(0, _profile(3000, purpose="ChargingStationExternalConstraints", pid=3)),
+             "UnsupportedPurpose"),                                           # CSMS cannot set it (K01.FR.62)
+            (_set(0, _profile(3000, purpose="TxDefaultProfile", pid=3)), "DuplicateProfile"),  # K01.FR.06
+            (_set(0, _profile(3000, purpose="TxDefaultProfile", pid=3, stack=101)), "InvalidProfile"),
+            (_set(0, _profile(3000, purpose="TxDefaultProfile", pid=3, stack=1, first_period=5)), "InvalidProfile"),
+            (_set(3, _profile(3000, purpose="TxDefaultProfile", pid=3, stack=1)), "InvalidProfile"),  # unknown
         ]
-        for req in rejected:
+        for req, code in rejected:
             r = await peer.request(CP, req)
-            assert r.status == "Rejected" and r.status_info["reason_code"] == "InvalidProfile", req
+            assert r.status == "Rejected" and r.status_info["reason_code"] == code, req
         assert [ip.profile.profile_id for ip in rt.installed_profiles()] == [1, 2]
         assert await rt.stop_tx(1)
         assert [ip.profile.profile_id for ip in rt.installed_profiles()] == [2]

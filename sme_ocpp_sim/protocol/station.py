@@ -116,6 +116,10 @@ class VersionStation(ABC):
     async def handle(self, cmd: Command) -> Any:
         """Execute one domain command from the adapter (``protocol.base.CommandSink``)."""
 
+    def check_call(self, action: str) -> None:
+        """Called for every inbound CSMS CALL before its handler; raise ``rpc.CallError`` to answer it with that
+        CALLERROR instead (e.g. 2.0.1 ``SecurityError`` while the registration is Rejected). Default: none."""
+
     @abstractmethod
     async def on_online(self) -> None:
         """Session task, right after the boot was accepted: report the state, start the session's own tasks

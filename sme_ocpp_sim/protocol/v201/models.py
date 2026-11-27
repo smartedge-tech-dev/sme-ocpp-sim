@@ -39,6 +39,8 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from .enums import (
+    FirmwareStatusEnumType,
+    UploadLogStatusEnumType,
     SetVariableStatusEnumType,
     ReportBaseEnumType,
     MutabilityEnumType,
@@ -731,6 +733,26 @@ class ClearedChargingLimitResponse(OcppModel):
     custom_data: Optional[CustomDataType] = None
 
 
+class LogStatusNotificationRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: UploadLogStatusEnumType
+    request_id: Optional[int] = None
+
+
+class LogStatusNotificationResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
+class FirmwareStatusNotificationRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: FirmwareStatusEnumType
+    request_id: Optional[int] = None
+
+
+class FirmwareStatusNotificationResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -761,6 +783,9 @@ ACTIONS = (
     "ReportChargingProfiles",
     "NotifyChargingLimit",
     "ClearedChargingLimit",
+    # TriggerMessage LogStatusNotification / FirmwareStatusNotification (F06.FR.14 / FR.16)
+    "LogStatusNotification",
+    "FirmwareStatusNotification",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

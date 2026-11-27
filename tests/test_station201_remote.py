@@ -6,6 +6,8 @@ every answer the charger sends.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from ocpp.v201 import call
 from test_station201 import CP, _events, _frames, _online, _scenario, _statuses, _until
@@ -74,7 +76,7 @@ def test_request_start_without_evse_waits_for_the_cable():
         await rt.plug(1)
         await _until(lambda: len(s.transaction_events) == 2)
         started = s.transaction_events[1]
-        assert started["trigger_reason"] == "CablePluggedIn" and started["evse"]["id"] == 1
+        assert started["trigger_reason"] == "RemoteStart" and started["evse"]["id"] == 1  # F02.FR.21
         assert started["transaction_info"]["remote_start_id"] == 8
         assert started["id_token"]["type"] == "Central"
     _scenario(body, cfg_kw={"connectors": 2})
@@ -222,17 +224,24 @@ def test_change_availability_station_and_evse_level():
         assert await rt.swipe(1, "TAG1") == AuthResult.UNAVAILABLE
         r = await peer.request(CP, call.ChangeAvailability(operational_status="Inoperative"))
         assert r.status == "Accepted"  # unchanged
+        # G03 / G04 Note 1: an EVSE Operative does not undo the station's Inoperative.
         r = await peer.request(CP, call.ChangeAvailability(evse={"id": 1}, operational_status="Operative"))
         assert r.status == "Accepted"
-        await _until(lambda: _statuses(s, 1)[-1] == "Available")
-        assert _statuses(s, 2)[-1] == "Unavailable"
+        r = await peer.request(CP, call.ChangeAvailability(evse={"id": 2}, operational_status="Inoperative"))
+        assert r.status == "Accepted"
+        await asyncio.sleep(0.2)
+        assert _statuses(s, 1)[-1] == "Unavailable" and _statuses(s, 2)[-1] == "Unavailable"
+        assert rt.snapshot()["station"]["operative"] is False
         for evse in ({"id": 9}, {"id": 1, "connector_id": 2}, {"id": 0, "connector_id": 1}):
             r = await peer.request(CP, call.ChangeAvailability(evse=evse, operational_status="Operative"))
             assert (r.status, _reason(r)) == ("Rejected", "UnknownEvse")
         assert rt.snapshot()["connectors"][1]["operative"] is False
+        # G04.FR.08: the station Operative brings every EVSE back to its own state.
         r = await peer.request(CP, call.ChangeAvailability(evse={"id": 0}, operational_status="Operative"))
         assert r.status == "Accepted"
-        await _until(lambda: _statuses(s, 2)[-1] == "Available")
+        await _until(lambda: _statuses(s, 1)[-1] == "Available")
+        await asyncio.sleep(0.2)
+        assert _statuses(s, 2)[-1] == "Unavailable" and rt.snapshot()["station"]["operative"] is True
     _scenario(body, cfg_kw={"connectors": 2, "auth_mode": "accept_all"})
 
 
@@ -284,7 +293,7 @@ def test_trigger_message_accepted():
         await _until(lambda: len(s.transaction_events) == 2)
         ev = s.transaction_events[1]
         assert ev["event_type"] == "Updated" and ev["trigger_reason"] == "Trigger" and ev["seq_no"] == 1
-        assert ev["evse"]["id"] == 1 and ev["meter_value"][0]["sampled_value"][0]["context"] == "Trigger"
+        assert "evse" not in ev and ev["meter_value"][0]["sampled_value"][0]["context"] == "Trigger"
     _scenario(body, cfg_kw={"connectors": 2, "auth_mode": "accept_all"})
 
 
@@ -298,7 +307,6 @@ def test_trigger_message_rejected_and_not_implemented():
             (call.TriggerMessage(requested_message="MeterValues", evse={"id": 3}), "Rejected", "UnknownEvse"),
             (call.TriggerMessage(requested_message="StatusNotification", evse={"id": 1, "connector_id": 2}),
              "Rejected", "UnknownEvse"),
-            (call.TriggerMessage(requested_message="LogStatusNotification"), "NotImplemented", None),
             (call.TriggerMessage(requested_message="SignChargingStationCertificate"), "NotImplemented", None),
         ]
         for req, status, code in cases:
@@ -311,8 +319,10 @@ def test_trigger_boot_notification_while_pending():
     async def body(peer, rt):
         await _until(lambda: rt.registration == "Pending")
         s = peer.history[0]
+        # B02.FR.02: a triggered message may be sent while Pending.
         r = await peer.request(CP, call.TriggerMessage(requested_message="Heartbeat"))
-        assert (r.status, _reason(r)) == ("Rejected", "NotRegistered")
+        assert r.status == "Accepted"
+        await _until(lambda: s.heartbeats == 1)
         r = await peer.request(CP, call.TriggerMessage(requested_message="BootNotification"))
         assert r.status == "Accepted"
         await _until(lambda: rt.online)  # well before the 60 s retry interval
@@ -321,7 +331,7 @@ def test_trigger_boot_notification_while_pending():
     _scenario(body, {"boot_statuses": ["Pending"], "retry_interval": 60})
 
 
-@pytest.mark.parametrize("message", ["FirmwareStatusNotification", "PublishFirmwareStatusNotification",
+@pytest.mark.parametrize("message", ["PublishFirmwareStatusNotification",
                                      "SignV2GCertificate", "SignCombinedCertificate"])
 def test_trigger_message_other_values_not_implemented(message):
     async def body(peer, rt):

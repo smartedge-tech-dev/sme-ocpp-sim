@@ -15,7 +15,8 @@ and the operator API's ``connector`` argument is the EVSE id. There is no Status
 
 Transactions (2.0.1 E-series): the station generates the transaction id (a UUID4, 36 characters) and numbers the
 TransactionEvents of one transaction with a continuous ``seqNo`` from 0: ``Started`` -> ``Updated`` x n ->
-``Ended``. ``Started`` carries the id token, the EVSE and the meter start (``Transaction.Begin``); periodic
+``Ended``. ``Started`` carries the id token, the EVSE (only this first event after the cable was connected,
+E01.FR.16) and the meter start (``Transaction.Begin``); periodic
 ``Updated`` carry the configured readings (``Sample.Periodic``); a power-model suspension change sends an
 ``Updated`` with ``ChargingStateChanged``; ``Ended`` carries the final energy register (``Transaction.End``) and
 ``stoppedReason``.
@@ -42,10 +43,16 @@ Interpretations (not defined by the spec)
   stop (``StopAuthorized`` / ``Local``; the token is sent only when one was presented), cable unplugged
   (``EVCommunicationLost`` / ``EVDisconnected``), an operator fault (``AbnormalCondition`` / the fault code, which
   is a ``ReasonEnumType`` value), or a CSMS that does not accept the token in a TransactionEvent answer
-  (``Deauthorized`` / ``DeAuthorized``, the default of ``StopTxOnInvalidId``).
+  (``Deauthorized`` / ``DeAuthorized``, the default of ``StopTxOnInvalidId``). With StopTxOnInvalidId ``false``
+  the transaction goes on but the energy transfer stops at once (the power model gets a 0 W limit), which sends
+  an ``Updated`` ``ChargingStateChanged`` with ``SuspendedEVSE`` (E05.FR.02); MaxEnergyOnInvalidId is not
+  modelled. ``Started`` already carries ``chargingState`` ``Charging`` (E02.FR.13 allows the start and the state
+  in one event).
 - A token authorized before the cable is plugged waits on the connector, which stays ``Available`` until the
   cable comes (2.0.1 has no ``Preparing``); the Web UI still sees the 1.6-style domain status. An unplug drops a
-  waiting token (the next session needs a fresh authorization).
+  waiting token (the next session needs a fresh authorization), and so does TxCtrlr.EVConnectionTimeOut (E03 /
+  F02.FR.07; 0 = no timeout): with TxStartPoint ``PowerPathClosed`` no transaction exists yet, so no ``Ended``
+  is sent.
 - ``seqNo`` restarts at 0 for every transaction. A queued periodic ``Updated`` dropped by the queue bound
   (:data:`MAX_TX_QUEUE`) leaves a gap in ``seqNo``; ``Started`` / ``Ended`` / ``ChargingStateChanged`` are never
   dropped by the bound.
@@ -55,9 +62,11 @@ Interpretations (not defined by the spec)
   reconnect; an event whose answer was lost with the connection is sent again (the CSMS can de-duplicate by
   ``transactionId`` + ``seqNo``).
 - While the boot is not accepted only BootNotification is sent (no Authorize, StatusNotification or
-  TransactionEvent; B02 / B03). CSMS CALLs are answered in every registration state: DataTransfer by the
-  configured rules, every other action NotImplemented. A transaction may start while offline / Pending when the
-  token is authorized locally (see the AuthCtrlr variables below); otherwise it is ``Offline`` then.
+  TransactionEvent; B02 / B03), except what a TriggerMessage asks for while Pending (B02.FR.02, see
+  TriggerMessage). While Pending, RequestStartTransaction / RequestStopTransaction are ``Rejected``
+  (B02.FR.05) and the other CSMS CALLs are answered as usual; while Rejected every CSMS CALL is answered CALLERROR
+  ``SecurityError`` (B03, Table 32). A transaction may start while offline / Pending when the token is authorized
+  locally (see the AuthCtrlr variables below); otherwise it is ``Offline`` then.
 - Authorization of a token (presented, or of a RequestStartTransaction with AuthorizeRemoteStart) follows the
   AuthCtrlr variables (Part 2 §2.3), whose initial values come from ``auth_mode`` and which SetVariables may
   change: Enabled ``false`` -> accepted; DisableRemoteAuthorization ``true`` -> accepted when it is in
@@ -87,8 +96,9 @@ Interpretations (not defined by the spec)
 - SecurityCtrlr.BasicAuthPassword (A01): a new value is ``Accepted``; after the SetVariables answer the station
   closes the connection and reconnects (without back-off) with the new password, SecurityProfile updated. The
   password lives in memory only (it is not written to the YAML).
-- Triggered / operator MeterValues (outside the transaction flow) report :data:`TX_UPDATED_MEASURANDS`, not the
-  TxUpdatedMeasurands variable.
+- Triggered / operator MeterValues (outside the transaction flow) report AlignedDataCtrlr.Measurands
+  (F06.FR.06), a triggered TransactionEvent the TxUpdatedMeasurands (F06.FR.07). No clock-aligned sampling is
+  modelled.
 - Operator fault codes are the fault-type values of ``ReasonEnumType`` (:attr:`Station201.fault_codes`): a 2.0.1
   StatusNotification has no error code, so the code is only the ``stoppedReason`` of an interrupted transaction
   (NotifyEvent is not sent).
@@ -99,7 +109,9 @@ Interpretations (not defined by the spec)
   phases the EV uses while one charges and to the supply's phases otherwise. GetCompositeSchedule periods are
   capped at the hardware maximum (``max_power_w``, times the EVSE count for evseId 0), which also stands for "no
   limit"; an unknown EVSE or a duration < 1 is ``Rejected``. The TxProfiles of an EVSE are dropped when its
-  transaction ends.
+  transaction ends. A GetCompositeSchedule ``chargingRateUnit`` not in SmartChargingCtrlr.RateUnit is
+  ``Rejected`` (K08.FR.07, reasonCode ``UnsupportedRateUnit``). A Rejected SetChargingProfile carries the
+  reasonCode of ``ProfileStore.reject_reason`` (``DuplicateProfile``, ``UnsupportedPurpose`` ...).
 - GetChargingProfiles: ``Accepted`` when a profile matches (the criteria and ``evseId`` are ANDed; ``evseId`` 0
   = the station-level profiles only, no ``evseId`` = all), else ``NoProfiles``. One ReportChargingProfiles per
   (EVSE, ``chargingLimitSource``) group follows the answer, ``tbc`` on all but the last, the profiles as the CSMS
@@ -109,17 +121,22 @@ Interpretations (not defined by the spec)
   ChargingStationExternalConstraints profile (id :func:`external_profile_id`, stackLevel 0, Absolute from now,
   one period in W) on the EVSE (0 = the station) and sends NotifyChargingLimit (``chargingLimitSource`` ``EMS``,
   ``evseId`` only for an EVSE, the schedule when SmartChargingCtrlr.NotifyChargingLimitWithSchedules is true);
-  removing it sends ClearedChargingLimit. Both are sent in the background and only while the boot is accepted
-  (nothing is queued offline). It is refused (``ValueError``) while ExternalControlSignalsEnabled is false.
+  removing it sends ClearedChargingLimit (K13.FR.03). Both are sent in the background on every change and only
+  while the boot is accepted (nothing is queued offline or while Pending, and nothing is resent later). An EVSE
+  whose transaction then charges at a rate that changed by more than SmartChargingCtrlr.LimitChangeSignificance
+  percent (the limit capped at ``max_power_w``) queues an ``Updated`` ``ChargingRateChanged`` (K11.FR.04 /
+  K13.FR.03). It is refused (``ValueError``) while ExternalControlSignalsEnabled is false (K11.FR.06: the
+  profile has the purpose ChargingStationExternalConstraints and a negative id).
 - RequestStartTransaction (M3): with AuthorizeRemoteStart ``false`` (the default) the CSMS has authorized the
   token, so it is not authorized again; with ``true`` it is authorized like a presented token (``auth_mode``)
-  after the answer and dropped from the EVSE when that is not ``Accepted``. Without ``evseId`` the first
+  after the answer and dropped from the EVSE when that is not ``Accepted`` (F01.FR.01), except a token of
+  ``type`` ``Central`` or ``NoAuthorization``, which is never authorized (F01.FR.02, F02.FR.09 / FR.10). Without ``evseId`` the first
   startable EVSE with a plugged cable is used, else the first startable one. A faulted, inoperative or busy EVSE (or none free) is
   ``Rejected``; so is a ``chargingProfile`` that is not a valid ``TxProfile`` or that carries a ``transactionId``.
   An accepted ``chargingProfile`` is installed, bound to the new ``transactionId``, when the transaction starts
   (M5); it is discarded with the token. An accepted token waits on an unplugged
-  EVSE like a local one; the transaction starts at once when the cable is plugged (``triggerReason``
-  ``RemoteStart``) or when it comes (``CablePluggedIn``). ``Started`` carries the token with the ``type`` the CSMS
+  EVSE like a local one; the transaction starts at once when the cable is plugged or when it comes, with
+  ``triggerReason`` ``RemoteStart`` either way (F02.FR.21). ``Started`` carries the token with the ``type`` the CSMS
   sent and ``remoteStartId`` in ``transactionInfo``; the answer has no ``transactionId`` (no transaction exists
   before the request with these start points). ``groupIdToken`` is not used. An EVSE with a waiting token (local
   or remote) is ``Rejected`` (``Occupied``) and not chosen without ``evseId``.
@@ -136,21 +153,28 @@ Interpretations (not defined by the spec)
   transaction has ended; new transactions may still start meanwhile. An ``Immediate`` Reset overrides a scheduled
   one. While a Reset runs no transaction can start (``Rejected`` / ``Unavailable``). Cable, fault and availability
   states survive the reboot; tokens waiting for a cable do not.
-- ChangeAvailability: no ``evse`` or EVSE id 0 addresses the whole station, i.e. every EVSE (there is no separate
-  station state); an unknown EVSE or a connector other than 1 is ``Rejected``. Going ``Inoperative`` while an
-  addressed EVSE has a transaction is ``Scheduled`` for that EVSE and takes effect when its transaction ends;
-  every other change takes effect at once (``Accepted``, also when the state does not change). ``Operative``
-  cancels a scheduled change. Availability survives a Reset. A token waiting on an EVSE that becomes
-  inoperative is dropped.
+- ChangeAvailability: no ``evse`` or EVSE id 0 sets the station's own availability, kept apart from the EVSEs'
+  (G04, G03 / G04 Note 1): an EVSE is operative only while both are, so an EVSE ``Operative`` does not undo a
+  station ``Inoperative``, and a station ``Operative`` brings every EVSE back to its own state (G04.FR.08). An
+  unknown EVSE or a connector other than 1 is ``Rejected``. An EVSE going ``Inoperative`` while it has a
+  transaction is ``Scheduled`` and takes effect when the transaction ends (G03.FR.05); ``Operative`` cancels it.
+  The station going ``Inoperative`` while any EVSE has a transaction is ``Scheduled`` (G04.FR.06): each EVSE
+  with a transaction becomes Unavailable when its transaction ends, AMBIGUOUS: the idle EVSEs become
+  Unavailable at once (G04.FR.07 read per EVSE). Every other change takes effect at once (``Accepted``, also
+  when the state does not change, G03.FR.03 / G04.FR.04). Availability survives a Reset. A token waiting on an
+  EVSE that becomes inoperative is dropped.
 - TriggerMessage: BootNotification is ``Accepted`` only while the registration is not ``Accepted`` (it wakes the
-  boot loop; reason ``Triggered`` for the next BootNotification sent), else ``Rejected``. Heartbeat, StatusNotification, MeterValues and
-  TransactionEvent are ``Rejected`` while the boot is not accepted (only BootNotification is sent then).
-  StatusNotification and MeterValues (context ``Trigger``, :data:`TX_UPDATED_MEASURANDS`) are sent for the
+  boot loop; reason ``Triggered`` for the next BootNotification sent), else ``Rejected``. The other messages are
+  ``Rejected`` before a BootNotification answer and served while Accepted or Pending (B02.FR.02 allows them
+  then). StatusNotification and MeterValues (context ``Trigger``, AlignedDataCtrlr.Measurands) are sent for the
   addressed EVSE, or every EVSE without ``evse``; TransactionEvent sends an ``Updated`` (``triggerReason``
-  ``Trigger``, the same readings) for the transaction of the addressed EVSE, or of every EVSE, and is
-  ``Rejected`` when there is none. An unknown EVSE or a connector other than 1 is ``Rejected``. The other
-  ``requestedMessage`` values (LogStatusNotification, FirmwareStatusNotification, the certificate messages, ...)
-  answer ``NotImplemented``.
+  ``Trigger``, the TxUpdatedMeasurands readings) for the transaction of the addressed EVSE, or of every EVSE, and
+  is ``Rejected`` when there is none. While Pending the StatusNotifications are sent directly; the
+  TransactionEvent joins the outbox and goes out after the boot is accepted, so ``seqNo`` stays in order.
+  LogStatusNotification and FirmwareStatusNotification send status ``Idle`` (no log upload or firmware update
+  is modelled, F06.FR.14 / FR.16). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
+  ``requestedMessage`` values (the certificate messages, PublishFirmwareStatusNotification) answer
+  ``NotImplemented``.
 - A ``Rejected`` (or ``UnknownConnector``) answer carries ``statusInfo.reasonCode`` with a short simulator code
   (:data:`REASON_UNKNOWN_EVSE` ...); the codes are informative only.
 """
@@ -185,8 +209,9 @@ from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, Chargi
                     GetChargingProfileStatusEnumType, IdTokenEnumType, MessageTriggerEnumType,
                     OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
                     TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
-from .profiles import (ChargingProfile, ChargingSchedule, ClearStatus, InstalledProfile, Limits, ProfileStatus,
-                       ProfileStore, SchedulePeriod)
+from .enums import FirmwareStatusEnumType, UploadLogStatusEnumType
+from .profiles import (REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT, ChargingProfile, ChargingSchedule, ClearStatus,
+                       InstalledProfile, Limits, ProfileStatus, ProfileStore, SchedulePeriod)
 
 log = logging.getLogger(__name__)
 
@@ -199,8 +224,6 @@ SOC_LOCATION = "EV"
 
 #: Connector id of every EVSE (one connector per EVSE, plan §11.1 Q11).
 CONNECTOR_ID = 1
-#: Readings of a triggered / operator MeterValues (outside the transaction flow).
-TX_UPDATED_MEASURANDS: Tuple[str, ...] = dm.DEFAULT_TX_UPDATED
 #: Maximum number of queued periodic TransactionEvent Updated; the oldest is dropped first.
 MAX_TX_QUEUE = 1000
 
@@ -211,7 +234,7 @@ REASON_UNKNOWN_EVSE = "UnknownEvse"
 REASON_OCCUPIED = "Occupied"
 REASON_FAULTED = "Faulted"
 REASON_UNAVAILABLE = "Unavailable"
-REASON_INVALID_PROFILE = "InvalidProfile"
+REASON_INVALID_PROFILE = REASON_INVALID
 REASON_UNKNOWN_TX = "UnknownTransaction"
 REASON_NOT_SUPPORTED = "NotSupported"
 REASON_NOT_REGISTERED = "NotRegistered"
@@ -235,7 +258,10 @@ T = TriggerReasonEnumType
 MT = MessageTriggerEnumType
 #: TriggerMessage values this station serves; every other one is NotImplemented.
 TRIGGERABLE = frozenset({MT.boot_notification, MT.heartbeat, MT.status_notification, MT.meter_values,
-                         MT.transaction_event})
+                         MT.transaction_event, MT.log_status_notification, MT.firmware_status_notification})
+#: idToken types a RequestStartTransaction never authorizes, also with AuthorizeRemoteStart (F01.FR.02).
+NOT_AUTHORIZED_TYPES = frozenset({IdTokenEnumType.central, IdTokenEnumType.no_authorization})
+_ACCEPTED, _PENDING = d.BootStatus.ACCEPTED.value, d.BootStatus.PENDING.value
 _SUSPENSION = {"SuspendedEV": ChargingStateEnumType.suspended_ev, "SuspendedEVSE": ChargingStateEnumType.suspended_evse}
 #: Fault-type values of ReasonEnumType an operator may set (see the module docstring).
 FAULT_CODES: Tuple[str, ...] = tuple(r.value for r in (
@@ -253,6 +279,8 @@ class _Tx:
     remote_start_id: Optional[int] = None
     next_seq: int = 0
     charging_state: Optional[ChargingStateEnumType] = None  # last one reported
+    evse_sent: bool = False  # ``evse`` went out in the first event (E01.FR.16)
+    deauthorized: bool = False  # the CSMS refused the token, StopTxOnInvalidId false: no energy (E05.FR.02)
 
     def seq(self) -> int:
         n, self.next_seq = self.next_seq, self.next_seq + 1
@@ -274,6 +302,7 @@ class _Evse:
     pending_remote_id: Optional[int] = None  # remoteStartId of a RequestStartTransaction token
     pending_authorizing: bool = False  # AuthorizeRemoteStart: the token is being authorized, a plug waits
     pending_operative: Optional[bool] = None  # ChangeAvailability "Scheduled"
+    pending_timer: Optional[asyncio.TimerHandle] = None  # EVConnectionTimeOut of ``pending_tag``
     #: RequestStartTransaction TxProfile of ``pending_tag``: (domain profile, wire model).
     pending_profile: Optional[Tuple[ChargingProfile, m.ChargingProfileType]] = None
     tx: Optional[_Tx] = None
@@ -331,6 +360,8 @@ class Station201(VersionStation):
         self._reset_scheduled = False
         #: A Reset is ending the transactions / draining the outbox; cleared when it closes the session.
         self._resetting = False
+        #: The station's own availability (ChangeAvailability without EVSE), apart from the EVSEs' (G04).
+        self.station_operative = True
         self._remote: Dict[type, Callable[[Any], m.OcppModel]] = {
             m.RequestStartTransactionRequest: self._request_start,
             m.RequestStopTransactionRequest: self._request_stop,
@@ -411,7 +442,7 @@ class Station201(VersionStation):
                       "charging_state": e.tx.charging_state.value if e.tx.charging_state else None}
             return {"id": e.id, "evse_id": e.id, "connector_id": CONNECTOR_ID, "status": e.status.value,
                     "connector_status": connector_status(e.status).value, "error_code": e.fault,
-                    "plugged": e.plugged, "operative": e.operative, "pending_operative": e.pending_operative,
+                    "plugged": e.plugged, "operative": self._operative(e), "pending_operative": e.pending_operative,
                     "pending_tag": e.pending_tag, "meter_wh": round(e.meter_wh, 3),
                     "power_w": round(e.pw.power_w, POWER_DECIMALS) if e.pw is not None else 0.0,
                     "soc_pct": round(e.pw.soc_pct, SOC_DECIMALS) if e.pw is not None else None,
@@ -420,7 +451,8 @@ class Station201(VersionStation):
         return {
             "tx_queue": sum(1 for x in self._outq if x.transactional),
             # 2.0.1 has no station-level status; the 1.6-shaped key keeps the Web UI working.
-            "station": {"status": S.AVAILABLE.value, "operative": all(e.operative for e in self.evses.values())},
+            "station": {"status": S.AVAILABLE.value if self.station_operative else S.UNAVAILABLE.value,
+                        "operative": self.station_operative},
             "connectors": [evse(e) for e in self.evses.values()],
         }
 
@@ -508,17 +540,32 @@ class Station201(VersionStation):
         if res.id_token_info is None or e is None or tx is None or req is None or req.id_token is None:
             return
         status = res.id_token_info.status.value
-        if status != A.ACCEPTED.value and e.tx is tx and self.dm.bool_value(dm.STOP_TX_ON_INVALID_ID):
+        if status == A.ACCEPTED.value or e.tx is not tx:
+            return
+        if self.dm.bool_value(dm.STOP_TX_ON_INVALID_ID):
             log.info("%s: EVSE %d token %s answered %s: transaction %s ends", self.cfg.id, e.id, tx.id_token,
                      status, tx.tx_id)
             self._end_tx(e, T.deauthorized, ReasonEnumType.de_authorized)
+        elif not tx.deauthorized:  # E05.FR.02: stop the energy transfer, keep the transaction
+            log.info("%s: EVSE %d token %s answered %s: transaction %s suspended", self.cfg.id, e.id, tx.id_token,
+                     status, tx.tx_id)
+            self._advance(e)  # up to now at the old limit
+            tx.deauthorized = True
+            self._advance(e)  # zero-length step at 0 W: SuspendedEVSE
+            self._refresh(e)
+            self._report_charging_state(e)
 
     # ================================================================== status
+
+    def _operative(self, e: _Evse) -> bool:
+        """The EVSE is operative: its own and the station's availability (a running transaction keeps a station
+        ``Inoperative`` scheduled for it, see ChangeAvailability)."""
+        return e.operative and (self.station_operative or e.tx is not None)
 
     def _target(self, e: _Evse) -> S:
         if e.fault:
             return S.FAULTED
-        if not e.operative:
+        if not self._operative(e):
             return S.UNAVAILABLE
         if e.tx is not None:
             return S(e.pw.suspension) if e.pw is not None and e.pw.suspension else S.CHARGING
@@ -575,6 +622,8 @@ class Station201(VersionStation):
         return {e.id: ActiveTransaction(e.tx.tx_id, e.tx.started_at) for e in self.evses.values() if e.tx is not None}
 
     def _limit_w(self, e: _Evse) -> Optional[float]:
+        if e.tx is not None and e.tx.deauthorized:
+            return 0.0
         return limit_at(self.profiles, e.id, self.host.clock(), transactions=self._transactions(),
                         number_phases=self._phases(e.id), voltage=self.supply.phase_voltage_v())
 
@@ -624,9 +673,10 @@ class Station201(VersionStation):
         req = m.TransactionEventRequest(
             event_type=event, timestamp=now, trigger_reason=trigger, seq_no=tx.seq(),
             offline=True if not self.host.connected else None, transaction_info=info,
-            evse=m.EVSEType(id=e.id, connector_id=CONNECTOR_ID),
+            evse=None if tx.evse_sent else m.EVSEType(id=e.id, connector_id=CONNECTOR_ID),
             id_token=id_token(token, token_type) if token is not None else None,
             meter_value=[meter_value(now, samples, context.value)] if samples and context else None)
+        tx.evse_sent = True
         self._push(_Out(f"TransactionEvent {event.value}", lambda: self._adapter.send_transaction_event(req),
                         transactional=True, droppable=droppable, evse=e, tx=tx, req=req))
 
@@ -738,6 +788,12 @@ class Station201(VersionStation):
             return remote(cmd)
         return d.CommandStatus.NOT_IMPLEMENTED
 
+    def check_call(self, action: str) -> None:
+        """B03 (Table 32): while the registration is Rejected every CSMS CALL is answered ``SecurityError``."""
+        if self.host.registration == d.BootStatus.REJECTED.value:
+            raise CallError(self._adapter.error_codes.security_error,
+                            f"{action}: the BootNotification was Rejected")
+
     # ================================================================== remote control (M3)
 
     @staticmethod
@@ -760,7 +816,7 @@ class Station201(VersionStation):
         """Why a RequestStartTransaction cannot use ``e`` now (``None`` = it can)."""
         if e.fault:
             return REASON_FAULTED
-        if not e.operative or self._resetting:
+        if not self._operative(e) or self._resetting:
             return REASON_UNAVAILABLE
         if e.tx is not None or e.pending_tag is not None:  # a waiting token keeps the EVSE
             return REASON_OCCUPIED
@@ -770,6 +826,27 @@ class Station201(VersionStation):
     def _clear_pending(e: _Evse) -> None:
         e.pending_tag, e.pending_type, e.pending_remote_id = None, LOCAL_TOKEN_TYPE, None
         e.pending_authorizing, e.pending_profile = False, None
+        if e.pending_timer is not None:
+            e.pending_timer.cancel()
+            e.pending_timer = None
+
+    def _arm_connection_timeout(self, e: _Evse) -> None:
+        """Drop ``e.pending_tag`` when no cable comes within TxCtrlr.EVConnectionTimeOut (E03 / F02.FR.07)."""
+        if e.pending_timer is not None:
+            e.pending_timer.cancel()
+            e.pending_timer = None
+        timeout = self.dm.int_value(dm.EV_CONNECTION_TIMEOUT)
+        if timeout > 0 and e.pending_tag is not None:
+            e.pending_timer = asyncio.get_running_loop().call_later(timeout, self._connection_timed_out, e,
+                                                                    e.pending_tag)
+
+    def _connection_timed_out(self, e: _Evse, tag: str) -> None:
+        e.pending_timer = None
+        if e.pending_tag != tag or e.tx is not None or e.plugged:
+            return  # replaced, started, or plugged while being authorized
+        log.info("%s: EVSE %d token %s dropped: no cable within EVConnectionTimeOut", self.cfg.id, e.id, tag)
+        self._clear_pending(e)
+        self._refresh(e)
 
     def _set_operative(self, e: _Evse, operative: bool) -> None:
         e.operative, e.pending_operative = operative, None
@@ -781,12 +858,16 @@ class Station201(VersionStation):
             return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
                                                      status_info=self._info(code))
 
+        if self.host.registration == _PENDING:  # B02.FR.05, before every other check
+            return rejected(REASON_NOT_REGISTERED)
         wire = req.charging_profile
         profile = charging_profile(wire) if wire is not None else None
         # Without evseId the EVSE is not known yet: checked as for EVSE 1 (every EVSE has the same rules).
-        if profile is not None and self.profiles.validate(req.evse_id or 1, profile, for_remote_start=True,
-                                                          limits=self._limits()) is not ProfileStatus.ACCEPTED:
-            return rejected(REASON_INVALID_PROFILE)
+        if profile is not None:
+            reason = self.profiles.reject_reason(req.evse_id or 1, profile, for_remote_start=True,
+                                                 limits=self._limits())
+            if reason is not None:
+                return rejected(reason)
         if req.evse_id is not None:
             e = self.evses.get(req.evse_id)
             if e is None:
@@ -803,15 +884,18 @@ class Station201(VersionStation):
         e.pending_tag, e.pending_type = req.id_token.id_token, req.id_token.type
         e.pending_remote_id = req.remote_start_id
         e.pending_profile = (profile, wire) if profile is not None and wire is not None else None
-        # AuthorizeRemoteStart: from now on a plug waits for the authorization (see _remote_authorize).
-        e.pending_authorizing = self.dm.bool_value(dm.AUTHORIZE_REMOTE_START)
+        # AuthorizeRemoteStart: from now on a plug waits for the authorization (see _remote_authorize); a Central /
+        # NoAuthorization token is never authorized (F01.FR.02).
+        e.pending_authorizing = (self.dm.bool_value(dm.AUTHORIZE_REMOTE_START)
+                                 and req.id_token.type not in NOT_AUTHORIZED_TYPES)
+        self._arm_connection_timeout(e)
         self.host.after_reply(functools.partial(self._remote_start_go, e, req.remote_start_id))
         return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
 
     def _remote_start_go(self, e: _Evse, remote_start_id: int) -> None:
         if e.pending_remote_id != remote_start_id or e.pending_tag is None or e.tx is not None:
             return  # replaced, started or dropped meanwhile
-        if e.fault or not e.operative or self._resetting:
+        if e.fault or not self._operative(e) or self._resetting:
             self._clear_pending(e)
             return
         if e.pending_authorizing:
@@ -834,7 +918,7 @@ class Station201(VersionStation):
         status = await self._authorize(tag)
         if e.pending_remote_id != remote_start_id or e.pending_tag != tag or e.tx is not None:
             return  # replaced, started or dropped meanwhile
-        if status is not A.ACCEPTED or e.fault or not e.operative or self._resetting:
+        if status is not A.ACCEPTED or e.fault or not self._operative(e) or self._resetting:
             log.info("%s: EVSE %d remote start token %s not started (%s)", self.cfg.id, e.id, tag, status.value)
             self._clear_pending(e)
             return
@@ -842,6 +926,9 @@ class Station201(VersionStation):
         self._remote_start_now(e)
 
     def _request_stop(self, req: m.RequestStopTransactionRequest) -> m.RequestStopTransactionResponse:
+        if self.host.registration == _PENDING:  # B02.FR.05
+            return m.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
+                                                    status_info=self._info(REASON_NOT_REGISTERED))
         for e in self.evses.values():
             if e.tx is not None and e.tx.tx_id == req.transaction_id:
                 self.host.after_reply(functools.partial(self._remote_stop, e, e.tx))
@@ -918,11 +1005,20 @@ class Station201(VersionStation):
                                                 status_info=self._info(REASON_UNKNOWN_EVSE))
         operative = req.operational_status is OperationalStatusEnumType.operative
         scheduled = False
-        for e in targets:
-            if not operative and e.operative and e.tx is not None:
-                e.pending_operative, scheduled = False, True
-            else:
-                self._set_operative(e, operative)
+        if req.evse is None or req.evse.id == 0:  # the station's own availability (G04)
+            busy = any(e.tx is not None for e in targets)
+            scheduled = not operative and self.station_operative and busy  # G04.FR.06
+            self.station_operative = operative
+            if not operative:
+                for e in targets:
+                    if e.tx is None:
+                        self._clear_pending(e)
+        else:
+            for e in targets:
+                if not operative and e.operative and e.tx is not None:
+                    e.pending_operative, scheduled = False, True  # G03.FR.05
+                else:
+                    self._set_operative(e, operative)
         self.host.after_reply(functools.partial(self._refresh_all, targets))
         return m.ChangeAvailabilityResponse(status=ChangeAvailabilityStatusEnumType.scheduled if scheduled
                                             else ChangeAvailabilityStatusEnumType.accepted)
@@ -947,9 +1043,18 @@ class Station201(VersionStation):
             self._adapter.trigger_boot_reason(BootReasonEnumType.triggered)
             self.host.after_reply(self.host.kick_boot)
             return answer(TriggerMessageStatusEnumType.accepted)
-        if not self.host.online:
+        if not self.host.connected or self.host.registration not in (_ACCEPTED, _PENDING):  # B02.FR.02
             return answer(TriggerMessageStatusEnumType.rejected, REASON_NOT_REGISTERED)
-        if what is MT.heartbeat:
+        if what is MT.log_status_notification:  # F06.FR.14
+            self.host.after_reply(functools.partial(
+                self._trigger_send, "LogStatusNotification", lambda: self._adapter.send_log_status_notification(
+                    m.LogStatusNotificationRequest(status=UploadLogStatusEnumType.idle))))
+        elif what is MT.firmware_status_notification:  # F06.FR.16
+            self.host.after_reply(functools.partial(
+                self._trigger_send, "FirmwareStatusNotification",
+                lambda: self._adapter.send_firmware_status_notification(
+                    m.FirmwareStatusNotificationRequest(status=FirmwareStatusEnumType.idle))))
+        elif what is MT.heartbeat:
             self.host.after_reply(self.host.heartbeat)
         elif what is MT.status_notification:
             self.host.after_reply(functools.partial(self._trigger_statuses, targets))
@@ -962,18 +1067,28 @@ class Station201(VersionStation):
             self.host.after_reply(functools.partial(self._trigger_tx_events, with_tx))
         return answer(TriggerMessageStatusEnumType.accepted)
 
-    def _trigger_statuses(self, targets: Sequence[_Evse]) -> None:
-        """Queue the current connectorStatus of ``targets`` (also when unchanged)."""
+    async def _trigger_send(self, what: str, send: Callable[[], Awaitable[Any]]) -> None:
+        await self.host.safe(send(), what)
+
+    async def _trigger_statuses(self, targets: Sequence[_Evse]) -> None:
+        """Send the current connectorStatus of ``targets`` (also when unchanged): queued while Accepted, directly
+        while Pending (the outbox runs only once the boot is accepted)."""
+        events = []  # captured now: a state change during the direct sends below is reported by _refresh
         for e in targets:
             e.status = self._target(e)
             e.reported = connector_status(e.status)
-            ev = self._status_event(e)
-            self._push(_Out("StatusNotification", functools.partial(self._adapter.send_connector_status, ev)))
+            events.append(self._status_event(e))
+        for ev in events:
+            send = functools.partial(self._adapter.send_connector_status, ev)
+            if self.host.online:
+                self._push(_Out("StatusNotification", send))
+            else:
+                await self.host.safe(send(), "StatusNotification")
 
     async def _trigger_meter_values(self, targets: Sequence[_Evse]) -> None:
         for e in targets:
             self._advance(e)
-            ev = d.MeterSample(e.id, self.host.clock(), self._samples(e, TX_UPDATED_MEASURANDS),
+            ev = d.MeterSample(e.id, self.host.clock(), self._samples(e, self.dm.list_value(dm.ALIGNED_MEASURANDS)),
                                ReadingContextEnumType.trigger.value)
             await self.host.safe(self._adapter.send_meter_sample(ev), "MeterValues")
 
@@ -986,7 +1101,8 @@ class Station201(VersionStation):
             tx.charging_state = self._charging_state(e)
             self._queue_event(e, tx, TransactionEventEnumType.updated, T.trigger,
                               m.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state),
-                              samples=self._samples(e, TX_UPDATED_MEASURANDS), context=ReadingContextEnumType.trigger)
+                              samples=self._samples(e, self.dm.list_value(dm.TX_UPDATED_MEASURANDS)),
+                              context=ReadingContextEnumType.trigger)
 
     # ================================================================== Device Model (M4)
 
@@ -1037,33 +1153,39 @@ class Station201(VersionStation):
                       max_periods=self.dm.int_value(dm.PERIODS_PER_SCHEDULE),
                       units=frozenset(ChargingRateUnitEnumType(u) for u in self.dm.list_value(dm.RATE_UNIT)))
 
-    def _install(self, evse_id: int, profile: ChargingProfile, wire: m.ChargingProfileType) -> ProfileStatus:
-        """ProfileStore.install for a CSMS profile, logging a same-id profile it replaces on another EVSE."""
+    def _install(self, evse_id: int, profile: ChargingProfile, wire: m.ChargingProfileType) -> Optional[str]:
+        """ProfileStore.install for a CSMS profile, logging a same-id profile it replaces on another EVSE.
+        Returns the reasonCode when it is Rejected, ``None`` when installed."""
         e = self.evses.get(evse_id)
         active = e.tx.tx_id if e is not None and e.tx is not None else None
+        limits = self._limits()
+        reason = self.profiles.reject_reason(evse_id, profile, active_transaction=active, limits=limits)
+        if reason is not None:
+            return reason
         moved = [ip.evse_id for ip in self.profiles.profiles()
                  if ip.profile.profile_id == profile.profile_id and ip.evse_id != evse_id
                  and ip.profile.purpose is not PURPOSE.charging_station_external_constraints]
-        st = self.profiles.install(evse_id, profile, active_transaction=active, limits=self._limits(), wire=wire)
-        if st is ProfileStatus.ACCEPTED and moved:
+        # install() validates again (same inputs, same verdict): it stays self-contained for other callers.
+        self.profiles.install(evse_id, profile, active_transaction=active, limits=limits, wire=wire)
+        if moved:
             log.info("%s: charging profile %d on EVSE %s replaced by the one for EVSE %d", self.cfg.id,
                      profile.profile_id, ",".join(map(str, moved)), evse_id)
-        return st
+        return None
 
     def _bind_profile(self, e: _Evse, tx: _Tx, profile: ChargingProfile, wire: m.ChargingProfileType) -> None:
         """Install the RequestStartTransaction TxProfile for the transaction it started."""
         bound = replace(profile, transaction_id=tx.tx_id)
-        if self._install(e.id, bound, wire.model_copy(update={"transaction_id": tx.tx_id})) \
-                is not ProfileStatus.ACCEPTED:
-            log.warning("%s: RequestStartTransaction charging profile %d not installed", self.cfg.id,
-                        profile.profile_id)
+        reason = self._install(e.id, bound, wire.model_copy(update={"transaction_id": tx.tx_id}))
+        if reason is not None:
+            log.warning("%s: RequestStartTransaction charging profile %d not installed (%s)", self.cfg.id,
+                        profile.profile_id, reason)
 
     def _set_charging_profile(self, req: m.SetChargingProfileRequest) -> m.SetChargingProfileResponse:
         self.settle()
-        if self._install(req.evse_id, charging_profile(req.charging_profile), req.charging_profile) \
-                is not ProfileStatus.ACCEPTED:
+        reason = self._install(req.evse_id, charging_profile(req.charging_profile), req.charging_profile)
+        if reason is not None:
             return m.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.rejected,
-                                                status_info=self._info(REASON_INVALID_PROFILE))
+                                                status_info=self._info(reason))
         self.host.after_reply(self.tick)
         return m.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.accepted)
 
@@ -1100,7 +1222,11 @@ class Station201(VersionStation):
                                     replace(sched, periods=tuple(cap(p) for p in sched.periods)))
 
     def _get_composite_schedule(self, req: m.GetCompositeScheduleRequest) -> m.GetCompositeScheduleResponse:
-        res = self._composite(req.evse_id, req.duration, req.charging_rate_unit)
+        unit = req.charging_rate_unit
+        if unit is not None and unit.value not in self.dm.list_value(dm.RATE_UNIT):  # K08.FR.07
+            return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
+                                                  status_info=self._info(REASON_UNSUPPORTED_RATE_UNIT))
+        res = self._composite(req.evse_id, req.duration, unit)
         if res.schedule is None:
             code = REASON_UNKNOWN_EVSE if not 0 <= req.evse_id <= self.connector_count else REASON_INVALID_DURATION
             return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
@@ -1159,8 +1285,10 @@ class Station201(VersionStation):
         if e.plugged:
             return
         e.plugged = True
-        if e.pending_tag and not e.pending_authorizing and e.operative and not e.fault:
-            self._start_tx(e, e.pending_tag, T.cable_plugged_in, token_type=e.pending_type,
+        if e.pending_tag and not e.pending_authorizing and self._operative(e) and not e.fault:
+            # F02.FR.21: the first event after a RequestStartTransaction says RemoteStart.
+            trigger = T.remote_start if e.pending_remote_id is not None else T.cable_plugged_in
+            self._start_tx(e, e.pending_tag, trigger, token_type=e.pending_type,
                            remote_start_id=e.pending_remote_id, profile=e.pending_profile)
         else:
             self._refresh(e)
@@ -1187,7 +1315,7 @@ class Station201(VersionStation):
                 self._end_tx(e, T.stop_authorized, ReasonEnumType.local, token=id_tag)
                 return A.STOPPED
             return A.BUSY
-        if e.fault or not e.operative or self._resetting:
+        if e.fault or not self._operative(e) or self._resetting:
             return A.UNAVAILABLE
         status = await self._authorize(id_tag)
         if status is not A.ACCEPTED:
@@ -1195,11 +1323,12 @@ class Station201(VersionStation):
         # Re-check: the await may have let another start / a fault in.
         if e.tx is not None:
             return A.BUSY
-        if e.fault or not e.operative or self._resetting:
+        if e.fault or not self._operative(e) or self._resetting:
             return A.UNAVAILABLE
         if not e.plugged:
             self._clear_pending(e)
             e.pending_tag = id_tag
+            self._arm_connection_timeout(e)
             self._refresh(e)
             return A.ACCEPTED
         self._start_tx(e, id_tag, T.authorized)
@@ -1263,6 +1392,7 @@ class Station201(VersionStation):
         if limit_w is not None and limit_w < 0:
             raise ValueError(f"limit_w {limit_w}: must be >= 0")
         self.settle()
+        before = self._rates()
         if limit_w is None:
             if self.profiles.clear_external(connector):
                 self._notify(lambda: self._adapter.send_cleared_charging_limit(m.ClearedChargingLimitRequest(
@@ -1282,7 +1412,31 @@ class Station201(VersionStation):
                 charging_schedule=([charging_schedule_type(sched)]
                                    if self.dm.bool_value(dm.NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES) else None))
             self._notify(lambda: self._adapter.send_notify_charging_limit(req), "NotifyChargingLimit")
+        self._report_rate_changes(before)
         self.tick()
+
+    def _rates(self) -> Dict[int, float]:
+        """The rate in W each EVSE with a transaction may charge at now (the limit capped at the hardware)."""
+        out = {}
+        for e in self.evses.values():
+            if e.tx is not None:
+                limit = self._limit_w(e)
+                out[e.id] = self.cfg.max_power_w if limit is None else min(limit, self.cfg.max_power_w)
+        return out
+
+    def _report_rate_changes(self, before: Dict[int, float]) -> None:
+        """K11.FR.04 / K13.FR.03: an ``Updated`` ``ChargingRateChanged`` for every transaction whose rate changed by
+        more than LimitChangeSignificance percent."""
+        significance = float(self.dm.value(dm.LIMIT_CHANGE_SIGNIFICANCE))
+        for evse_id, new in self._rates().items():
+            old = before.get(evse_id)
+            e = self.evses[evse_id]
+            if old is None or e.tx is None or old == new:
+                continue
+            if old != 0 and abs(new - old) / old * 100 <= significance:
+                continue
+            self._queue_event(e, e.tx, TransactionEventEnumType.updated, T.charging_rate_changed,
+                              m.TransactionType(transaction_id=e.tx.tx_id))
 
     def external_limit(self, connector: int) -> Optional[float]:
         """The operator external limit in W of EVSE ``connector`` (0 = the station), ``None`` = none."""
@@ -1303,5 +1457,6 @@ class Station201(VersionStation):
         """Send a MeterValues of ``connector`` now (outside the TransactionEvent flow)."""
         e = self._evse(connector)
         self._advance(e)
-        ev = d.MeterSample(e.id, self.host.clock(), self._samples(e, TX_UPDATED_MEASURANDS), context)
+        ev = d.MeterSample(e.id, self.host.clock(), self._samples(e, self.dm.list_value(dm.ALIGNED_MEASURANDS)),
+                           context)
         await self._adapter.send_meter_sample(ev)

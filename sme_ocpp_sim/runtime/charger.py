@@ -160,7 +160,8 @@ class ChargerRuntime:
         self._abort.clear()
         self.registration = None
         rpc = RpcConnection(ws, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
-                            call_timeout=self.call_timeout, on_frame=self._frame_cb, name=self.cfg.id)
+                            call_timeout=self.call_timeout, on_frame=self._frame_cb, name=self.cfg.id,
+                            call_guard=self.station.check_call)
         self.adapter.bind(rpc.call)
         self.connected = True
         rx = asyncio.create_task(rpc.run())

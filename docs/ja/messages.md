@@ -55,15 +55,15 @@ Web UI や HTTP API が「コネクター」と言う場合は EVSE id を指し
 | メッセージ | 対応 | 備考 |
 |---|---|---|
 | Authorize | 対応 | `auth_mode` に従います。充電器で提示したトークンは `type` `ISO14443` で送信します。シミュレーターが扱わないステータス（NoCredit、NotAtThisTime など）はオペレーターには Invalid として表示します |
-| BootNotification | 対応 | Accepted / Pending / Rejected。`reason` は `PowerUp`、CSMS の Reset 後は `RemoteReset`、TriggerMessage 後は `Triggered`。Boot が受理されるまでは BootNotification だけを送信します（CSMS からの要求には応答します） |
+| BootNotification | 対応 | Accepted / Pending / Rejected。`reason` は `PowerUp`、CSMS の Reset 後は `RemoteReset`、TriggerMessage 後は `Triggered`。Boot が受理されるまでは BootNotification だけを送信します（Pending 中に TriggerMessage で要求されたものを除く、B02.FR.02）。Pending 中の RequestStart/StopTransaction は `Rejected`（B02.FR.05）、Rejected 中は CSMS からのすべての要求に CALLERROR `SecurityError` で応答します（B03） |
 | ClearedChargingLimit | 対応 | 外部制限値を解除したとき（`chargingLimitSource` `EMS`）。Boot 受理中のみ。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
 | DataTransfer | 対応 | UI または HTTP API から手動で送信します |
-| FirmwareStatusNotification | Not supported |  |
+| FirmwareStatusNotification | 対応 | TriggerMessage のときのみ、status `Idle`（ファームウェア更新は模擬しない） |
 | Get15118EVCertificate | Not supported | ISO 15118 |
 | GetCertificateStatus | Not supported | ISO 15118 |
 | Heartbeat | 対応 | `OCPPCommCtrlr.HeartbeatInterval` ごと（受理された BootNotification でも設定されます） |
-| LogStatusNotification | Not supported |  |
-| MeterValues | 対応 | TriggerMessage で送信します（context `Trigger`）。トランザクション中の計測値は TransactionEvent で送ります |
+| LogStatusNotification | 対応 | TriggerMessage のときのみ、status `Idle`（ログのアップロードは模擬しない） |
+| MeterValues | 対応 | TriggerMessage で送信します（context `Trigger`、計測項目は `AlignedDataCtrlr.Measurands`）。トランザクション中の計測値は TransactionEvent で送ります |
 | NotifyChargingLimit | 対応 | 外部制限値を設定したとき（`chargingLimitSource` `EMS`。`SmartChargingCtrlr.NotifyChargingLimitWithSchedules` が true ならスケジュール付き）。Boot 受理中のみ。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
 | NotifyCustomerInformation | Not supported |  |
 | NotifyDisplayMessages | Not supported |  |
@@ -89,7 +89,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 後に起きた方の `CablePluggedIn` または `Authorized`）、同じトークンの再提示またはオペレーターの停止
 （`StopAuthorized` / `Local`）、ケーブル抜去（`EVCommunicationLost`）、オペレーターによる故障（`AbnormalCondition`。
 故障コードが `stoppedReason`）、または TransactionEvent の応答で CSMS がトークンを拒否したとき
-（`TxCtrlr.StopTxOnInvalidId` が true の間は `Deauthorized`）に終了します。
+（`TxCtrlr.StopTxOnInvalidId` が true の間は `Deauthorized`）に終了します。`StopTxOnInvalidId` が false ならトランザクションは続きますが、送電はすぐに止まります（`Updated` `ChargingStateChanged`、`SuspendedEVSE`）。
 
 ### CSMS → Charging Station
 
@@ -97,7 +97,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 |---|---|---|
 | CancelReservation | Not supported |  |
 | CertificateSigned | Not supported |  |
-| ChangeAvailability | 対応 | `evse` なし、または EVSE 0 はすべての EVSE。対象 EVSE がトランザクション中に Inoperative にする場合は `Scheduled` で、終了時に反映します |
+| ChangeAvailability | 対応 | `evse` なし、または EVSE 0 はステーション自体の可用性で、EVSE の可用性とは別に保持します（EVSE の `Operative` はステーションの `Inoperative` を解除しません）。トランザクション中（その EVSE、ステーションならいずれかの EVSE）に Inoperative にする場合は `Scheduled` で、終了時に反映します。ステーションの Inoperative では空いている EVSE はすぐに Unavailable になります |
 | ClearCache | Not supported |  |
 | ClearChargingProfile | 対応 | `chargingProfileId` が条件より優先し、条件は AND。外部制約は CSMS からは削除されません |
 | ClearDisplayMessage | Not supported |  |
@@ -108,7 +108,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | DeleteCertificate | Not supported |  |
 | GetBaseReport | 対応 | ConfigurationInventory（ReadOnly 以外の全変数）、FullInventory、SummaryInventory。応答の後に NotifyReport を送信します |
 | GetChargingProfiles | 対応 | 一致するプロファイルがあれば `Accepted`、なければ `NoProfiles`。応答の後に ReportChargingProfiles を送信します |
-| GetCompositeSchedule | 対応 | 実際の電力制限と同じ評価関数。期間の値はハードウェア最大値で頭打ちになり、最大値は「制限なし」も表します。未知の EVSE または duration < 1 は `Rejected` |
+| GetCompositeSchedule | 対応 | 実際の電力制限と同じ評価関数。期間の値はハードウェア最大値で頭打ちになり、最大値は「制限なし」も表します。未知の EVSE または duration < 1 は `Rejected`。`SmartChargingCtrlr.RateUnit` にない `chargingRateUnit` は `Rejected`（`UnsupportedRateUnit`） |
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
 | GetLocalListVersion | Not supported |  |
@@ -119,19 +119,19 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | GetVariables | 対応 | 属性タイプ Actual / Target / MinSet / MaxSet。`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`。WriteOnly の変数は `Rejected`。`DeviceDataCtrlr.ItemsPerMessage[GetVariables]` を超える件数は CALLERROR `OccurrenceConstraintViolation` |
 | InstallCertificate | Not supported |  |
 | PublishFirmware | Not supported |  |
-| RequestStartTransaction | 対応 | `remoteStartId` と任意の `chargingProfile`（`transactionId` なしの TxProfile。新しいトランザクションに紐付けて設定）。`evseId` がなければケーブル接続済みで開始可能な最初の EVSE を使います。`AuthCtrlr.AuthorizeRemoteStart` が true ならトークンを提示時と同様に認証します |
+| RequestStartTransaction | 対応 | `remoteStartId` と任意の `chargingProfile`（`transactionId` なしの TxProfile。新しいトランザクションに紐付けて設定）。`evseId` がなければケーブル接続済みで開始可能な最初の EVSE を使います。`AuthCtrlr.AuthorizeRemoteStart` が true ならトークンを提示時と同様に認証します。type が `Central` / `NoAuthorization` のトークンは認証しません。これで開始したトランザクションの `triggerReason` は、ケーブルが後から接続された場合も `RemoteStart` です。`TxCtrlr.EVConnectionTimeOut` を過ぎてもケーブルを待っているトークンは破棄します |
 | RequestStopTransaction | 対応 | このステーションで実行中のトランザクションなら `Accepted`（`RemoteStop` で終了）、それ以外は `Rejected` |
 | ReserveNow | Not supported |  |
 | Reset | 対応 | `Immediate` / `OnIdle`（トランザクション中は `Scheduled`）。次の BootNotification の reason は `RemoteReset`。EVSE 単位のリセットは `Rejected` |
 | SendLocalList | Not supported |  |
-| SetChargingProfile | 対応 | ChargingStationMaxProfile（EVSE 0 のみ）、TxDefaultProfile、TxProfile。CSMS からの ChargingStationExternalConstraints は `Rejected`。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
+| SetChargingProfile | 対応 | ChargingStationMaxProfile（EVSE 0 のみ）、TxDefaultProfile、TxProfile。CSMS からの ChargingStationExternalConstraints は `Rejected`（`UnsupportedPurpose`）。`chargingSchedule` は 1 つのみ。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
 | SetDisplayMessage | Not supported |  |
 | SetMonitoringBase | Not supported |  |
 | SetMonitoringLevel | Not supported |  |
 | SetNetworkProfile | Not supported |  |
 | SetVariableMonitoring | Not supported |  |
 | SetVariables | 対応 | 値を検査します（データ型、上下限、値リスト）。ReadOnly の変数は `Rejected`。該当する変数は `RebootRequired`。変更は即時に反映され、YAML ファイルには書き戻されません |
-| TriggerMessage | 対応 | BootNotification（Boot 未受理の間のみ）、Heartbeat、StatusNotification、MeterValues、TransactionEvent。それ以外の要求メッセージは `NotImplemented`。BootNotification 以外は Boot 受理まで `Rejected`。未知の EVSE は `Rejected` |
+| TriggerMessage | 対応 | BootNotification（Boot 未受理の間のみ）、Heartbeat、StatusNotification、MeterValues、TransactionEvent（計測項目は `TxUpdatedMeasurands`）、LogStatusNotification / FirmwareStatusNotification（status `Idle`）。それ以外の要求メッセージは `NotImplemented`。BootNotification 以外は BootNotification の応答前は `Rejected`、Accepted と Pending の間は送信します。未知の EVSE は `Rejected` |
 | UnlockConnector | 対応 | `Unlocked`。EVSE がトランザクション中なら `OngoingAuthorizedTransaction`（停止はしません）。未知の EVSE やコネクター 1 以外は `UnknownConnector` |
 | UnpublishFirmware | Not supported |  |
 | UpdateFirmware | Not supported |  |
