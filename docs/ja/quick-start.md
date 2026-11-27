@@ -11,7 +11,7 @@ OCPP 1.6J に対応した CSMS であれば何でも使えます。
 （`configs/demo-site.yaml`）で起動し、<http://127.0.0.1:8082/> の Web UI を開きます。
 
 ```powershell
-.\sme-ocpp-sim-v0.1.0-windows.exe -c my-site.yaml
+.\sme-ocpp-sim-v0.2.0-windows.exe -c my-site.yaml
 ```
 
 ## pip

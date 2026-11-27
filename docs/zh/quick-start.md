@@ -10,7 +10,7 @@ OCPP 1.6 CSMS [SteVe](https://github.com/steve-community/steve)；任何支持 O
 并打开 <http://127.0.0.1:8082/> 的 Web UI。
 
 ```powershell
-.\sme-ocpp-sim-v0.1.0-windows.exe -c my-site.yaml
+.\sme-ocpp-sim-v0.2.0-windows.exe -c my-site.yaml
 ```
 
 ## pip
