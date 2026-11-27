@@ -622,3 +622,28 @@ def test_a_call_that_closes_the_session_is_answered_first_even_when_the_send_is_
         assert getattr(r, "status", None) == "Accepted" or r.set_variable_result[0]["attribute_status"] == "Accepted"
         await _until(lambda: len(peer.history) == 2 and rt.online)
     _scenario(body, version=version, cfg_kw={"password": "the-old-password-01"})
+
+
+@pytest.mark.parametrize("case", list(_CLOSING_CALLS))
+def test_the_peer_still_reads_the_answer_when_its_own_answer_comes_too_late(case, monkeypatch):
+    """Right after the boot the station's StatusNotification / SecurityEventNotification are still unanswered when
+    the CSMS sends the closing CALL. A CSMS that answers them slowly (a loaded runner) tries to send that answer
+    after the station closed the session; the test peers must not stop reading then: the closing CALL's answer is
+    already buffered (it was flaky in test_201_basic_auth_password_change_raises_reconfiguration)."""
+    from peers import ocpp16_peer, ocpp201_peer
+    version, make = _CLOSING_CALLS[case]
+    for mod in (ocpp16_peer, ocpp201_peer):
+        orig = mod.TapConnection.send
+
+        async def slow(self, raw, orig=orig):
+            if raw.lstrip("[ ").startswith("3"):  # the peer's answers to station CALLs
+                await asyncio.sleep(0.1)
+            await orig(self, raw)
+        monkeypatch.setattr(mod.TapConnection, "send", slow)
+
+    async def body(peer, rt):
+        await _until(lambda: rt.online and peer.history and peer.history[-1].booted.is_set())
+        r = await asyncio.wait_for(peer.request(CP, make()), 3)
+        assert getattr(r, "status", None) == "Accepted" or r.set_variable_result[0]["attribute_status"] == "Accepted"
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+    _scenario(body, version=version, cfg_kw={"password": "the-old-password-01"})

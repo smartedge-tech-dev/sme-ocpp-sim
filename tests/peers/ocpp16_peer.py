@@ -81,7 +81,16 @@ class TapConnection:
 
     async def send(self, raw):
         self._frames.append(("tx", raw))
-        await self._ws.send(raw)
+        try:
+            await self._ws.send(raw)
+        except ConnectionClosed:
+            # An answer to a station CALL that can no longer be sent (the station closed the session meanwhile, e.g.
+            # right after answering a password change or Reset) must not end ``ocpp``'s receive loop: frames the
+            # station sent before closing - such as the answer to a CALL of ours still waiting in ``call()`` - are
+            # still buffered and would otherwise be dropped (``call()`` then times out). ``recv`` raises once they
+            # are read. A CALL of ours still fails at once.
+            if raw.lstrip("[ ").startswith("2"):
+                raise
 
 
 class PeerCP(OcppCP16):
