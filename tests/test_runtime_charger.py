@@ -331,13 +331,13 @@ def test_swipe_rechecks_state_after_authorize():
     async def body(peer, rt):
         await _online(peer, rt)
         await rt.plug(1)
-        real = rt.station._authorize
+        real = rt.station._authorize_info
 
         async def auth_then_fault(tag):
             res = await real(tag)
             await rt.fault(1, "GroundFailure")
             return res
-        rt.station._authorize = auth_then_fault
+        rt.station._authorize_info = auth_then_fault
         assert await rt.swipe(1, "T") == "Unavailable"
         await rt.clear_fault(1)
 
@@ -345,10 +345,10 @@ def test_swipe_rechecks_state_after_authorize():
             res = await real(tag)
             await rt.station._start_tx(rt.station.conns[1], "OTHER")
             return res
-        rt.station._authorize = auth_then_other_start
+        rt.station._authorize_info = auth_then_other_start
         assert await rt.swipe(1, "T") == "Busy"
         assert rt.snapshot()["connectors"][0]["transaction"]["id_tag"] == "OTHER"
-        rt.station._authorize = real
+        rt.station._authorize_info = real
         assert await rt.swipe(1, "X") == "Busy"
         assert await rt.swipe(1, "OTHER") == "Stopped"
     _scenario(body, cfg_kw={"auth_mode": "accept_all"})

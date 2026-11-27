@@ -283,6 +283,7 @@ function renderDetail(fresh) {
   if (c.registration) info.push(t("detail.registration", { s: c.registration }));
   if (c.last_heartbeat) info.push(t("detail.heartbeat", { t: hhmmss(Date.parse(c.last_heartbeat)) }));
   if (c.tx_queue) info.push(t("detail.tx_queue", { n: c.tx_queue }));
+  if (c.local_list_version) info.push(t("detail.local_list", { n: c.local_list_version }));
   $("dInfo").textContent = info.join(" · ");
   $("dError").textContent = c.last_error ? t("detail.last_error", { e: errText(c.last_error) }) : "";
   $("dConnect").disabled = c.enabled !== false;
@@ -317,7 +318,8 @@ function renderVersionParts(c) {
 
 // The cards and the connector select are rebuilt only when the charger or its connector set changes; otherwise a
 // card is replaced only when its state (status, plug, transaction, error) changed.
-const cardSig = (x) => JSON.stringify([x.status, x.plugged, x.error_code, x.transaction, x.pending_tag]);
+const cardSig = (x) => JSON.stringify([x.status, x.plugged, x.error_code, x.transaction, x.pending_tag,
+  x.reservation]);
 function renderConnectors(c, fresh) {
   const box = $("connectors"), conns = c.connectors || [];
   const sig = JSON.stringify([c.id, conns.map((x) => x.id)]);
@@ -361,6 +363,7 @@ function card(c, x) {
       x.error_code && x.error_code !== "NoError" ? kv("detail.error_code", x.error_code) : null,
       kv("detail.id_tag", tag || "-"),
       kv("detail.transaction", txId != null ? String(txId) : "-"),
+      x.reservation ? kv("detail.reservation", `#${x.reservation.id} ${x.reservation.id_tag}`) : null,
       kv("detail.power", `${kw(x.power_w)} kW`, "power"),
       kv("detail.energy", `${kwh(x.meter_wh)} kWh`, "energy"),
       kv("detail.soc", pct(x.soc_pct), "soc")),

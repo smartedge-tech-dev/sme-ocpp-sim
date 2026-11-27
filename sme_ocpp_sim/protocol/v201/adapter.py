@@ -7,7 +7,9 @@ RequestStopTransaction, UnlockConnector, Reset, ChangeAvailability, TriggerMessa
 actions (M4: GetVariables, SetVariables, GetBaseReport; the NotifyReport parts go out with
 :meth:`Adapter201.send_notify_report`) and the smart-charging actions (M5: SetChargingProfile,
 ClearChargingProfile, GetCompositeSchedule, GetChargingProfiles; ReportChargingProfiles, NotifyChargingLimit and
-ClearedChargingLimit go out with the ``send_*`` methods below). DataTransfer goes to the
+ClearedChargingLimit go out with the ``send_*`` methods below) and the M6 actions (SendLocalList,
+GetLocalListVersion, ClearCache, ReserveNow, CancelReservation; ReservationStatusUpdate goes out with
+:meth:`Adapter201.send_reservation_status_update`). DataTransfer goes to the
 station as the version-neutral domain command; a remote-control request is handed to the station as its parsed
 2.0.1 request model and the station answers with the 2.0.1 response model (the semantics are 2.0.1-specific,
 plan §11.2, so there is no domain command in between). Every other action has no handler and is answered
@@ -74,7 +76,9 @@ REMOTE_ACTIONS = ("RequestStartTransaction", "RequestStopTransaction", "UnlockCo
                   # M4 Device Model, answered the same way
                   "GetVariables", "SetVariables", "GetBaseReport",
                   # M5 smart charging, answered the same way
-                  "SetChargingProfile", "ClearChargingProfile", "GetCompositeSchedule", "GetChargingProfiles")
+                  "SetChargingProfile", "ClearChargingProfile", "GetCompositeSchedule", "GetChargingProfiles",
+                  # M6 local authorization list, authorization cache, reservations, answered the same way
+                  "SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation")
 
 _DOMAIN_AUTH = {a.value for a in (d.AuthResult.ACCEPTED, d.AuthResult.BLOCKED, d.AuthResult.EXPIRED,
                                   d.AuthResult.INVALID, d.AuthResult.CONCURRENT_TX)}
@@ -265,6 +269,10 @@ class Adapter201(d.VersionAdapter):
     async def send_firmware_status_notification(
             self, req: m.FirmwareStatusNotificationRequest) -> m.FirmwareStatusNotificationResponse:
         return await self._send("FirmwareStatusNotification", req)
+
+    async def send_reservation_status_update(
+            self, req: m.ReservationStatusUpdateRequest) -> m.ReservationStatusUpdateResponse:
+        return await self._send("ReservationStatusUpdate", req)
 
     async def send_data_transfer(self, cmd: d.DataTransfer) -> d.DataTransferResult:
         res: m.DataTransferResponse = await self._send(

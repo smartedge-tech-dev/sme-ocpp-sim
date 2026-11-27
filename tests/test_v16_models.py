@@ -20,7 +20,7 @@ CASES = [
 def test_fixtures_cover_registry():
     expected = {(a, "request") for a in m.REQUESTS} | {(a, "response") for a in m.RESPONSES}
     assert set(FIXTURES) == expected
-    assert len(m.REQUESTS) == len(m.RESPONSES) == 19
+    assert len(m.REQUESTS) == len(m.RESPONSES) == 24
 
 
 @pytest.mark.parametrize("action,kind,variant", CASES)

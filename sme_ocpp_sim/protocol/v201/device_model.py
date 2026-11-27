@@ -139,6 +139,36 @@ Interpretations (not defined by the spec)
   SmartChargingCtrlr.ProfileStackLevel          integer    ReadOnly    100: higher stackLevel -> Rejected
   SmartChargingCtrlr.PeriodsPerSchedule         integer    ReadOnly    1024: more periods -> Rejected
   SmartChargingCtrlr.RateUnit                   MemberList ReadOnly    A,W: another unit -> Rejected
+  AuthCacheCtrlr.Enabled (2.4.1)                boolean    ReadWrite   false: the Authorization Cache is
+                                                                       used and updated (C10 - C12)
+  AuthCacheCtrlr.Available (2.4.2)              boolean    ReadOnly    true
+  AuthCacheCtrlr.LifeTime (2.4.3)               integer s  ReadWrite   86400: an entry not updated for
+                                                                       longer is Expired (C10.FR.10)
+  AuthCacheCtrlr.DisablePostAuthorize (2.4.6)   boolean    ReadWrite   false: a cached token that is not
+                                                                       Accepted is authorized again online
+                                                                       (AuthCacheCtrlr.Entries, Edition 4
+                                                                       2.4.7, is not served: the ``ocpp``
+                                                                       library's name list lacks it; the
+                                                                       capacity is 1000)
+  LocalAuthListCtrlr.Enabled (2.5.1)            boolean    ReadWrite   true (D01.FR.13)
+  LocalAuthListCtrlr.Available (2.5.3)          boolean    ReadOnly    true
+  LocalAuthListCtrlr.Entries (2.5.2)            integer    ReadOnly    the listed tokens; maxLimit = the
+                                                                       capacity (1000, D01.FR.12)
+  LocalAuthListCtrlr.ItemsPerMessage (2.5.4)    integer    ReadOnly    100: more entries in one
+                                                                       SendLocalList -> Failed (D01.FR.11)
+  LocalAuthListCtrlr.BytesPerMessage (2.5.5)    integer    ReadOnly    65000, informative (not enforced)
+  (LocalAuthListCtrlr.SupportsExpiryDateTime,                          not served (missing from the
+  Edition 4 2.5.8)                                                     ``ocpp`` library's name list): the
+                                                                       list ignores cacheExpiryDateTime
+                                                                       (C13.FR.02 / C14.FR.02)
+  LocalAuthListCtrlr.DisablePostAuthorize       boolean    ReadWrite   false: a listed token that is not
+  (2.5.7)                                                              Accepted is authorized online
+                                                                       (C14.FR.03)
+  ReservationCtrlr.Enabled (2.8.1)              boolean    ReadWrite   true; false: ReserveNow Rejected
+                                                                       (H01.FR.01), reservations not used
+  ReservationCtrlr.Available (2.8.2)            boolean    ReadOnly    true
+  ReservationCtrlr.NonEvseSpecific (2.8.3)      boolean    ReadOnly    true: ReserveNow without evseId is
+                                                                       served (H01.FR.18 / FR.19)
   ChargingStation.Available / AvailabilityState boolean /  ReadOnly    true; ``Unavailable`` when every
   (CSV, required)                               OptionList             EVSE is, else ``Available``
   EVSE(evse i).Available / AvailabilityState    boolean /  ReadOnly    true; the connectorStatus of EVSE i
@@ -195,6 +225,9 @@ TX = "TxCtrlr"
 SECURITY = "SecurityCtrlr"
 DEVICE_DATA = "DeviceDataCtrlr"
 SMART_CHARGING = "SmartChargingCtrlr"
+AUTH_CACHE = "AuthCacheCtrlr"
+LOCAL_AUTH_LIST = "LocalAuthListCtrlr"
+RESERVATION = "ReservationCtrlr"
 CHARGING_STATION = "ChargingStation"
 EVSE_COMPONENT = "EVSE"
 CONNECTOR_COMPONENT = "Connector"
@@ -225,6 +258,14 @@ LOCAL_AUTHORIZE_OFFLINE = (AUTH, "LocalAuthorizeOffline")
 OFFLINE_TX_FOR_UNKNOWN_ID = (AUTH, "OfflineTxForUnknownIdEnabled")
 DISABLE_REMOTE_AUTHORIZATION = (AUTH, "DisableRemoteAuthorization")
 SECURITY_PROFILE = (SECURITY, "SecurityProfile")
+AUTH_CACHE_ENABLED = (AUTH_CACHE, "Enabled")
+AUTH_CACHE_LIFETIME = (AUTH_CACHE, "LifeTime")
+AUTH_CACHE_DISABLE_POST_AUTHORIZE = (AUTH_CACHE, "DisablePostAuthorize")
+LOCAL_LIST_ENABLED = (LOCAL_AUTH_LIST, "Enabled")
+LOCAL_LIST_ITEMS_PER_MESSAGE = (LOCAL_AUTH_LIST, "ItemsPerMessage")
+LOCAL_LIST_DISABLE_POST_AUTHORIZE = (LOCAL_AUTH_LIST, "DisablePostAuthorize")
+RESERVATION_ENABLED = (RESERVATION, "Enabled")
+RESERVATION_NON_EVSE_SPECIFIC = (RESERVATION, "NonEvseSpecific")
 BASIC_AUTH_PASSWORD = (SECURITY, "BasicAuthPassword")
 INSTANCE_CHARGING_PROFILES = "ChargingProfiles"
 INSTANCE_TX_EVENT = "TransactionEvent"
@@ -255,6 +296,11 @@ DEFAULT_MESSAGE_ATTEMPTS = 3
 DEFAULT_MESSAGE_ATTEMPT_INTERVAL_S = 10
 DEFAULT_PROFILE_STACK_LEVEL = 100
 DEFAULT_PERIODS_PER_SCHEDULE = 1024  # the schema's maxItems of chargingSchedulePeriod
+DEFAULT_AUTH_CACHE_LIFETIME_S = 86400
+#: Capacities of the Authorization Cache / Local Authorization List (maxLimit of their Entries variables).
+AUTH_CACHE_MAX = 1000
+LOCAL_LIST_MAX = 1000
+DEFAULT_LOCAL_LIST_ITEMS_PER_MESSAGE = 100
 RATE_UNITS = ("A", "W")
 #: ``TxStartPoint`` / ``TxStopPoint`` values (OCPP 2.0.1 E01; the station uses PowerPathClosed only).
 TX_POINTS = ("ParkingBayOccupancy", "EVConnected", "Authorized", "DataSigned", "PowerPathClosed",
@@ -610,11 +656,12 @@ def station_availability(states: Sequence[str]) -> str:
 def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S, url: str = "",
                        availability: Optional[Callable[[int], str]] = None,
                        power_w: Optional[Callable[[int], float]] = None,
-                       profile_count: Optional[Callable[[], int]] = None) -> List[Variable]:
+                       profile_count: Optional[Callable[[], int]] = None,
+                       list_entries: Optional[Callable[[], int]] = None) -> List[Variable]:
     """The default set (module docstring table) for the charger config ``cfg`` (``ChargerConfig``):
     ``message_timeout_s`` is the CALL timeout, ``url`` the CSMS url, ``availability(evse_id)`` the live
-    connectorStatus of an EVSE, ``power_w(evse_id)`` its live power and ``profile_count()`` the number of
-    installed charging profiles."""
+    connectorStatus of an EVSE, ``power_w(evse_id)`` its live power, ``profile_count()`` the number of
+    installed charging profiles and ``list_entries()`` the tokens in the Local Authorization List."""
     mode = cfg.auth_mode
     local_first = mode in ("local_only", "local_then_csms")
     meas = MEASURANDS
@@ -685,6 +732,24 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         var(PERIODS_PER_SCHEDULE, DT.integer, str(DEFAULT_PERIODS_PER_SCHEDULE), mutability=MU.read_only,
             min_limit=1, max_limit=DEFAULT_PERIODS_PER_SCHEDULE),
         var(RATE_UNIT, DT.member_list, ",".join(RATE_UNITS), mutability=MU.read_only, values_list=RATE_UNITS),
+    ]
+    out += [
+        var(AUTH_CACHE_ENABLED, DT.boolean, "false"),
+        ro((AUTH_CACHE, "Available"), DT.boolean, "true"),
+        var(AUTH_CACHE_LIFETIME, DT.integer, str(DEFAULT_AUTH_CACHE_LIFETIME_S), unit="s", min_limit=1),
+        var(AUTH_CACHE_DISABLE_POST_AUTHORIZE, DT.boolean, "false"),
+        var(LOCAL_LIST_ENABLED, DT.boolean, "true"),
+        ro((LOCAL_AUTH_LIST, "Available"), DT.boolean, "true"),
+        ro((LOCAL_AUTH_LIST, "Entries"), DT.integer, "0", max_limit=LOCAL_LIST_MAX,
+           getter=(lambda: str(list_entries())) if list_entries is not None else None),
+        var(LOCAL_LIST_ITEMS_PER_MESSAGE, DT.integer, str(DEFAULT_LOCAL_LIST_ITEMS_PER_MESSAGE),
+            mutability=MU.read_only, min_limit=1),
+        var((LOCAL_AUTH_LIST, "BytesPerMessage"), DT.integer, str(DEFAULT_BYTES_PER_MESSAGE),
+            mutability=MU.read_only, min_limit=1),
+        var(LOCAL_LIST_DISABLE_POST_AUTHORIZE, DT.boolean, "false"),
+        var(RESERVATION_ENABLED, DT.boolean, "true"),
+        ro((RESERVATION, "Available"), DT.boolean, "true"),
+        var(RESERVATION_NON_EVSE_SPECIFIC, DT.boolean, "true", mutability=MU.read_only),
     ]
     for instance in (INSTANCE_GET_REPORT, INSTANCE_GET_VARIABLES, INSTANCE_SET_VARIABLES):
         out.append(var(ITEMS_PER_MESSAGE, DT.integer, str(DEFAULT_ITEMS_PER_MESSAGE), mutability=MU.read_only,
@@ -770,11 +835,12 @@ def apply_config(model: DeviceModel, entries: Iterable[Any], evse_count: int) ->
 
 def build(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S, url: str = "",
           availability: Optional[Callable[[int], str]] = None, power_w: Optional[Callable[[int], float]] = None,
-          profile_count: Optional[Callable[[], int]] = None) -> DeviceModel:
+          profile_count: Optional[Callable[[], int]] = None,
+          list_entries: Optional[Callable[[], int]] = None) -> DeviceModel:
     """The Device Model of the charger config ``cfg``: the standard set plus its ``variables``."""
     model = DeviceModel(standard_variables(cfg, message_timeout_s=message_timeout_s, url=url,
                                            availability=availability, power_w=power_w,
-                                           profile_count=profile_count))
+                                           profile_count=profile_count, list_entries=list_entries))
     apply_config(model, cfg.variables, cfg.connectors)
     return model
 

@@ -39,12 +39,14 @@ from .enums import (
     AuthorizationStatus,
     AvailabilityStatus,
     AvailabilityType,
+    CancelReservationStatus,
     ChargePointErrorCode,
     ChargePointStatus,
     ChargingProfileKindType,
     ChargingProfilePurposeType,
     ChargingProfileStatus,
     ChargingRateUnitType,
+    ClearCacheStatus,
     ClearChargingProfileStatus,
     ConfigurationStatus,
     DataTransferStatus,
@@ -58,11 +60,14 @@ from .enums import (
     RecurrencyKindType,
     RegistrationStatus,
     RemoteStartStopStatus,
+    ReservationStatus,
     ResetStatus,
     ResetType,
     TriggerMessageStatus,
     UnitOfMeasure,
     UnlockStatus,
+    UpdateStatus,
+    UpdateType,
     ValueFormat,
 )
 
@@ -155,6 +160,13 @@ class ChargingProfile(OcppModel):
     recurrency_kind: Optional[RecurrencyKindType] = None
     valid_from: Optional[DateTime] = None
     valid_to: Optional[DateTime] = None
+
+
+class AuthorizationData(OcppModel):
+    """§7.1: ``idTagInfo`` is required for a Full update; the handler checks that (the schema cannot)."""
+
+    id_tag: IdToken
+    id_tag_info: Optional[IdTagInfo] = None
 
 
 class KeyValue(OcppModel):
@@ -370,6 +382,55 @@ class GetCompositeScheduleResponse(OcppModel):
     charging_schedule: Optional[ChargingSchedule] = None
 
 
+# --- Local Auth List Management / Reservation (CSMS -> CP) --------------------------------
+
+
+class SendLocalListRequest(OcppModel):
+    list_version: int
+    local_authorization_list: Optional[list[AuthorizationData]] = None
+    update_type: UpdateType
+
+
+class SendLocalListResponse(OcppModel):
+    status: UpdateStatus
+
+
+class GetLocalListVersionRequest(OcppModel):
+    pass
+
+
+class GetLocalListVersionResponse(OcppModel):
+    list_version: int
+
+
+class ClearCacheRequest(OcppModel):
+    pass
+
+
+class ClearCacheResponse(OcppModel):
+    status: ClearCacheStatus
+
+
+class ReserveNowRequest(OcppModel):
+    connector_id: int
+    expiry_date: DateTime
+    id_tag: IdToken
+    parent_id_tag: Optional[IdToken] = None
+    reservation_id: int
+
+
+class ReserveNowResponse(OcppModel):
+    status: ReservationStatus
+
+
+class CancelReservationRequest(OcppModel):
+    reservation_id: int
+
+
+class CancelReservationResponse(OcppModel):
+    status: CancelReservationStatus
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -392,6 +453,11 @@ ACTIONS = (
     "SetChargingProfile",
     "ClearChargingProfile",
     "GetCompositeSchedule",
+    "SendLocalList",
+    "GetLocalListVersion",
+    "ClearCache",
+    "ReserveNow",
+    "CancelReservation",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

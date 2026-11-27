@@ -116,7 +116,7 @@ def test_boot_pending_answers_csms_calls_and_holds_messages_back():
         r = await peer.data_transfer(CP, "acme", "m1", "hello")
         assert r.status == "Accepted" and r.data == "ok"
         assert (await peer.data_transfer(CP, "other")).status == "UnknownVendorId"
-        await peer.request(CP, call.ClearCache())  # answered, even while Pending
+        await peer.request(CP, call.ClearDisplayMessage(id=1))  # answered, even while Pending
         assert any(f[0] == 4 and f[2] == "NotImplemented" for f in _frames(s))
         # A local start while Pending is held back: nothing but BootNotification goes out before Accepted.
         await rt.plug(1)
@@ -141,7 +141,7 @@ def test_boot_rejected_is_retried_and_sends_nothing_else():
 
 
 @pytest.mark.parametrize("action", [
-    call.ClearCache(),
+    call.ClearDisplayMessage(id=1),
     call.GetReport(request_id=1),
     call.Get15118EVCertificate(iso15118_schema_version="urn:iso:15118:2:2013:MsgDef", action="Install",
                                exi_request="AAAA"),

@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Local Authorization List and Authorization Cache for OCPP 1.6J and 2.0.1: SendLocalList (Full / Differential,
+  version numbers, `VersionMismatch` / `Failed`), GetLocalListVersion and ClearCache. A presented id token is
+  authorized from the list first, then the cache (LocalPreAuthorize / LocalAuthorizeOffline); Authorize,
+  StartTransaction / StopTransaction (1.6) and TransactionEvent (2.0.1) answers update the cache. New 1.6 keys
+  LocalAuthListEnabled, LocalAuthListMaxLength, SendLocalListMaxLength, ReserveConnectorZeroSupported
+  (SupportedFeatureProfiles now lists LocalAuthListManagement and Reservation); new 2.0.1 variables
+  AuthCacheCtrlr.*, LocalAuthListCtrlr.* and ReservationCtrlr.*.
+- Reservations for OCPP 1.6J and 2.0.1: ReserveNow (Accepted / Faulted / Occupied / Rejected / Unavailable,
+  replacing by id, connector 0 / no `evseId`) and CancelReservation. A reserved connector reports `Reserved`,
+  refuses other id tokens (operator swipe result `Reserved`) and passes the `reservationId` with the start;
+  reservations end on expiry, cancel, fault or unavailability (2.0.1 ReservationStatusUpdate `Expired` /
+  `Removed`).
+- Web UI: the charger detail shows the local list version, a connector card its reservation.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

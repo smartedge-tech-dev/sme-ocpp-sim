@@ -412,3 +412,65 @@ class FirmwareStatusEnumType(str, Enum):
     install_verification_failed = "InstallVerificationFailed"
     invalid_signature = "InvalidSignature"
     signature_verified = "SignatureVerified"
+
+
+# --- M6: local authorization list, authorization cache, reservations ---------------------
+
+
+class UpdateEnumType(str, Enum):
+    differential = "Differential"
+    full = "Full"
+
+
+class SendLocalListStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    failed = "Failed"
+    version_mismatch = "VersionMismatch"
+
+
+class ClearCacheStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class ConnectorEnumType(str, Enum):
+    c_ccs1 = "cCCS1"
+    c_ccs2 = "cCCS2"
+    c_g105 = "cG105"
+    c_tesla = "cTesla"
+    c_type1 = "cType1"
+    c_type2 = "cType2"
+    s309_1p_16a = "s309-1P-16A"
+    s309_1p_32a = "s309-1P-32A"
+    s309_3p_16a = "s309-3P-16A"
+    s309_3p_32a = "s309-3P-32A"
+    s_bs1361 = "sBS1361"
+    s_cee_7_7 = "sCEE-7-7"
+    s_type2 = "sType2"
+    s_type3 = "sType3"
+    other_1ph_max_16a = "Other1PhMax16A"
+    other_1ph_over_16a = "Other1PhOver16A"
+    other_3ph = "Other3Ph"
+    pan = "Pan"
+    w_inductive = "wInductive"
+    w_resonant = "wResonant"
+    undetermined = "Undetermined"
+    unknown = "Unknown"
+
+
+class ReserveNowStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    faulted = "Faulted"
+    occupied = "Occupied"
+    rejected = "Rejected"
+    unavailable = "Unavailable"
+
+
+class CancelReservationStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class ReservationUpdateStatusEnumType(str, Enum):
+    expired = "Expired"
+    removed = "Removed"

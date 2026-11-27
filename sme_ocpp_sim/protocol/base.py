@@ -157,6 +157,38 @@ class DataTransfer:
     data: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class SendLocalList:
+    version: int
+    full: bool  # Full (replace) / Differential (apply changes)
+    #: ``(id token, info)``; ``info`` ``None`` = remove the token (Differential only).
+    entries: Tuple[Tuple[str, Optional["IdTokenInfo"]], ...] = ()
+
+
+@dataclass(frozen=True)
+class GetLocalListVersion:
+    pass
+
+
+@dataclass(frozen=True)
+class ClearCache:
+    pass
+
+
+@dataclass(frozen=True)
+class ReserveNow:
+    reservation_id: int
+    evse_id: int  # 0 = no specific connector
+    id_token: str
+    expiry: datetime
+    parent_id_token: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CancelReservation:
+    reservation_id: int
+
+
 Command = Any  # union of the command dataclasses above
 
 # --------------------------------------------------------------------------------------------- results
@@ -182,6 +214,25 @@ class UnlockStatus(str, Enum):
     UNLOCKED = "Unlocked"
     UNLOCK_FAILED = "UnlockFailed"
     NOT_SUPPORTED = "NotSupported"
+
+
+class LocalListStatus(str, Enum):
+    """Result of SendLocalList (1.6 ``UpdateStatus``)."""
+
+    ACCEPTED = "Accepted"
+    FAILED = "Failed"
+    NOT_SUPPORTED = "NotSupported"
+    VERSION_MISMATCH = "VersionMismatch"
+
+
+class ReservationStatus(str, Enum):
+    """Result of ReserveNow (1.6 ``ReservationStatus``)."""
+
+    ACCEPTED = "Accepted"
+    FAULTED = "Faulted"
+    OCCUPIED = "Occupied"
+    REJECTED = "Rejected"
+    UNAVAILABLE = "Unavailable"
 
 
 @dataclass(frozen=True)
@@ -347,6 +398,7 @@ class AuthResult(str, Enum):
     UNAVAILABLE = "Unavailable"  # connector inoperative or faulted
     STOPPED = "Stopped"          # the token ended its own transaction
     PENDING = "Pending"          # connection lost before the StartTransaction answer; it is resent later
+    RESERVED = "Reserved"        # connector reserved for another id token (ReserveNow)
 
 
 @dataclass(frozen=True)
@@ -358,6 +410,14 @@ class IdTokenInfo:
     @property
     def accepted(self) -> bool:
         return self.status == AuthResult.ACCEPTED
+
+    def expired(self, now: datetime) -> bool:
+        """``expiry`` has passed (1.6 ``expiryDate`` / 2.0.1 ``cacheExpiryDateTime``)."""
+        return self.expiry is not None and now >= self.expiry
+
+    def valid(self, now: datetime) -> bool:
+        """Accepted and not expired."""
+        return self.accepted and not self.expired(now)
 
 
 @dataclass(frozen=True)
