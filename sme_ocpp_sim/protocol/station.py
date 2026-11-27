@@ -180,3 +180,8 @@ class VersionStation(ABC):
     def composite(self, connector: int, duration: int, unit: Optional[str] = None) -> Any:
         """``unit`` "W" / "A" (``None`` = W); ``ValueError`` for another unit."""
         raise NotImplementedError
+
+    async def set_external_limit(self, connector: int, limit_w: Optional[float]) -> None:
+        """Set (W) or remove (``None``) an external charging limit of ``connector`` (0 = the whole charger), as
+        an energy management system would. Per version; ``NotImplementedError`` = this version has none (1.6)."""
+        raise NotImplementedError("external limits are not supported by this OCPP version")

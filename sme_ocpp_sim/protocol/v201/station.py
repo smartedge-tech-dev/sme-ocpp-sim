@@ -1,6 +1,8 @@
 """OCPP 2.0.1 station: connector states, authorization, the TransactionEvent flow (plan §11.2, M2), the
 CSMS remote control (M3: RequestStartTransaction / RequestStopTransaction / UnlockConnector / Reset /
-ChangeAvailability / TriggerMessage) and the Device Model (M4: GetVariables / SetVariables / GetBaseReport).
+ChangeAvailability / TriggerMessage), the Device Model (M4: GetVariables / SetVariables / GetBaseReport) and smart
+charging (M5: SetChargingProfile / ClearChargingProfile / GetCompositeSchedule / GetChargingProfiles, the
+operator's external limit with NotifyChargingLimit / ClearedChargingLimit).
 
 One :class:`Station201` per 2.0.1 charging station, hosted by the shared shell ``runtime.charger.ChargerRuntime``
 through :class:`~sme_ocpp_sim.protocol.station.StationHost`. It is a separate stack from ``protocol/v16``: it uses
@@ -76,13 +78,32 @@ Interpretations (not defined by the spec)
 - Operator fault codes are the fault-type values of ``ReasonEnumType`` (:attr:`Station201.fault_codes`): a 2.0.1
   StatusNotification has no error code, so the code is only the ``stoppedReason`` of an interrupted transaction
   (NotifyEvent is not sent).
-- Smart charging is M5: no charging profiles are installed and no limit applies (the hardware maximum only).
+- Smart charging (M5, :mod:`.profiles` / :mod:`.composite`, the 2.0.1 copy of the 1.6 rules): the power model of
+  a charging EVSE is stepped with ``composite.limit_at`` (the evaluator that also answers GetCompositeSchedule)
+  on every tick, as in the 1.6 station. Set / ClearChargingProfile integrate every charging EVSE up to now at the
+  old limit; the new limit takes effect on the tick right after the CALLRESULT. A limit in A applies to the
+  phases the EV uses while one charges and to the supply's phases otherwise. GetCompositeSchedule periods are
+  capped at the hardware maximum (``max_power_w``, times the EVSE count for evseId 0), which also stands for "no
+  limit"; an unknown EVSE or a duration < 1 is ``Rejected``. The TxProfiles of an EVSE are dropped when its
+  transaction ends.
+- GetChargingProfiles: ``Accepted`` when a profile matches (the criteria and ``evseId`` are ANDed; ``evseId`` 0
+  = the station-level profiles only, no ``evseId`` = all), else ``NoProfiles``. One ReportChargingProfiles per
+  (EVSE, ``chargingLimitSource``) group follows the answer, ``tbc`` on all but the last, the profiles as the CSMS
+  sent them (a RequestStartTransaction profile with its bound ``transactionId``); it stops at the first part that
+  fails. CSMS profiles are ``CSO``, the operator's external constraints ``EMS``.
+- External limit (operator / Web API, :meth:`Station201.set_external_limit`): installs a
+  ChargingStationExternalConstraints profile (id :func:`external_profile_id`, stackLevel 0, Absolute from now,
+  one period in W) on the EVSE (0 = the station) and sends NotifyChargingLimit (``chargingLimitSource`` ``EMS``,
+  ``evseId`` only for an EVSE, the schedule when SmartChargingCtrlr.NotifyChargingLimitWithSchedules is true);
+  removing it sends ClearedChargingLimit. Both are sent in the background and only while the boot is accepted
+  (nothing is queued offline). It is refused (``ValueError``) while ExternalControlSignalsEnabled is false.
 - RequestStartTransaction (M3): with AuthorizeRemoteStart ``false`` (the default) the CSMS has authorized the
   token, so it is not authorized again; with ``true`` it is authorized like a presented token (``auth_mode``)
   after the answer and dropped from the EVSE when that is not ``Accepted``. Without ``evseId`` the first
   startable EVSE with a plugged cable is used, else the first startable one. A faulted, inoperative or busy EVSE (or none free) is
-  ``Rejected``; so is a ``chargingProfile`` that is not a ``TxProfile`` or that carries a ``transactionId``. An
-  accepted ``chargingProfile`` is not applied before smart charging (M5). An accepted token waits on an unplugged
+  ``Rejected``; so is a ``chargingProfile`` that is not a valid ``TxProfile`` or that carries a ``transactionId``.
+  An accepted ``chargingProfile`` is installed, bound to the new ``transactionId``, when the transaction starts
+  (M5); it is discarded with the token. An accepted token waits on an unplugged
   EVSE like a local one; the transaction starts at once when the cable is plugged (``triggerReason``
   ``RemoteStart``) or when it comes (``CablePluggedIn``). ``Started`` carries the token with the ``type`` the CSMS
   sent and ``remoteStartId`` in ``transactionInfo``; the answer has no ``transactionId`` (no transaction exists
@@ -127,7 +148,7 @@ import functools
 import logging
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
@@ -140,12 +161,18 @@ from ..base import DomainStatus as S
 from ..station import StationHost, VersionStation
 from . import device_model as dm
 from . import models as m
-from .adapter import LOCAL_TOKEN_TYPE, Adapter201, connector_status, id_token, meter_value
-from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingProfilePurposeEnumType,
-                    ChargingStateEnumType, ConnectorStatusEnumType, GenericDeviceModelStatusEnumType,
-                    IdTokenEnumType, MessageTriggerEnumType, OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType,
-                    RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
+from .adapter import (LOCAL_TOKEN_TYPE, Adapter201, charging_profile, charging_profile_type, charging_schedule_type,
+                      composite_schedule_type, connector_status, id_token, meter_value)
+from .composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
+from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingLimitSourceEnumType,
+                    ChargingProfileKindEnumType, ChargingProfilePurposeEnumType, ChargingProfileStatusEnumType,
+                    ChargingRateUnitEnumType, ChargingStateEnumType, ClearChargingProfileStatusEnumType,
+                    ConnectorStatusEnumType, GenericDeviceModelStatusEnumType, GenericStatusEnumType,
+                    GetChargingProfileStatusEnumType, IdTokenEnumType, MessageTriggerEnumType,
+                    OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
                     TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
+from .profiles import (ChargingProfile, ChargingSchedule, ClearStatus, InstalledProfile, Limits, ProfileStatus,
+                       ProfileStore, SchedulePeriod)
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +203,19 @@ REASON_NOT_SUPPORTED = "NotSupported"
 REASON_NOT_REGISTERED = "NotRegistered"
 REASON_REGISTERED = "AlreadyRegistered"
 REASON_NO_TX = "NoTransaction"
+REASON_INVALID_DURATION = "InvalidDuration"
+
+PURPOSE = ChargingProfilePurposeEnumType
+W = ChargingRateUnitEnumType.w
+#: ``chargingLimitSource`` of the profiles the CSMS sets / of the operator's external constraints.
+CSMS_LIMIT_SOURCE = ChargingLimitSourceEnumType.cso
+EXTERNAL_LIMIT_SOURCE = ChargingLimitSourceEnumType.ems
+
+
+def external_profile_id(evse_id: int) -> int:
+    """Profile id of the operator's external constraints on ``evse_id``: negative, so it is unlikely to look
+    like a CSMS id in a report (the store keeps CSMS and external ids apart anyway)."""
+    return -1 - evse_id
 
 T = TriggerReasonEnumType
 MT = MessageTriggerEnumType
@@ -220,6 +260,8 @@ class _Evse:
     pending_remote_id: Optional[int] = None  # remoteStartId of a RequestStartTransaction token
     pending_authorizing: bool = False  # AuthorizeRemoteStart: the token is being authorized, a plug waits
     pending_operative: Optional[bool] = None  # ChangeAvailability "Scheduled"
+    #: RequestStartTransaction TxProfile of ``pending_tag``: (domain profile, wire model).
+    pending_profile: Optional[Tuple[ChargingProfile, m.ChargingProfileType]] = None
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0
     pw: Optional[PowerState] = None
@@ -260,6 +302,8 @@ class Station201(VersionStation):
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
         self.dm.on_change(dm.TX_UPDATED_INTERVAL, lambda v: self._restart_meters())
+        #: Charging profiles (M5), keyed by EVSE id (0 = the station).
+        self.profiles = ProfileStore(cfg.connectors)
         #: (vendorId, messageId or None) -> answer for inbound DataTransfer; default UnknownVendorId.
         self.data_transfer_rules: Dict[Tuple[str, Optional[str]], d.DataTransferResult] = {}
         self._outq: Deque[_Out] = deque()
@@ -281,6 +325,10 @@ class Station201(VersionStation):
             m.GetVariablesRequest: self._get_variables,
             m.SetVariablesRequest: self._set_variables,
             m.GetBaseReportRequest: self._get_base_report,
+            m.SetChargingProfileRequest: self._set_charging_profile,
+            m.ClearChargingProfileRequest: self._clear_charging_profile,
+            m.GetCompositeScheduleRequest: self._get_composite_schedule,
+            m.GetChargingProfilesRequest: self._get_charging_profiles,
         }
 
     # ================================================================== session (called by the shell)
@@ -495,12 +543,24 @@ class Station201(VersionStation):
                 out.append(d.Sample(name, round(r.soc_pct, SOC_DECIMALS), "Percent", location=SOC_LOCATION))
         return out
 
+    def _phases(self, evse_id: int) -> int:
+        """Phases a limit in A applies to: the EV's while one charges, else the supply's."""
+        e = self.evses.get(evse_id)
+        return self.supply.phases_used(self.ev) if e is not None and e.pw is not None else self.supply.phases
+
+    def _transactions(self) -> Dict[int, ActiveTransaction]:
+        return {e.id: ActiveTransaction(e.tx.tx_id, e.tx.started_at) for e in self.evses.values() if e.tx is not None}
+
+    def _limit_w(self, e: _Evse) -> Optional[float]:
+        return limit_at(self.profiles, e.id, self.host.clock(), transactions=self._transactions(),
+                        number_phases=self._phases(e.id), voltage=self.supply.phase_voltage_v())
+
     def _advance(self, e: _Evse) -> None:
         """Step the power model of a charging EVSE up to now and restart the interval."""
         now = self.host.monotonic()
         if e.pw is not None and not self.host.paused:  # paused: frozen, the interval just restarts
             dt = max(0.0, now - e.last_mono) if e.last_mono is not None else 0.0
-            e.pw = self.host.step_power(e.pw, dt, None)  # no smart charging before M5
+            e.pw = self.host.step_power(e.pw, dt, self._limit_w(e))
             e.meter_wh = e.pw.energy_wh
         e.last_mono = now
 
@@ -548,14 +608,18 @@ class Station201(VersionStation):
                         transactional=True, droppable=droppable, evse=e, tx=tx, req=req))
 
     def _start_tx(self, e: _Evse, tag: str, trigger: TriggerReasonEnumType, *,
-                  token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, remote_start_id: Optional[int] = None) -> None:
-        """Start a transaction on a plugged, operative EVSE for an authorized ``tag`` (synchronous)."""
+                  token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, remote_start_id: Optional[int] = None,
+                  profile: Optional[Tuple[ChargingProfile, m.ChargingProfileType]] = None) -> None:
+        """Start a transaction on a plugged, operative EVSE for an authorized ``tag`` (synchronous); ``profile``
+        is the RequestStartTransaction TxProfile, installed bound to the new transaction."""
         self._clear_pending(e)
         e.finishing = False
         tx = e.tx = _Tx(str(uuid.uuid4()), tag, int(round(e.meter_wh)), self.host.clock(), token_type=token_type,
                         remote_start_id=remote_start_id)
         e.pw = PowerState(soc_pct=self.cfg.session.initial_soc, energy_wh=e.meter_wh)  # a fresh EV session
         e.last_mono = None
+        if profile is not None:
+            self._bind_profile(e, tx, *profile)
         self._advance(e)  # zero-length step: initial power and suspension
         tx.charging_state = self._charging_state(e)
         self._queue_event(e, tx, TransactionEventEnumType.started, trigger,
@@ -580,6 +644,7 @@ class Station201(VersionStation):
             e.meter_task.cancel()
         e.meter_task = None
         e.tx, e.pw, e.last_mono, e.finishing = None, None, None, e.plugged
+        self.profiles.end_transaction(e.id)
         self._queue_event(e, tx, TransactionEventEnumType.ended, trigger,
                           m.TransactionType(transaction_id=tx.tx_id, charging_state=self._charging_state(e),
                                             stopped_reason=reason),
@@ -677,7 +742,7 @@ class Station201(VersionStation):
     @staticmethod
     def _clear_pending(e: _Evse) -> None:
         e.pending_tag, e.pending_type, e.pending_remote_id = None, LOCAL_TOKEN_TYPE, None
-        e.pending_authorizing = False
+        e.pending_authorizing, e.pending_profile = False, None
 
     def _set_operative(self, e: _Evse, operative: bool) -> None:
         e.operative, e.pending_operative = operative, None
@@ -689,9 +754,11 @@ class Station201(VersionStation):
             return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
                                                      status_info=self._info(code))
 
-        profile = req.charging_profile
-        if profile is not None and (profile.charging_profile_purpose is not ChargingProfilePurposeEnumType.tx_profile
-                                    or profile.transaction_id is not None):
+        wire = req.charging_profile
+        profile = charging_profile(wire) if wire is not None else None
+        # Without evseId the EVSE is not known yet: checked as for EVSE 1 (every EVSE has the same rules).
+        if profile is not None and self.profiles.validate(req.evse_id or 1, profile, for_remote_start=True,
+                                                          limits=self._limits()) is not ProfileStatus.ACCEPTED:
             return rejected(REASON_INVALID_PROFILE)
         if req.evse_id is not None:
             e = self.evses.get(req.evse_id)
@@ -708,6 +775,7 @@ class Station201(VersionStation):
         # Claimed now (a waiting token blocks the next request); the transaction starts after the answer.
         e.pending_tag, e.pending_type = req.id_token.id_token, req.id_token.type
         e.pending_remote_id = req.remote_start_id
+        e.pending_profile = (profile, wire) if profile is not None and wire is not None else None
         # AuthorizeRemoteStart: from now on a plug waits for the authorization (see _remote_authorize).
         e.pending_authorizing = self.dm.bool_value(dm.AUTHORIZE_REMOTE_START)
         self.host.after_reply(functools.partial(self._remote_start_go, e, req.remote_start_id))
@@ -728,7 +796,7 @@ class Station201(VersionStation):
     def _remote_start_now(self, e: _Evse) -> None:
         if e.plugged and e.pending_tag is not None:
             self._start_tx(e, e.pending_tag, T.remote_start, token_type=e.pending_type,
-                           remote_start_id=e.pending_remote_id)
+                           remote_start_id=e.pending_remote_id, profile=e.pending_profile)
         # else the token waits for the cable (plug starts the transaction)
 
     async def _remote_authorize(self, e: _Evse, remote_start_id: int) -> None:
@@ -929,6 +997,122 @@ class Station201(VersionStation):
                          len(parts))
                 return
 
+    # ================================================================== smart charging (M5)
+
+    def _limits(self) -> Limits:
+        return Limits(max_stack_level=self.dm.int_value(dm.PROFILE_STACK_LEVEL),
+                      max_periods=self.dm.int_value(dm.PERIODS_PER_SCHEDULE),
+                      units=frozenset(ChargingRateUnitEnumType(u) for u in self.dm.list_value(dm.RATE_UNIT)))
+
+    def _install(self, evse_id: int, profile: ChargingProfile, wire: m.ChargingProfileType) -> ProfileStatus:
+        """ProfileStore.install for a CSMS profile, logging a same-id profile it replaces on another EVSE."""
+        e = self.evses.get(evse_id)
+        active = e.tx.tx_id if e is not None and e.tx is not None else None
+        moved = [ip.evse_id for ip in self.profiles.profiles()
+                 if ip.profile.profile_id == profile.profile_id and ip.evse_id != evse_id
+                 and ip.profile.purpose is not PURPOSE.charging_station_external_constraints]
+        st = self.profiles.install(evse_id, profile, active_transaction=active, limits=self._limits(), wire=wire)
+        if st is ProfileStatus.ACCEPTED and moved:
+            log.info("%s: charging profile %d on EVSE %s replaced by the one for EVSE %d", self.cfg.id,
+                     profile.profile_id, ",".join(map(str, moved)), evse_id)
+        return st
+
+    def _bind_profile(self, e: _Evse, tx: _Tx, profile: ChargingProfile, wire: m.ChargingProfileType) -> None:
+        """Install the RequestStartTransaction TxProfile for the transaction it started."""
+        bound = replace(profile, transaction_id=tx.tx_id)
+        if self._install(e.id, bound, wire.model_copy(update={"transaction_id": tx.tx_id})) \
+                is not ProfileStatus.ACCEPTED:
+            log.warning("%s: RequestStartTransaction charging profile %d not installed", self.cfg.id,
+                        profile.profile_id)
+
+    def _set_charging_profile(self, req: m.SetChargingProfileRequest) -> m.SetChargingProfileResponse:
+        self.settle()
+        if self._install(req.evse_id, charging_profile(req.charging_profile), req.charging_profile) \
+                is not ProfileStatus.ACCEPTED:
+            return m.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.rejected,
+                                                status_info=self._info(REASON_INVALID_PROFILE))
+        self.host.after_reply(self.tick)
+        return m.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.accepted)
+
+    def _clear_charging_profile(self, req: m.ClearChargingProfileRequest) -> m.ClearChargingProfileResponse:
+        self.settle()
+        c = req.charging_profile_criteria
+        st = self.profiles.clear(profile_id=req.charging_profile_id, evse_id=c.evse_id if c else None,
+                                 purpose=c.charging_profile_purpose if c else None,
+                                 stack_level=c.stack_level if c else None)
+        if st is not ClearStatus.ACCEPTED:
+            return m.ClearChargingProfileResponse(status=ClearChargingProfileStatusEnumType.unknown)
+        self.host.after_reply(self.tick)
+        return m.ClearChargingProfileResponse(status=ClearChargingProfileStatusEnumType.accepted)
+
+    def _composite(self, evse_id: int, duration: int,
+                   unit: Optional[ChargingRateUnitEnumType]) -> d.GetCompositeResult:
+        if not 0 <= evse_id <= self.connector_count or duration < 1:
+            return d.GetCompositeResult(d.CommandStatus.REJECTED)
+        now = self.host.clock()
+        phases, volts = self._phases(evse_id), self.supply.phase_voltage_v()
+        sched = composite_schedule(self.profiles, evse_id, now, duration, unit, transactions=self._transactions(),
+                                   number_phases=phases, voltage=volts)
+        max_w = self.cfg.max_power_w * (self.connector_count if evse_id == 0 else 1)
+
+        def cap(p: CompositePeriod) -> CompositePeriod:
+            # The hardware maximum caps every period and stands for "no limit" (see the module docstring).
+            if sched.unit is W:
+                return replace(p, limit=max_w if p.limit is None else min(p.limit, max_w))
+            n = p.number_phases or phases
+            hw = convert(max_w, W, ChargingRateUnitEnumType.a, n, volts)
+            return replace(p, limit=hw if p.limit is None else min(p.limit, hw), number_phases=n)
+
+        return d.GetCompositeResult(d.CommandStatus.ACCEPTED, evse_id, now,
+                                    replace(sched, periods=tuple(cap(p) for p in sched.periods)))
+
+    def _get_composite_schedule(self, req: m.GetCompositeScheduleRequest) -> m.GetCompositeScheduleResponse:
+        res = self._composite(req.evse_id, req.duration, req.charging_rate_unit)
+        if res.schedule is None:
+            code = REASON_UNKNOWN_EVSE if not 0 <= req.evse_id <= self.connector_count else REASON_INVALID_DURATION
+            return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
+                                                  status_info=self._info(code))
+        return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.accepted,
+                                              schedule=composite_schedule_type(res.schedule))
+
+    @staticmethod
+    def _source(ip: InstalledProfile) -> ChargingLimitSourceEnumType:
+        external = ip.profile.purpose is PURPOSE.charging_station_external_constraints
+        return EXTERNAL_LIMIT_SOURCE if external else CSMS_LIMIT_SOURCE
+
+    def _get_charging_profiles(self, req: m.GetChargingProfilesRequest) -> m.GetChargingProfilesResponse:
+        c = req.charging_profile
+
+        def matches(ip: InstalledProfile) -> bool:
+            p = ip.profile
+            return ((req.evse_id is None or ip.evse_id == req.evse_id)
+                    and (c.charging_profile_id is None or p.profile_id in c.charging_profile_id)
+                    and (c.charging_profile_purpose is None or p.purpose is c.charging_profile_purpose)
+                    and (c.stack_level is None or p.stack_level == c.stack_level)
+                    and (c.charging_limit_source is None or self._source(ip) in c.charging_limit_source))
+
+        groups: Dict[Tuple[int, ChargingLimitSourceEnumType], List[m.ChargingProfileType]] = {}
+        for ip in sorted((x for x in self.profiles.profiles() if matches(x)), key=lambda x: x.evse_id):
+            groups.setdefault((ip.evse_id, self._source(ip)), []).append(ip.wire)
+        if not groups:
+            return m.GetChargingProfilesResponse(status=GetChargingProfileStatusEnumType.no_profiles)
+        last = len(groups) - 1
+        parts = [m.ReportChargingProfilesRequest(request_id=req.request_id, evse_id=evse_id,
+                                                 charging_limit_source=source, charging_profile=wires,
+                                                 tbc=True if i < last else None)
+                 for i, ((evse_id, source), wires) in enumerate(groups.items())]
+        self.host.after_reply(functools.partial(self._send_profile_reports, parts))
+        return m.GetChargingProfilesResponse(status=GetChargingProfileStatusEnumType.accepted)
+
+    async def _send_profile_reports(self, parts: Sequence[m.ReportChargingProfilesRequest]) -> None:
+        """ReportChargingProfiles parts in order; stops at the first one that fails."""
+        for i, part in enumerate(parts):
+            if await self.host.safe(self._adapter.send_report_charging_profiles(part),
+                                    "ReportChargingProfiles") is None:
+                log.info("%s: ReportChargingProfiles %d stopped at part %d of %d", self.cfg.id, part.request_id,
+                         i, len(parts))
+                return
+
     # ================================================================== operator API (engine / Web API)
 
     def _evse(self, connector: int) -> _Evse:
@@ -944,7 +1128,7 @@ class Station201(VersionStation):
         e.plugged = True
         if e.pending_tag and not e.pending_authorizing and e.operative and not e.fault:
             self._start_tx(e, e.pending_tag, T.cable_plugged_in, token_type=e.pending_type,
-                           remote_start_id=e.pending_remote_id)
+                           remote_start_id=e.pending_remote_id, profile=e.pending_profile)
         else:
             self._refresh(e)
 
@@ -1020,15 +1204,67 @@ class Station201(VersionStation):
     def faulted(self, connector: int) -> Optional[str]:
         return self._evse(connector).fault
 
-    def installed_profiles(self, connector: Optional[int] = None) -> Tuple[Any, ...]:
+    def installed_profiles(self, connector: Optional[int] = None) -> Tuple[InstalledProfile, ...]:
+        """Installed charging profiles (all, or those of EVSE ``connector``; 0 = the station)."""
         if connector:
             self._evse(connector)
-        return ()  # smart charging is M5
+        return self.profiles.profiles(connector)
 
     def composite(self, connector: int, duration: int, unit: Optional[str] = None) -> d.GetCompositeResult:
+        """The GetCompositeSchedule answer for EVSE ``connector`` (0 = the station) right now, without a CSMS;
+        ``unit`` is ``"W"`` / ``"A"``, ``None`` = W."""
         if unit not in (None, "W", "A"):
             raise ValueError(f"unit {unit!r}: W or A")
-        return d.GetCompositeResult(d.CommandStatus.REJECTED)  # smart charging is M5
+        return self._composite(connector, duration, ChargingRateUnitEnumType(unit) if unit else None)
+
+    async def set_external_limit(self, connector: int, limit_w: Optional[float]) -> None:
+        """Set (``limit_w`` in W) or remove (``None``) the external constraints of EVSE ``connector`` (0 = the
+        station); see the module docstring. ``ValueError`` for an unknown EVSE, a negative limit or while
+        SmartChargingCtrlr.ExternalControlSignalsEnabled is false."""
+        if connector:
+            self._evse(connector)
+        if not 0 <= connector <= self.connector_count:
+            raise ValueError(f"no EVSE {connector} (0..{self.connector_count})")
+        if not self.dm.bool_value(dm.EXTERNAL_CONTROL_SIGNALS_ENABLED):
+            raise ValueError("SmartChargingCtrlr.ExternalControlSignalsEnabled is false")
+        if limit_w is not None and limit_w < 0:
+            raise ValueError(f"limit_w {limit_w}: must be >= 0")
+        self.settle()
+        if limit_w is None:
+            if self.profiles.clear_external(connector):
+                self._notify(lambda: self._adapter.send_cleared_charging_limit(m.ClearedChargingLimitRequest(
+                    charging_limit_source=EXTERNAL_LIMIT_SOURCE, evse_id=connector or None)), "ClearedChargingLimit")
+        else:
+            sched = ChargingSchedule(id=1, unit=W, periods=(SchedulePeriod(0, float(limit_w)),),
+                                     start_schedule=self.host.clock())
+            profile = ChargingProfile(profile_id=external_profile_id(connector), stack_level=0,
+                                      purpose=PURPOSE.charging_station_external_constraints,
+                                      kind=ChargingProfileKindEnumType.absolute, schedule=sched)
+            st = self.profiles.install(connector, profile, external=True, wire=charging_profile_type(profile))
+            if st is not ProfileStatus.ACCEPTED:  # a fixed, valid profile: a local bug
+                raise RuntimeError(f"external constraints not installed ({st.value})")
+            req = m.NotifyChargingLimitRequest(
+                charging_limit=m.ChargingLimitType(charging_limit_source=EXTERNAL_LIMIT_SOURCE),
+                evse_id=connector or None,
+                charging_schedule=([charging_schedule_type(sched)]
+                                   if self.dm.bool_value(dm.NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES) else None))
+            self._notify(lambda: self._adapter.send_notify_charging_limit(req), "NotifyChargingLimit")
+        self.tick()
+
+    def external_limit(self, connector: int) -> Optional[float]:
+        """The operator external limit in W of EVSE ``connector`` (0 = the station), ``None`` = none."""
+        for ip in self.profiles.profiles(connector):
+            if ip.profile.purpose is PURPOSE.charging_station_external_constraints:
+                return ip.profile.schedule.periods[0].limit
+        return None
+
+    def _notify(self, send: Callable[[], Awaitable[Any]], what: str) -> None:
+        """Run ``send`` in the background while the boot is accepted; otherwise nothing is sent."""
+        async def run() -> None:
+            await self.host.safe(send(), what)  # the message is only built inside the task
+
+        if not self.host.online or self.host.spawn(run()) is None:
+            log.info("%s: %s not sent (not online)", self.cfg.id, what)
 
     async def send_meter_values(self, connector: int, context: str = ReadingContextEnumType.other.value) -> None:
         """Send a MeterValues of ``connector`` now (outside the TransactionEvent flow)."""

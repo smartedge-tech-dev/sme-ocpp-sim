@@ -56,6 +56,9 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 |---|---|---|
 | GET | `/api/chargers/{id}/profiles?connector=` | 已安装的充电 profile |
 | GET | `/api/chargers/{id}/composite?connector=&duration=&unit=` | 在本地计算的 GetCompositeSchedule 应答（`connector` 0 = 整台充电桩；也接受别名 `evse`） |
+| POST | `/api/chargers/{id}/external-limit` | 请求体 `{"connector": 0, "limit_w": 7000}`（`limit_w` 为 `null` 表示解除）。外部（能源管理）限值：OCPP 2.0.1 安装 ChargingStationExternalConstraints profile 并发送 NotifyChargingLimit / ClearedChargingLimit；OCPP 1.6 返回 400（不支持） |
+
+对 OCPP 2.0.1 充电桩，`connector` 即 EVSE id（0 = 整个充电站）。
 
 ## 帧日志
 

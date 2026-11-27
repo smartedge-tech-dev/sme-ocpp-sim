@@ -435,5 +435,6 @@ def test_web_api_serves_a_201_charger(tmp_path):
         assert conf["keys"] == [] and conf["ocpp_version"] == "2.0.1"
         hb = next(v for v in conf["variables"] if v["variable"] == "HeartbeatInterval")
         assert hb["component"] == "OCPPCommCtrlr" and hb["attributes"] == {"Actual": "300"}
-        assert client.get("/api/chargers/CP1/composite?connector=1").status_code == 400
+        assert client.get("/api/chargers/CP1/composite?connector=1").json()["periods"] == [
+            {"start_period": 0, "limit": 6000.0, "number_phases": None}]
         assert client.post("/api/chargers/CP1/fault", json={"error_code": "GroundFault", "connector": 1}).status_code == 200

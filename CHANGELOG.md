@@ -15,8 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   each), Authorize with every `auth_mode`, the TransactionEvent flow Started -> Updated -> Ended with
   station-generated transaction ids, continuous `seqNo` and offline queueing (`offline: true`), MeterValues and
   DataTransfer. Every other 2.0.1 action, including the ISO 15118 messages, is answered `NotImplemented`.
-- OCPP 2.0.1 remote control: RequestStartTransaction (with `remoteStartId` and an optional `TxProfile`, not
-  applied before smart charging), RequestStopTransaction, UnlockConnector, Reset (`Immediate` / `OnIdle`, with
+- OCPP 2.0.1 remote control: RequestStartTransaction (with `remoteStartId` and an optional `TxProfile`), RequestStopTransaction, UnlockConnector, Reset (`Immediate` / `OnIdle`, with
   `Scheduled` while a transaction runs and BootNotification reason `RemoteReset`), ChangeAvailability (station
   or EVSE level, `Scheduled` while a transaction runs) and TriggerMessage (BootNotification, Heartbeat,
   StatusNotification, MeterValues, TransactionEvent; the other messages answer `NotImplemented`).
@@ -28,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   StopTxOnInvalidId, MessageAttempts, ItemsPerMessage, ...); the new charger `variables:` YAML list overrides
   them and adds user-defined variables. `GET /api/chargers/{id}/configuration` returns a 2.0.1 charger's
   variables (`ocpp_version`, `variables`). SetVariables changes are not written back to the YAML file.
+- OCPP 2.0.1 Smart Charging: SetChargingProfile, ClearChargingProfile, GetCompositeSchedule, GetChargingProfiles
+  (answered by ReportChargingProfiles parts with `tbc`), NotifyChargingLimit and ClearedChargingLimit, with the
+  purposes ChargingStationMaxProfile, TxDefaultProfile, TxProfile and ChargingStationExternalConstraints. The
+  2.0.1 rules are a separate copy of the 1.6 ones; the power model is shared, so the composite schedule and the
+  TransactionEvent power stay equal. The `chargingProfile` of RequestStartTransaction is now applied. New
+  SmartChargingCtrlr variables (Enabled, Available, ExternalControlSignalsEnabled,
+  NotifyChargingLimitWithSchedules, ProfileStackLevel, PeriodsPerSchedule, RateUnit).
+- `POST /api/chargers/{id}/external-limit`: an external (energy management) limit per EVSE or for the whole
+  charger. OCPP 2.0.1 applies it as ChargingStationExternalConstraints and notifies the CSMS; OCPP 1.6 answers
+  400 (not supported).
 
 ### Changed
 

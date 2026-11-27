@@ -15,7 +15,10 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
 * ``GET /api/chargers/{id}/profiles?connector=`` - installed charging profiles;
 * ``GET /api/chargers/{id}/composite?connector=&duration=&unit=`` - the GetCompositeSchedule answer computed
   locally. In OCPP 1.6 the plan's ``evse`` is a connectorId, so the parameter is ``connector`` (``evse`` is
-  accepted as an alias; 0 = the whole charge point);
+  accepted as an alias; 0 = the whole charge point); for 2.0.1 ``connector`` is the EVSE id;
+* ``POST /api/chargers/{id}/external-limit`` - body ``{"connector": 0, "limit_w": 7000}`` (``limit_w`` ``null`` =
+  remove): an external (energy management) limit. 2.0.1 installs a ChargingStationExternalConstraints profile
+  and sends NotifyChargingLimit / ClearedChargingLimit; a version without external limits (1.6) answers 400;
 * ``GET /api/frames?since=&until=&charger=&action=&dir=&limit=`` / ``GET /api/frames.jsonl?<same>`` - the frame
   log (the JSON Lines export is streamed; without ``limit`` it holds every matching entry in the buffer; ``until``
   = only entries with ``seq <= until``, so ``since=n-1&until=n`` is the exact entry ``n``);
@@ -119,6 +122,11 @@ class TagBody(ConnectorBody):
 
 class FaultBody(ConnectorBody):
     error_code: FaultCode = "OtherError"
+
+
+class ExternalLimitBody(BaseModel):
+    connector: int = Field(0, ge=0)  # 0 = the whole charger
+    limit_w: Optional[float] = Field(None, ge=0)  # None = remove the limit
 
 
 class DataTransferBody(BaseModel):
@@ -447,6 +455,17 @@ def _router(engine: OcppEngine) -> APIRouter:
         if res.schedule is None:
             raise bad(400, f"composite schedule rejected ({res.status.value})")
         return {"connector": cid_, "schedule_start": res.schedule_start, **jsonable_encoder(res.schedule)}
+
+    @r.post("/chargers/{cid}/external-limit", summary="Set or remove an external charging limit (OCPP 2.0.1)")
+    async def external_limit(cid: str, body: ExternalLimitBody = Body(default_factory=ExternalLimitBody)):
+        rt = runtime(cid)
+        try:  # the station checks the connector, after the version (1.6: not supported)
+            await rt.set_external_limit(body.connector, body.limit_w)
+        except NotImplementedError:
+            raise bad(400, f"external limits are not supported by OCPP {rt.adapter.version}") from None
+        except ValueError as e:
+            raise bad(400, e) from None
+        return {"ok": True}
 
     async def apply(data: dict) -> None:
         """Validate ``data`` (a whole config dump) and reload the engine with it; any rejection is a 400."""

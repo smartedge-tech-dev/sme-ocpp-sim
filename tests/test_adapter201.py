@@ -182,12 +182,14 @@ def test_queue_bound_drops_only_periodic_updates(monkeypatch):
     asyncio.run(main())
 
 
-def test_unknown_evse_and_unsupported_smart_charging():
+def test_unknown_evse_and_default_smart_charging():
     s = Station201(_Host(connectors=1))
     with pytest.raises(ValueError, match="no EVSE 2"):
         asyncio.run(s.plug(2))
     assert s.installed_profiles() == () and s.configuration() == []
-    assert s.composite(0, 60, "W").status is d.CommandStatus.REJECTED
+    res = s.composite(0, 60, "W")  # no profile: the hardware maximum (M5)
+    assert res.status is d.CommandStatus.ACCEPTED and [p.limit for p in res.schedule.periods] == [6000.0]
+    assert s.composite(2, 60).status is d.CommandStatus.REJECTED
     assert asyncio.run(s.handle(d.Reset(d.ResetKind.SOFT))) is d.CommandStatus.NOT_IMPLEMENTED
 
 

@@ -3,7 +3,7 @@
 Wire values are exactly those of the OCPP 2.0.1 JSON schemas (checked by
 ``tests/test_v201_schema_conformance.py``); class names are the spec data type names
 (``...EnumType``). Only the enumerations of the messages in ``models.py`` are here (M2 core, M3 remote
-control, M4 Device Model); later milestones add the ones their messages need.
+control, M4 Device Model, M5 smart charging); later milestones add the ones their messages need.
 """
 
 from __future__ import annotations
@@ -354,3 +354,33 @@ class GenericDeviceModelStatusEnumType(str, Enum):
     rejected = "Rejected"
     not_supported = "NotSupported"
     empty_result_set = "EmptyResultSet"
+
+
+# --- M5 smart charging -----------------------------------------------------------------------
+
+
+class ChargingProfileStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class ClearChargingProfileStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    unknown = "Unknown"
+
+
+class GenericStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class GetChargingProfileStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    no_profiles = "NoProfiles"
+
+
+class ChargingLimitSourceEnumType(str, Enum):
+    ems = "EMS"
+    other = "Other"
+    so = "SO"
+    cso = "CSO"

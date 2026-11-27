@@ -59,6 +59,9 @@ class Session:
     meter_values: list = field(default_factory=list)        # dict per MeterValues
     data_transfers: list = field(default_factory=list)
     reports: list = field(default_factory=list)            # dict per NotifyReport
+    profile_reports: list = field(default_factory=list)    # dict per ReportChargingProfiles
+    charging_limits: list = field(default_factory=list)    # dict per NotifyChargingLimit
+    cleared_limits: list = field(default_factory=list)     # dict per ClearedChargingLimit
     cs: object = None
 
 
@@ -133,6 +136,22 @@ class PeerCS(OcppCP201):
         self.session.reports.append({"request_id": request_id, "generated_at": generated_at, "seq_no": seq_no,
                                      **kw})
         return call_result.NotifyReport()
+
+    @on("ReportChargingProfiles")
+    async def on_report_charging_profiles(self, request_id, charging_limit_source, charging_profile, evse_id, **kw):
+        self.session.profile_reports.append({"request_id": request_id, "charging_limit_source": charging_limit_source,
+                                             "charging_profile": charging_profile, "evse_id": evse_id, **kw})
+        return call_result.ReportChargingProfiles()
+
+    @on("NotifyChargingLimit")
+    async def on_notify_charging_limit(self, charging_limit, **kw):
+        self.session.charging_limits.append({"charging_limit": charging_limit, **kw})
+        return call_result.NotifyChargingLimit()
+
+    @on("ClearedChargingLimit")
+    async def on_cleared_charging_limit(self, charging_limit_source, **kw):
+        self.session.cleared_limits.append({"charging_limit_source": charging_limit_source, **kw})
+        return call_result.ClearedChargingLimit()
 
     @on("DataTransfer")
     async def on_data_transfer(self, vendor_id, **kw):

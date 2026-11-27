@@ -196,6 +196,34 @@ INVALID = [
 ]
 
 
+INVALID += [
+    # M5 smart charging
+    ("SetChargingProfile", "request", {"chargingProfile": CHARGING_PROFILE_MIN}),
+    ("SetChargingProfile", "request", {"evseId": 1, "chargingProfile": dict(
+        CHARGING_PROFILE_MIN, chargingProfilePurpose="ChargePointMaxProfile")}),
+    ("SetChargingProfile", "request", {"evseId": 1, "chargingProfile": dict(CHARGING_PROFILE_MIN, chargingSchedule=[
+        CHARGING_PROFILE_MIN["chargingSchedule"][0]] * 4)}),
+    ("SetChargingProfile", "response", {"status": "Unknown"}),
+    ("ClearChargingProfile", "request", {"chargingProfileCriteria": {"evseId": "1"}}),
+    ("ClearChargingProfile", "response", {"status": "Rejected"}),
+    ("GetCompositeSchedule", "request", {"duration": 60}),
+    ("GetCompositeSchedule", "request", {"duration": 60, "evseId": 1, "chargingRateUnit": "kW"}),
+    ("GetCompositeSchedule", "response", {"status": "Accepted", "schedule": {
+        "evseId": 1, "duration": 60, "scheduleStart": T1, "chargingRateUnit": "W", "chargingSchedulePeriod": []}}),
+    ("GetChargingProfiles", "request", {"requestId": 1}),
+    ("GetChargingProfiles", "request", {"requestId": 1, "chargingProfile": {"chargingLimitSource": []}}),
+    ("GetChargingProfiles", "request", {"requestId": 1, "chargingProfile": {"chargingProfileId": []}}),
+    ("GetChargingProfiles", "response", {"status": "Rejected"}),
+    ("ReportChargingProfiles", "request", {"requestId": 1, "chargingLimitSource": "CSO", "evseId": 1,
+                                           "chargingProfile": []}),
+    ("ReportChargingProfiles", "request", {"requestId": 1, "chargingLimitSource": "CSMS", "evseId": 1,
+                                           "chargingProfile": [CHARGING_PROFILE_MIN]}),
+    ("NotifyChargingLimit", "request", {}),
+    ("NotifyChargingLimit", "request", {"chargingLimit": {"chargingLimitSource": "EMS"}, "chargingSchedule": []}),
+    ("ClearedChargingLimit", "request", {"evseId": 1}),
+]
+
+
 @pytest.mark.parametrize("action,kind,payload", INVALID)
 def test_schema_invalid_payloads_rejected(action, kind, payload):
     assert not jsonschema.Draft6Validator(_schema(action, kind)).is_valid(payload)

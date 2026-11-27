@@ -50,7 +50,12 @@ from .enums import (
     AuthorizeCertificateStatusEnumType,
     BootReasonEnumType,
     ChangeAvailabilityStatusEnumType,
+    ChargingLimitSourceEnumType,
     ChargingProfileKindEnumType,
+    ChargingProfileStatusEnumType,
+    ClearChargingProfileStatusEnumType,
+    GenericStatusEnumType,
+    GetChargingProfileStatusEnumType,
     ChargingProfilePurposeEnumType,
     ChargingRateUnitEnumType,
     ChargingStateEnumType,
@@ -338,7 +343,7 @@ class DataTransferResponse(OcppModel):
 
 
 # --- M3 remote control: nested types ---------------------------------------------------------
-# The charging profile of RequestStartTransaction (the same types serve SetChargingProfile in M5).
+# The charging profile of RequestStartTransaction (the same types serve the M5 smart-charging messages).
 
 
 class RelativeTimeIntervalType(OcppModel):
@@ -607,6 +612,125 @@ class NotifyReportResponse(OcppModel):
     custom_data: Optional[CustomDataType] = None
 
 
+# --- M5 smart charging -----------------------------------------------------------------------
+
+
+class SetChargingProfileRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse_id: int
+    charging_profile: ChargingProfileType
+
+
+class SetChargingProfileResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: ChargingProfileStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class ClearChargingProfileType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse_id: Optional[int] = None
+    charging_profile_purpose: Optional[ChargingProfilePurposeEnumType] = None
+    stack_level: Optional[int] = None
+
+
+class ClearChargingProfileRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    charging_profile_id: Optional[int] = None
+    charging_profile_criteria: Optional[ClearChargingProfileType] = None
+
+
+class ClearChargingProfileResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: ClearChargingProfileStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class GetCompositeScheduleRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    duration: int
+    charging_rate_unit: Optional[ChargingRateUnitEnumType] = None
+    evse_id: int
+
+
+class CompositeScheduleType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    charging_schedule_period: Annotated[list[ChargingSchedulePeriodType], Field(min_length=1)]
+    evse_id: int
+    duration: int
+    schedule_start: DateTime
+    charging_rate_unit: ChargingRateUnitEnumType
+
+
+class GetCompositeScheduleResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: GenericStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+    schedule: Optional[CompositeScheduleType] = None
+
+
+class ChargingProfileCriterionType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    charging_profile_purpose: Optional[ChargingProfilePurposeEnumType] = None
+    stack_level: Optional[int] = None
+    charging_profile_id: Optional[Annotated[list[int], Field(min_length=1)]] = None
+    charging_limit_source: Optional[Annotated[list[ChargingLimitSourceEnumType], Field(min_length=1,
+                                                                                        max_length=4)]] = None
+
+
+class GetChargingProfilesRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    request_id: int
+    evse_id: Optional[int] = None
+    charging_profile: ChargingProfileCriterionType
+
+
+class GetChargingProfilesResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: GetChargingProfileStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class ReportChargingProfilesRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    request_id: int
+    charging_limit_source: ChargingLimitSourceEnumType
+    charging_profile: Annotated[list[ChargingProfileType], Field(min_length=1)]
+    tbc: Optional[bool] = None  # schema default false
+    evse_id: int
+
+
+class ReportChargingProfilesResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
+class ChargingLimitType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    charging_limit_source: ChargingLimitSourceEnumType
+    is_grid_critical: Optional[bool] = None
+
+
+class NotifyChargingLimitRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    charging_schedule: Optional[Annotated[list[ChargingScheduleType], Field(min_length=1)]] = None
+    evse_id: Optional[int] = None
+    charging_limit: ChargingLimitType
+
+
+class NotifyChargingLimitResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
+class ClearedChargingLimitRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    charging_limit_source: ChargingLimitSourceEnumType
+    evse_id: Optional[int] = None
+
+
+class ClearedChargingLimitResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -629,6 +753,14 @@ ACTIONS = (
     "SetVariables",
     "GetBaseReport",
     "NotifyReport",
+    # M5 smart charging
+    "SetChargingProfile",
+    "ClearChargingProfile",
+    "GetCompositeSchedule",
+    "GetChargingProfiles",
+    "ReportChargingProfiles",
+    "NotifyChargingLimit",
+    "ClearedChargingLimit",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}
