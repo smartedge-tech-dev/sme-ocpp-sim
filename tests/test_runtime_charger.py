@@ -168,7 +168,8 @@ def test_misc_remote_control():
         await _until(lambda: s.heartbeats == 1)
         assert (await peer.trigger(CP, "MeterValues", 1)).status == "Accepted"
         await _until(lambda: len(s.meter_values) == 1)
-        assert (await peer.trigger(CP, "DiagnosticsStatusNotification")).status == "NotImplemented"
+        assert (await peer.trigger(CP, "DiagnosticsStatusNotification")).status == "Accepted"  # M7
+        await _until(lambda: s.diagnostics_statuses == ["Idle"])
         assert (await peer.trigger(CP, "BootNotification")).status == "Accepted"
         await _until(lambda: s.boots == 2)
         assert (await peer.unlock(CP, 1)).status == "Unlocked"

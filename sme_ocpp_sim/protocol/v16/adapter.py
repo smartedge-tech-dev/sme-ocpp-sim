@@ -3,7 +3,7 @@
 Inbound: every handler parses with :func:`codec.parse` (lenient unless ``strict``), applies the range checks the
 schemas cannot express (connectorId vs connector count), hands one domain command to the runtime and dumps the
 domain result as the 1.6 response. Actions without a handler are answered CALLERROR NotImplemented by the RPC
-layer (UpdateFirmware, GetDiagnostics, ...).
+layer.
 
 Outbound: ``send_*`` build 1.6 requests from domain events and parse the responses (``kind="response"``).
 Transaction ids are 1.6 integers on the wire and strings in the domain.
@@ -16,6 +16,11 @@ raised by the codec.
 Local Auth List Management / Reservation (M6, §3.5, §3.11, §5.1, §5.4, §5.10, §5.13, §5.15, errata 3.52):
 SendLocalList / GetLocalListVersion / ClearCache / ReserveNow / CancelReservation become the domain commands of
 the same name; the station decides every status.
+
+Firmware Management (M7, §4.4, §4.5, §5.9, §5.19): UpdateFirmware / GetDiagnostics become the domain commands of
+the same name; the station runs the update / upload (``runtime.maintenance``) and sends Firmware- /
+DiagnosticsStatusNotification with :meth:`Adapter16.send_firmware_status` / :meth:`Adapter16.send_diagnostics_status`.
+TriggerMessage for both is handed to the station like the other triggers.
 
 Interpretations (not defined by the spec)
 -----------------------------------------
@@ -176,6 +181,8 @@ class Adapter16(d.VersionAdapter):
             "ClearCache": self._clear_cache,
             "ReserveNow": self._reserve_now,
             "CancelReservation": self._cancel_reservation,
+            "UpdateFirmware": self._update_firmware,
+            "GetDiagnostics": self._get_diagnostics,
         }
         return {a: functools.partial(h, runtime) for a, h in table.items()}
 
@@ -220,8 +227,6 @@ class Adapter16(d.VersionAdapter):
             # TODO(spec): connectorId 0 is accepted for TriggerMessage (charger-wide request).
             _check_connector(req.connector_id, runtime, allow_zero=True)
         what = d.TriggerWhat(req.requested_message.value)
-        if what in (d.TriggerWhat.DIAGNOSTICS_STATUS, d.TriggerWhat.FIRMWARE_STATUS):
-            return dump(m.TriggerMessageResponse(status="NotImplemented"))
         st = await runtime.handle(d.Trigger(what, req.connector_id))
         status = {d.CommandStatus.ACCEPTED: "Accepted", d.CommandStatus.REJECTED: "Rejected"}.get(
             st, "NotImplemented")
@@ -309,6 +314,17 @@ class Adapter16(d.VersionAdapter):
         st = await runtime.handle(d.CancelReservation(req.reservation_id))
         return dump(m.CancelReservationResponse(status=_accepted(st)))
 
+    async def _update_firmware(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("UpdateFirmware", payload)
+        await runtime.handle(d.UpdateFirmware(req.location, _utc(req.retrieve_date), req.retries, req.retry_interval))
+        return dump(m.UpdateFirmwareResponse())
+
+    async def _get_diagnostics(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("GetDiagnostics", payload)
+        name: Optional[str] = await runtime.handle(d.GetDiagnostics(
+            req.location, req.retries, req.retry_interval, _utc(req.start_time), _utc(req.stop_time)))
+        return dump(m.GetDiagnosticsResponse(file_name=name))
+
     # ------------------------------------------------------------------ outbound
 
     async def _send(self, action: str, request: m.OcppModel) -> Any:
@@ -366,3 +382,10 @@ class Adapter16(d.VersionAdapter):
         resp = await self._send("DataTransfer", m.DataTransferRequest(
             vendor_id=cmd.vendor_id, message_id=cmd.message_id, data=cmd.data))
         return d.DataTransferResult(d.DataTransferStatus(resp.status.value), resp.data)
+
+    async def send_firmware_status(self, ev: d.FirmwareStatus) -> None:
+        await self._send("FirmwareStatusNotification", m.FirmwareStatusNotificationRequest(status=ev.status.value))
+
+    async def send_diagnostics_status(self, ev: d.LogStatus) -> None:
+        await self._send("DiagnosticsStatusNotification", m.DiagnosticsStatusNotificationRequest(
+            status=ev.status.value))

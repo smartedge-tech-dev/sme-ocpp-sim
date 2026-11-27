@@ -20,6 +20,8 @@ Subprotocol `ocpp1.6`.
 | StopTransaction | `reason`, `transactionData` |
 | MeterValues | Sampled (`MeterValueSampleInterval`) and clock-aligned (`ClockAlignedDataInterval`); measurands from `MeterValuesSampledData`; with `location` / `context` |
 | DataTransfer | Sent manually from the UI or the HTTP API |
+| FirmwareStatusNotification | Downloading → Downloaded → Installing → (reboot, BootNotification) → Installed; DownloadFailed / InstallationFailed by failure injection |
+| DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
 
 Transaction-related messages (StartTransaction, StopTransaction, periodic MeterValues) and state-change
 StatusNotifications go through one ordered queue. A message whose answer was lost in a disconnect is resent
@@ -35,7 +37,7 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 | GetConfiguration | An empty `key` list returns all keys; unknown keys go to `unknownKey`. Answered even before the boot is accepted |
 | ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
 | Reset | Soft / Hard: ends transactions, disconnects, reconnects and boots again |
-| TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification; DiagnosticsStatusNotification and FirmwareStatusNotification answer `NotImplemented` |
+| TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification / FirmwareStatusNotification / DiagnosticsStatusNotification (the current step while an update / upload runs, else `Idle`) |
 | UnlockConnector | Always answers `Unlocked` (other answers are not configurable yet); a running transaction on the connector ends with reason `UnlockCommand` |
 | ChangeAvailability | Accepted / Rejected / Scheduled (Scheduled while a transaction is running) |
 | DataTransfer | Default answer `UnknownVendorId` |
@@ -47,6 +49,8 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 | ClearCache | Clears the Authorization Cache; `Rejected` while `AuthorizationCacheEnabled` is false |
 | ReserveNow | Faulted / Unavailable / Occupied by the connector state, else Accepted; the same `reservationId` replaces a reservation; connector 0 keeps one connector free (`Rejected` while `ReserveConnectorZeroSupported` is false). A reserved connector reports `Reserved` and starts only for the reserved `idTag` or a tag with that parent; the `reservationId` goes with StartTransaction. It ends on expiry, cancel, or when the connector becomes Faulted / Unavailable |
 | CancelReservation | `Accepted` for a known reservation, else `Rejected` |
+| UpdateFirmware | Simulated, nothing is downloaded: waits for `retrieveDate`, `retries` / `retryInterval` on a download failure; connectors without a transaction are `Unavailable` until no transaction is left, then it installs and reboots (as a Hard Reset). Step durations and failure injection: `maintenance` per charger (`download_s`, `install_s`, `upload_s`, `retry_interval_s`, `fail_download`, `fail_install`, `fail_upload`). A new request replaces one that is not installing yet; one received while installing is ignored |
+| GetDiagnostics | Answers `fileName` `<id>-diagnostics-<time>.log` and simulates the upload (nothing is uploaded); a new request replaces a running upload |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -63,11 +67,11 @@ specification leaves a point open, the notes below give the simulator's interpre
 | BootNotification | Supported | Accepted / Pending / Rejected. `reason` is `PowerUp`, `RemoteReset` after a CSMS Reset, `Triggered` after a TriggerMessage. Until the boot is accepted only BootNotification is sent, except what a TriggerMessage asks for while Pending (B02.FR.02). While Pending, RequestStart/StopTransaction are `Rejected` (B02.FR.05); while Rejected every CSMS request is answered CALLERROR `SecurityError` (B03) |
 | ClearedChargingLimit | Supported | When the external limit is removed (`chargingLimitSource` `EMS`); only while the boot is accepted, see [Smart Charging](smart-charging.md#ocpp-201) |
 | DataTransfer | Supported | Sent manually from the UI or the HTTP API |
-| FirmwareStatusNotification | Supported | Only on TriggerMessage, status `Idle` (no firmware update is simulated) |
+| FirmwareStatusNotification | Supported | Progress of UpdateFirmware with its `requestId`; on TriggerMessage the last status, `Idle` when it was Installed or none |
 | Get15118EVCertificate | Not supported | ISO 15118 |
 | GetCertificateStatus | Not supported | ISO 15118 |
 | Heartbeat | Supported | Every `OCPPCommCtrlr.HeartbeatInterval` (also set by an accepted BootNotification) |
-| LogStatusNotification | Supported | Only on TriggerMessage, status `Idle` (no log upload is simulated) |
+| LogStatusNotification | Supported | Progress of GetLog (Uploading → Uploaded / UploadFailure; AcceptedCanceled for an upload a new GetLog cancelled); on TriggerMessage `Uploading` while uploading, else `Idle` |
 | MeterValues | Supported | Sent on TriggerMessage (context `Trigger`, measurands from `AlignedDataCtrlr.Measurands`); transaction readings travel in TransactionEvent |
 | NotifyChargingLimit | Supported | When the external limit is set (`chargingLimitSource` `EMS`; with the schedule when `SmartChargingCtrlr.NotifyChargingLimitWithSchedules` is true); only while the boot is accepted, see [Smart Charging](smart-charging.md#ocpp-201) |
 | NotifyCustomerInformation | Not supported |  |
@@ -117,7 +121,7 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
 | GetLocalListVersion | Supported | The stored version; 0 before the first list or while `LocalAuthListCtrlr.Enabled` is false |
-| GetLog | Not supported |  |
+| GetLog | Supported | `Accepted` with `filename` `<id>_<logType>_<time>.log`, or `AcceptedCanceled` when it cancels a running upload; the upload is simulated (`maintenance` settings) |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | Use GetBaseReport |
 | GetTransactionStatus | Not supported |  |
@@ -136,10 +140,10 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | SetNetworkProfile | Not supported |  |
 | SetVariableMonitoring | Not supported |  |
 | SetVariables | Supported | Values are checked (data type, limits, values list); a ReadOnly variable is `Rejected`; `RebootRequired` for variables marked so. Changes apply at once and are not written back to the YAML file |
-| TriggerMessage | Supported | BootNotification (only while the boot is not accepted), Heartbeat, StatusNotification, MeterValues, TransactionEvent (readings from `TxUpdatedMeasurands`), LogStatusNotification / FirmwareStatusNotification (status `Idle`); other requested messages answer `NotImplemented`. All but BootNotification are `Rejected` before a BootNotification answer and served while Accepted or Pending. Unknown EVSE → `Rejected` |
+| TriggerMessage | Supported | BootNotification (only while the boot is not accepted), Heartbeat, StatusNotification, MeterValues, TransactionEvent (readings from `TxUpdatedMeasurands`), LogStatusNotification / FirmwareStatusNotification (current status); other requested messages answer `NotImplemented`. All but BootNotification are `Rejected` before a BootNotification answer and served while Accepted or Pending. Unknown EVSE → `Rejected` |
 | UnlockConnector | Supported | `Unlocked`; `OngoingAuthorizedTransaction` while the EVSE has a transaction (it is not stopped); `UnknownConnector` for an unknown EVSE or a connector other than 1 |
 | UnpublishFirmware | Not supported |  |
-| UpdateFirmware | Not supported |  |
+| UpdateFirmware | Supported | Simulated, nothing is downloaded or verified: DownloadScheduled (future `retrieveDateTime`) → Downloading → Downloaded → SignatureVerified (with `signature`) → InstallScheduled (future `installDateTime`) → EVSEs without a transaction `Unavailable` until none is left → Installing → InstallRebooting → reboot (BootNotification reason `FirmwareUpdate`) → Installed. `retries` / `retryInterval` on a download failure; `AcceptedCanceled` when it cancels an update that is not installing yet, `Rejected` while installing. Timings and failure injection: `maintenance` per charger |
 
 ## Not supported yet
 
@@ -147,5 +151,4 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 |---|---|
 | OCPP 2.1 | Planned for v0.3 (greyed out in the UI) |
 | Security profile 3 (TLS client certificates), certificate management, Security Whitepaper messages (SecurityEventNotification, ...) | Planned |
-| Firmware update, diagnostics / log upload and their status notifications | Planned (CALLERROR `NotImplemented` today) |
 | ISO 15118 / Plug & Charge | Not supported (paid standard) |

@@ -40,6 +40,8 @@ Shell.addStrings("ja", {
   "detail.heartbeat": "ハートビート {t}",
   "detail.tx_queue": "未送信 {n} 件",
   "detail.local_list": "ローカルリスト v{n}",
+  "detail.firmware": "ファームウェア {s}",
+  "detail.log": "ログ送信 {s}",
   "detail.last_error": "直近のエラー: {e}",
   "detail.connector": "コネクタ {n}",
   "detail.plugged": "プラグ接続中",

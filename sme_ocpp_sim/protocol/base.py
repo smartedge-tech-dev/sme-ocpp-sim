@@ -189,6 +189,27 @@ class CancelReservation:
     reservation_id: int
 
 
+@dataclass(frozen=True)
+class UpdateFirmware:
+    """1.6 UpdateFirmware (M7); 2.0.1 hands its request model to the station. ``retrieve_at`` is UTC."""
+
+    location: str
+    retrieve_at: datetime
+    retries: Optional[int] = None
+    retry_interval_s: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class GetDiagnostics:
+    """1.6 GetDiagnostics (M7); the result is the file name (``None`` = no diagnostics available)."""
+
+    location: str
+    retries: Optional[int] = None
+    retry_interval_s: Optional[int] = None
+    start: Optional[datetime] = None
+    stop: Optional[datetime] = None
+
+
 Command = Any  # union of the command dataclasses above
 
 # --------------------------------------------------------------------------------------------- results
@@ -348,6 +369,51 @@ class MeterSample:
 @dataclass(frozen=True)
 class AuthorizeRequest:
     id_token: str
+
+
+class FirmwareState(str, Enum):
+    """Steps of a firmware update (M7). The values are the wire names of 2.0.1 ``FirmwareStatusEnumType``; 1.6
+    ``FirmwareStatus`` has the subset Idle / Downloading / Downloaded / DownloadFailed / Installing / Installed /
+    InstallationFailed under the same names."""
+
+    IDLE = "Idle"
+    DOWNLOAD_SCHEDULED = "DownloadScheduled"
+    DOWNLOADING = "Downloading"
+    DOWNLOADED = "Downloaded"
+    DOWNLOAD_FAILED = "DownloadFailed"
+    SIGNATURE_VERIFIED = "SignatureVerified"
+    INSTALL_SCHEDULED = "InstallScheduled"
+    INSTALLING = "Installing"
+    INSTALL_REBOOTING = "InstallRebooting"
+    INSTALLED = "Installed"
+    INSTALLATION_FAILED = "InstallationFailed"
+
+
+class LogState(str, Enum):
+    """Steps of a diagnostics / log upload (M7): 1.6 ``DiagnosticsStatus`` names; 2.0.1 ``UploadLogStatusEnumType``
+    calls the failure ``UploadFailure`` and adds ``AcceptedCanceled`` (sent for an upload a new GetLog cancelled)."""
+
+    IDLE = "Idle"
+    UPLOADING = "Uploading"
+    UPLOADED = "Uploaded"
+    UPLOAD_FAILED = "UploadFailed"
+    ACCEPTED_CANCELED = "AcceptedCanceled"
+
+
+@dataclass(frozen=True)
+class FirmwareStatus:
+    """FirmwareStatusNotification; ``request_id`` is the 2.0.1 requestId (``None`` for 1.6 and for Idle)."""
+
+    status: FirmwareState
+    request_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class LogStatus:
+    """DiagnosticsStatusNotification (1.6) / LogStatusNotification (2.0.1)."""
+
+    status: LogState
+    request_id: Optional[int] = None
 
 
 # --------------------------------------------------------------------------------------------- event results

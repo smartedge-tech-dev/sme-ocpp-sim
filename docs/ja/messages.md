@@ -20,6 +20,8 @@ SME OCPPSim は OCPP 1.6J の Charge Point と OCPP 2.0.1 の Charging Station �
 | StopTransaction | `reason`、`transactionData` |
 | MeterValues | 定期サンプル（`MeterValueSampleInterval`）と時刻同期（`ClockAlignedDataInterval`）。measurand は `MeterValuesSampledData`。`location` / `context` 付き |
 | DataTransfer | UI または HTTP API から手動で送信します |
+| FirmwareStatusNotification | Downloading → Downloaded → Installing →（再起動、BootNotification）→ Installed。失敗注入で DownloadFailed / InstallationFailed |
+| DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
 
 トランザクション関連のメッセージ（StartTransaction、StopTransaction、定期 MeterValues）と状態変化による
 StatusNotification は、1 本の順序付きキューで送信されます。切断で応答を受け取れなかったメッセージは次回の
@@ -35,7 +37,7 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 | GetConfiguration | `key` が空ならすべてのキーを返し、未知のキーは `unknownKey` に入れます。Boot 受理前でも応答します |
 | ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
 | Reset | Soft / Hard: トランザクションを終了し、切断・再接続して再度 Boot します |
-| TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification。DiagnosticsStatusNotification と FirmwareStatusNotification は `NotImplemented` |
+| TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification / FirmwareStatusNotification / DiagnosticsStatusNotification（更新 / 送信の実行中は現在の段階、それ以外は `Idle`） |
 | UnlockConnector | 常に `Unlocked` を返します（他の応答はまだ設定できません）。コネクタで実行中のトランザクションは理由 `UnlockCommand` で終了します |
 | ChangeAvailability | Accepted / Rejected / Scheduled（トランザクション中は Scheduled） |
 | DataTransfer | 既定の応答は `UnknownVendorId` |
@@ -47,6 +49,8 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 | ClearCache | 認証キャッシュを消去します。`AuthorizationCacheEnabled` が false の間は `Rejected` |
 | ReserveNow | コネクターの状態に応じて Faulted / Unavailable / Occupied、それ以外は Accepted。同じ `reservationId` は予約を置き換えます。コネクター 0 の予約ではコネクターを 1 つ空けておきます（`ReserveConnectorZeroSupported` が false の間は `Rejected`）。予約されたコネクターは `Reserved` を報告し、予約した `idTag` かその親タグを持つタグでのみ開始します。`reservationId` は StartTransaction で送ります。期限切れ、取り消し、コネクターの Faulted / Unavailable で終了します |
 | CancelReservation | 既知の予約なら `Accepted`、それ以外は `Rejected` |
+| UpdateFirmware | 模擬のみ（実際のダウンロードはしません）。`retrieveDate` まで待ち、ダウンロード失敗時は `retries` / `retryInterval` に従います。トランザクションのないコネクタはトランザクションがなくなるまで `Unavailable` にし、その後インストールして再起動します（Hard Reset と同じ）。各段階の時間と失敗注入は充電器ごとの `maintenance`（`download_s`、`install_s`、`upload_s`、`retry_interval_s`、`fail_download`、`fail_install`、`fail_upload`）。インストール前の更新は新しい要求で置き換え、インストール中に届いた要求は無視します |
+| GetDiagnostics | `fileName` `<id>-diagnostics-<時刻>.log` を返し、アップロードを模擬します（実際の送信はしません）。実行中の送信は新しい要求で置き換えます |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -63,11 +67,11 @@ Web UI や HTTP API が「コネクター」と言う場合は EVSE id を指し
 | BootNotification | 対応 | Accepted / Pending / Rejected。`reason` は `PowerUp`、CSMS の Reset 後は `RemoteReset`、TriggerMessage 後は `Triggered`。Boot が受理されるまでは BootNotification だけを送信します（Pending 中に TriggerMessage で要求されたものを除く、B02.FR.02）。Pending 中の RequestStart/StopTransaction は `Rejected`（B02.FR.05）、Rejected 中は CSMS からのすべての要求に CALLERROR `SecurityError` で応答します（B03） |
 | ClearedChargingLimit | 対応 | 外部制限値を解除したとき（`chargingLimitSource` `EMS`）。Boot 受理中のみ。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
 | DataTransfer | 対応 | UI または HTTP API から手動で送信します |
-| FirmwareStatusNotification | 対応 | TriggerMessage のときのみ、status `Idle`（ファームウェア更新は模擬しない） |
+| FirmwareStatusNotification | 対応 | UpdateFirmware の進捗（`requestId` 付き）。TriggerMessage では最後の status、Installed のあとや未送信なら `Idle` |
 | Get15118EVCertificate | Not supported | ISO 15118 |
 | GetCertificateStatus | Not supported | ISO 15118 |
 | Heartbeat | 対応 | `OCPPCommCtrlr.HeartbeatInterval` ごと（受理された BootNotification でも設定されます） |
-| LogStatusNotification | 対応 | TriggerMessage のときのみ、status `Idle`（ログのアップロードは模擬しない） |
+| LogStatusNotification | 対応 | GetLog の進捗（Uploading → Uploaded / UploadFailure。新しい GetLog で取り消した送信には AcceptedCanceled）。TriggerMessage では送信中は `Uploading`、それ以外は `Idle` |
 | MeterValues | 対応 | TriggerMessage で送信します（context `Trigger`、計測項目は `AlignedDataCtrlr.Measurands`）。トランザクション中の計測値は TransactionEvent で送ります |
 | NotifyChargingLimit | 対応 | 外部制限値を設定したとき（`chargingLimitSource` `EMS`。`SmartChargingCtrlr.NotifyChargingLimitWithSchedules` が true ならスケジュール付き）。Boot 受理中のみ。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
 | NotifyCustomerInformation | Not supported |  |
@@ -117,7 +121,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
 | GetLocalListVersion | 対応 | 保持しているバージョン。最初のリストを受け取るまで、または `LocalAuthListCtrlr.Enabled` が false の間は 0 |
-| GetLog | Not supported |  |
+| GetLog | 対応 | `Accepted` と `filename` `<id>_<logType>_<時刻>.log`。実行中の送信を取り消したときは `AcceptedCanceled`。送信は模擬（`maintenance` の設定） |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | GetBaseReport を使用してください |
 | GetTransactionStatus | Not supported |  |
@@ -136,10 +140,10 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | SetNetworkProfile | Not supported |  |
 | SetVariableMonitoring | Not supported |  |
 | SetVariables | 対応 | 値を検査します（データ型、上下限、値リスト）。ReadOnly の変数は `Rejected`。該当する変数は `RebootRequired`。変更は即時に反映され、YAML ファイルには書き戻されません |
-| TriggerMessage | 対応 | BootNotification（Boot 未受理の間のみ）、Heartbeat、StatusNotification、MeterValues、TransactionEvent（計測項目は `TxUpdatedMeasurands`）、LogStatusNotification / FirmwareStatusNotification（status `Idle`）。それ以外の要求メッセージは `NotImplemented`。BootNotification 以外は BootNotification の応答前は `Rejected`、Accepted と Pending の間は送信します。未知の EVSE は `Rejected` |
+| TriggerMessage | 対応 | BootNotification（Boot 未受理の間のみ）、Heartbeat、StatusNotification、MeterValues、TransactionEvent（計測項目は `TxUpdatedMeasurands`）、LogStatusNotification / FirmwareStatusNotification（現在の status）。それ以外の要求メッセージは `NotImplemented`。BootNotification 以外は BootNotification の応答前は `Rejected`、Accepted と Pending の間は送信します。未知の EVSE は `Rejected` |
 | UnlockConnector | 対応 | `Unlocked`。EVSE がトランザクション中なら `OngoingAuthorizedTransaction`（停止はしません）。未知の EVSE やコネクター 1 以外は `UnknownConnector` |
 | UnpublishFirmware | Not supported |  |
-| UpdateFirmware | Not supported |  |
+| UpdateFirmware | 対応 | 模擬のみ（ダウンロードも検証もしません）。DownloadScheduled（`retrieveDateTime` が未来）→ Downloading → Downloaded → SignatureVerified（`signature` があるとき）→ InstallScheduled（`installDateTime` が未来）→ トランザクションのない EVSE はトランザクションがなくなるまで `Unavailable` → Installing → InstallRebooting → 再起動（BootNotification reason `FirmwareUpdate`）→ Installed。ダウンロード失敗時は `retries` / `retryInterval`。インストール前の更新を取り消したときは `AcceptedCanceled`、インストール中は `Rejected`。時間と失敗注入は充電器ごとの `maintenance` |
 
 ## 未対応の機能
 
@@ -147,5 +151,4 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 |---|---|
 | OCPP 2.1 | v0.3 で対応予定（UI ではグレー表示） |
 | セキュリティプロファイル 3（TLS クライアント証明書）、証明書管理、Security Whitepaper のメッセージ（SecurityEventNotification など） | 対応予定 |
-| ファームウェア更新、診断 / ログのアップロードとその通知 | 対応予定（現在は CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 非対応（有償規格のため） |

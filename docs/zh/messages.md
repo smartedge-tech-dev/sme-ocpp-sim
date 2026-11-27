@@ -20,6 +20,8 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | StopTransaction | `reason`、`transactionData` |
 | MeterValues | 周期采样（`MeterValueSampleInterval`）与时钟对齐（`ClockAlignedDataInterval`）；measurand 取自 `MeterValuesSampledData`；带 `location` / `context` |
 | DataTransfer | 从 UI 或 HTTP API 手动发送 |
+| FirmwareStatusNotification | Downloading → Downloaded → Installing →（重启、BootNotification）→ Installed；失败注入时为 DownloadFailed / InstallationFailed |
+| DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
 
 交易相关消息（StartTransaction、StopTransaction、周期 MeterValues）和状态变化引起的 StatusNotification 通过同一个有序队列发送。
 因断线而没收到应答的消息会在下次 Boot 被接受后重发，因此 CSMS 可能收到两次（1.6 没有幂等键）。
@@ -34,7 +36,7 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | GetConfiguration | `key` 为空时返回全部键；未知键放入 `unknownKey`。Boot 被接受之前也会应答 |
 | ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
 | Reset | Soft / Hard：结束交易、断开、重连并重新 Boot |
-| TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification；DiagnosticsStatusNotification 和 FirmwareStatusNotification 应答 `NotImplemented` |
+| TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification / FirmwareStatusNotification / DiagnosticsStatusNotification（更新 / 上传进行中时为当前步骤，否则 `Idle`） |
 | UnlockConnector | 始终应答 `Unlocked`（其他应答暂不可配置）；该 connector 上进行中的 transaction 以 reason `UnlockCommand` 结束 |
 | ChangeAvailability | Accepted / Rejected / Scheduled（交易进行中为 Scheduled） |
 | DataTransfer | 默认应答 `UnknownVendorId` |
@@ -46,6 +48,8 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | ClearCache | 清空授权缓存；`AuthorizationCacheEnabled` 为 false 时应答 `Rejected` |
 | ReserveNow | 按 connector 状态应答 Faulted / Unavailable / Occupied，否则 Accepted；相同 `reservationId` 替换原预约；connector 0 的预约会保留一个空闲 connector（`ReserveConnectorZeroSupported` 为 false 时 `Rejected`）。被预约的 connector 报告 `Reserved`，只允许预约的 `idTag` 或以其为父标签的标签开始；`reservationId` 随 StartTransaction 发送。到期、取消、或 connector 变为 Faulted / Unavailable 时结束 |
 | CancelReservation | 已知预约应答 `Accepted`，否则 `Rejected` |
+| UpdateFirmware | 仅模拟（不实际下载）：等到 `retrieveDate`，下载失败时按 `retries` / `retryInterval` 重试；没有交易的连接器在交易全部结束前为 `Unavailable`，之后安装并重启（同 Hard Reset）。各步骤时长与失败注入：每台充电桩的 `maintenance`（`download_s`、`install_s`、`upload_s`、`retry_interval_s`、`fail_download`、`fail_install`、`fail_upload`）。尚未安装的更新被新请求替换；安装中收到的请求被忽略 |
+| GetDiagnostics | 应答 `fileName` `<id>-diagnostics-<时间>.log` 并模拟上传（不实际上传）；进行中的上传被新请求替换 |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -61,11 +65,11 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | BootNotification | 支持 | Accepted / Pending / Rejected。`reason` 为 `PowerUp`，CSMS Reset 之后为 `RemoteReset`，TriggerMessage 之后为 `Triggered`。Boot 被接受前只发送 BootNotification（Pending 期间 TriggerMessage 要求的消息除外，B02.FR.02）。Pending 期间 RequestStart/StopTransaction `Rejected`（B02.FR.05）；Rejected 期间所有 CSMS 请求应答 CALLERROR `SecurityError`（B03） |
 | ClearedChargingLimit | 支持 | 解除外部限值时发送（`chargingLimitSource` `EMS`）；仅在 Boot 被接受时，见 [Smart Charging](smart-charging.md#ocpp-201) |
 | DataTransfer | 支持 | 从 UI 或 HTTP API 手动发送 |
-| FirmwareStatusNotification | 支持 | 仅在 TriggerMessage 时发送，status `Idle`（不模拟固件更新） |
+| FirmwareStatusNotification | 支持 | UpdateFirmware 的进度（带 `requestId`）；TriggerMessage 时发送最后的 status，Installed 之后或从未发送时为 `Idle` |
 | Get15118EVCertificate | Not supported | ISO 15118 |
 | GetCertificateStatus | Not supported | ISO 15118 |
 | Heartbeat | 支持 | 每隔 `OCPPCommCtrlr.HeartbeatInterval`（被接受的 BootNotification 也会设置该值） |
-| LogStatusNotification | 支持 | 仅在 TriggerMessage 时发送，status `Idle`（不模拟日志上传） |
+| LogStatusNotification | 支持 | GetLog 的进度（Uploading → Uploaded / UploadFailure；被新 GetLog 取消的上传发送 AcceptedCanceled）；TriggerMessage 时上传中为 `Uploading`，否则 `Idle` |
 | MeterValues | 支持 | 收到 TriggerMessage 时发送（context `Trigger`，测量项取自 `AlignedDataCtrlr.Measurands`）；交易中的计量值随 TransactionEvent 发送 |
 | NotifyChargingLimit | 支持 | 设置外部限值时发送（`chargingLimitSource` `EMS`；`SmartChargingCtrlr.NotifyChargingLimitWithSchedules` 为 true 时附带计划）；仅在 Boot 被接受时，见 [Smart Charging](smart-charging.md#ocpp-201) |
 | NotifyCustomerInformation | Not supported |  |
@@ -113,7 +117,7 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
 | GetLocalListVersion | 支持 | 保存的版本号；收到第一份列表之前、或 `LocalAuthListCtrlr.Enabled` 为 false 时为 0 |
-| GetLog | Not supported |  |
+| GetLog | 支持 | `Accepted` 并返回 `filename` `<id>_<logType>_<时间>.log`；取消进行中的上传时为 `AcceptedCanceled`；上传为模拟（`maintenance` 设置） |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | 请使用 GetBaseReport |
 | GetTransactionStatus | Not supported |  |
@@ -132,10 +136,10 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | SetNetworkProfile | Not supported |  |
 | SetVariableMonitoring | Not supported |  |
 | SetVariables | 支持 | 检查取值（数据类型、上下限、取值列表）；ReadOnly 变量 `Rejected`；标记为需重启的变量应答 `RebootRequired`。修改立即生效，不会写回 YAML 文件 |
-| TriggerMessage | 支持 | BootNotification（仅在 Boot 未被接受时）、Heartbeat、StatusNotification、MeterValues、TransactionEvent（测量项取自 `TxUpdatedMeasurands`）、LogStatusNotification / FirmwareStatusNotification（status `Idle`）；其他请求的消息应答 `NotImplemented`。除 BootNotification 外，收到 BootNotification 应答前 `Rejected`，Accepted 与 Pending 期间发送；未知 EVSE `Rejected` |
+| TriggerMessage | 支持 | BootNotification（仅在 Boot 未被接受时）、Heartbeat、StatusNotification、MeterValues、TransactionEvent（测量项取自 `TxUpdatedMeasurands`）、LogStatusNotification / FirmwareStatusNotification（当前 status）；其他请求的消息应答 `NotImplemented`。除 BootNotification 外，收到 BootNotification 应答前 `Rejected`，Accepted 与 Pending 期间发送；未知 EVSE `Rejected` |
 | UnlockConnector | 支持 | `Unlocked`；EVSE 交易进行中时 `OngoingAuthorizedTransaction`（不会停止交易）；未知 EVSE 或 connector 不为 1 时 `UnknownConnector` |
 | UnpublishFirmware | Not supported |  |
-| UpdateFirmware | Not supported |  |
+| UpdateFirmware | 支持 | 仅模拟（不下载也不校验）：DownloadScheduled（`retrieveDateTime` 在未来）→ Downloading → Downloaded → SignatureVerified（带 `signature` 时）→ InstallScheduled（`installDateTime` 在未来）→ 没有交易的 EVSE 在交易全部结束前为 `Unavailable` → Installing → InstallRebooting → 重启（BootNotification reason `FirmwareUpdate`）→ Installed。下载失败时按 `retries` / `retryInterval` 重试；取消尚未安装的更新时为 `AcceptedCanceled`，安装中为 `Rejected`。时长与失败注入：每台充电桩的 `maintenance` |
 
 ## 尚不支持
 
@@ -143,5 +147,4 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 |---|---|
 | OCPP 2.1 | 计划在 v0.3 支持（UI 中灰色显示） |
 | Security Profile 3（TLS 客户端证书）、证书管理、Security Whitepaper 消息（SecurityEventNotification 等） | 计划中 |
-| 固件更新、诊断 / 日志上传及其状态通知 | 计划中（目前应答 CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 不支持（付费标准） |

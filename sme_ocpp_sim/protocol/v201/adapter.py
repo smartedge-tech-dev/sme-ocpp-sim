@@ -9,7 +9,8 @@ actions (M4: GetVariables, SetVariables, GetBaseReport; the NotifyReport parts g
 ClearChargingProfile, GetCompositeSchedule, GetChargingProfiles; ReportChargingProfiles, NotifyChargingLimit and
 ClearedChargingLimit go out with the ``send_*`` methods below) and the M6 actions (SendLocalList,
 GetLocalListVersion, ClearCache, ReserveNow, CancelReservation; ReservationStatusUpdate goes out with
-:meth:`Adapter201.send_reservation_status_update`). DataTransfer goes to the
+:meth:`Adapter201.send_reservation_status_update`) and the M7 actions (UpdateFirmware, GetLog;
+FirmwareStatusNotification / LogStatusNotification go out with the ``send_*`` methods below). DataTransfer goes to the
 station as the version-neutral domain command; a remote-control request is handed to the station as its parsed
 2.0.1 request model and the station answers with the 2.0.1 response model (the semantics are 2.0.1-specific,
 plan §11.2, so there is no domain command in between). Every other action has no handler and is answered
@@ -78,7 +79,9 @@ REMOTE_ACTIONS = ("RequestStartTransaction", "RequestStopTransaction", "UnlockCo
                   # M5 smart charging, answered the same way
                   "SetChargingProfile", "ClearChargingProfile", "GetCompositeSchedule", "GetChargingProfiles",
                   # M6 local authorization list, authorization cache, reservations, answered the same way
-                  "SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation")
+                  "SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation",
+                  # M7 firmware management, diagnostics, answered the same way
+                  "UpdateFirmware", "GetLog")
 
 _DOMAIN_AUTH = {a.value for a in (d.AuthResult.ACCEPTED, d.AuthResult.BLOCKED, d.AuthResult.EXPIRED,
                                   d.AuthResult.INVALID, d.AuthResult.CONCURRENT_TX)}

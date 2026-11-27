@@ -94,6 +94,21 @@ idTag / parentIdTag only (no parent lookup). The expiry timer runs on the wall c
 TODO(spec): the LocalListConflict StatusNotification (§3.5.2) and the cache update "upon receipt of a
 ReserveNow.conf" (§5.13, which reads like an Authorize.conf) are not sent / done.
 
+Firmware Management (M7, §4.4, §4.5, §5.9, §5.19, errata 3.12 / 3.31 / 3.47): the steps run in
+``runtime.maintenance`` (see there for the shared interpretations). UpdateFirmware: Downloading -> Downloaded ->
+[connectors without a transaction Unavailable until none is left] -> Installing -> reboot (as a Hard Reset) ->
+BootNotification -> Installed; failure injection ends it with DownloadFailed / InstallationFailed. GetDiagnostics:
+Uploading -> Uploaded / UploadFailed. TriggerMessage Firmware- / DiagnosticsStatusNotification is Accepted and sends
+the current step while an update / upload runs, else Idle (§4.4 / §4.5).
+
+Interpretations (M7, not defined by the spec): an UpdateFirmware while another update has not started installing
+replaces it (no status is sent for the old one); one received while Installing is ignored (the conf has no status
+to refuse it). A GetDiagnostics while an upload runs replaces it. GetDiagnostics always has diagnostics available
+and answers the file name ``<charger id>-diagnostics-<UTC time>.log``; ``startTime`` / ``stopTime`` are not used.
+The update survives reconnects but not a stop of the charger. A Reset during an update does not cancel it.
+While an update waits for its retrieveDate nothing has been reported yet (1.6 has no DownloadScheduled), so a
+triggered FirmwareStatusNotification sends Idle.
+
 Concurrency invariant: there is no lock around connector state. Every state check and the mutation that depends
 on it run without an ``await`` in between (single-threaded asyncio), so they are atomic.
 """
@@ -113,6 +128,7 @@ from ...charging import power
 from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
 from ...runtime.local_auth import AuthCache, LocalAuthList, Reservation
+from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
@@ -133,6 +149,11 @@ POWER = "Power.Active.Import"
 CURRENT = "Current.Import"
 VOLTAGE = "Voltage"
 SOC = "SoC"
+
+#: The firmware steps 1.6 ``FirmwareStatus`` can report (M7).
+FIRMWARE_STATES = frozenset({d.FirmwareState.DOWNLOADING, d.FirmwareState.DOWNLOADED, d.FirmwareState.DOWNLOAD_FAILED,
+                             d.FirmwareState.INSTALLING, d.FirmwareState.INSTALLED,
+                             d.FirmwareState.INSTALLATION_FAILED})
 POWER_DECIMALS = 1  # same resolution as the GetCompositeSchedule limits
 CURRENT_DECIMALS = 3
 SOC_DECIMALS = 1
@@ -268,6 +289,15 @@ class Station16(VersionStation):
         self.local_list = LocalAuthList(self.store.get_int(LIST_MAX_KEY))
         self.cache = AuthCache()
         self.reservations: Dict[int, Reservation] = {}
+        #: Firmware update / diagnostics upload (M7).
+        self.maint = Maintenance(
+            cfg.maintenance, clock=lambda: self.host.clock(), firmware_states=FIRMWARE_STATES,
+            send_firmware=lambda ev: self._maint_send(self._adapter.send_firmware_status(ev),
+                                                      "FirmwareStatusNotification"),
+            send_log=lambda ev: self._maint_send(self._adapter.send_diagnostics_status(ev),
+                                                 "DiagnosticsStatusNotification"),
+            busy=lambda: any(c.tx is not None for c in self.conns.values()),
+            hold_changed=self._refresh_all, reboot=functools.partial(self._do_reset, d.ResetKind.HARD))
 
         self._outq: Deque[_OutMsg] = deque()
         self._outq_wake = asyncio.Event()
@@ -298,6 +328,8 @@ class Station16(VersionStation):
             d.ClearCache: self._clear_cache,
             d.ReserveNow: self._reserve_now,
             d.CancelReservation: self._cancel_reservation,
+            d.UpdateFirmware: self._update_firmware,
+            d.GetDiagnostics: self._get_diagnostics,
         }
 
     # ================================================================== session (called by the shell)
@@ -326,6 +358,7 @@ class Station16(VersionStation):
         for r in list(self.reservations.values()):
             if r.timer is None:  # cancelled by close(): the charger was stopped and started again
                 self._arm(r)
+        self.maint.on_online()
 
     def on_session_ended(self) -> None:
         for c in self.conns.values():
@@ -358,6 +391,7 @@ class Station16(VersionStation):
             "reservations": [_reservation_view(r) for r in self.reservations.values()],
             "station": {"status": self.cp_state.status.value, "operative": self._station_operative},
             "connectors": [conn(c) for c in self.conns.values()],
+            **self.maint.snapshot(),
         }
 
     # ================================================================== configuration changes
@@ -487,10 +521,14 @@ class Station16(VersionStation):
 
     # ================================================================== status
 
+    def _usable(self, c: _Conn) -> bool:
+        """Operative and not held Unavailable by a firmware update waiting to install (``runtime.maintenance``)."""
+        return c.operative and not (self.maint.hold and c.tx is None)
+
     def _target(self, c: _Conn) -> S:
         if c.fault:
             return S.FAULTED
-        if not c.operative:
+        if not self._usable(c):
             return S.UNAVAILABLE
         if c.tx is not None:
             # Charging only once the CSMS answered StartTransaction; then the power model may suspend it.
@@ -613,7 +651,7 @@ class Station16(VersionStation):
     def _free(self, c: _Conn) -> bool:
         """``c`` could serve a connector-0 reservation now: no fault, operative, no transaction, no waiting tag,
         not reserved itself. A plugged cable does not count (it authorizes nothing; module docstring)."""
-        return (not c.fault and c.operative and c.tx is None and c.pending_tag is None
+        return (not c.fault and self._usable(c) and c.tx is None and c.pending_tag is None
                 and self._specific(c) is None)
 
     def _held_for_zero(self, c: _Conn) -> bool:
@@ -688,6 +726,7 @@ class Station16(VersionStation):
         """The charger stops: cancel the reservation expiry timers (re-armed by :meth:`on_online`)."""
         for r in self.reservations.values():
             r.cancel_timer()
+        self.maint.close()
 
     def _drop_reservation(self, r: Reservation, why: str) -> None:
         if self.reservations.get(r.id) is not r:
@@ -734,13 +773,13 @@ class Station16(VersionStation):
                 return RS.ACCEPTED
             if all(c.fault for c in self.conns.values()):
                 return RS.FAULTED
-            if all(not c.operative for c in self.conns.values()):
+            if all(not self._usable(c) for c in self.conns.values()):
                 return RS.UNAVAILABLE
             return RS.OCCUPIED
         c = self.conns[connector]
         if c.fault:
             return RS.FAULTED
-        if not c.operative:
+        if not self._usable(c):
             return RS.UNAVAILABLE
         if c.plugged or not self._free(c) or self._held_for_zero(c):
             return RS.OCCUPIED
@@ -858,7 +897,7 @@ class Station16(VersionStation):
         No await until the StartTransaction item is queued: checks and changes below are atomic."""
         if c.tx is not None:
             return A.BUSY
-        if c.fault or not c.operative:
+        if c.fault or not self._usable(c):
             return A.UNAVAILABLE
         c.finishing = False
         if not c.plugged:
@@ -964,6 +1003,7 @@ class Station16(VersionStation):
         self._refresh(c)
         if station:
             self._refresh_station()
+        self.maint.wake()
 
     def _stop_msg(self, c: _Conn, tx: _Tx) -> _OutMsg:
         st = tx.ended
@@ -1043,7 +1083,7 @@ class Station16(VersionStation):
             return d.CommandStatus.REJECTED  # TODO(spec): RemoteStart before an accepted boot is rejected
 
         def free(c: _Conn) -> bool:
-            return (c.tx is None and c.operative and not c.fault and c.pending_tag is None
+            return (c.tx is None and self._usable(c) and not c.fault and c.pending_tag is None
                     and self._reservation_for(c, cmd.id_token, None)[0])
 
         if cmd.evse_id is None:
@@ -1119,9 +1159,45 @@ class Station16(VersionStation):
             # TODO(spec): connectorId 0 / absent triggers a reading per connector (no main meter is simulated).
             targets = [c for c in self.conns.values() if cmd.evse_id in (None, 0, c.id)]
             self.host.after_reply(functools.partial(self._send_readings, targets))
+        elif what is d.TriggerWhat.FIRMWARE_STATUS:
+            # §4.5: Idle only when no update is running, else the current step.
+            st = self.maint.firmware_status if self.maint.firmware_busy else None
+            ev = d.FirmwareStatus(st or d.FirmwareState.IDLE)
+            self.host.after_reply(functools.partial(self._maint_send, self._adapter.send_firmware_status(ev),
+                                                    "FirmwareStatusNotification", triggered=True))
+        elif what is d.TriggerWhat.DIAGNOSTICS_STATUS:
+            st_log = self.maint.log_status if self.maint.log_busy else None
+            ev_log = d.LogStatus(st_log or d.LogState.IDLE)
+            self.host.after_reply(functools.partial(self._maint_send, self._adapter.send_diagnostics_status(ev_log),
+                                                    "DiagnosticsStatusNotification", triggered=True))
         else:
             return d.CommandStatus.NOT_IMPLEMENTED
         return d.CommandStatus.ACCEPTED
+
+    # ------------------------------------------------------------------ firmware / diagnostics (M7)
+
+    async def _maint_send(self, aw: Awaitable[Any], what: str, *, triggered: bool = False) -> None:
+        """Progress needs an accepted boot; a triggered status only a connection."""
+        if not (self.host.connected if triggered else self.host.online):
+            aw.close()  # type: ignore[attr-defined]
+            log.info("%s: %s not sent (not online)", self.cfg.id, what)
+            return
+        await self.host.safe(aw, what)
+
+    def _update_firmware(self, cmd: d.UpdateFirmware) -> None:
+        if self.maint.installing:
+            log.info("%s: UpdateFirmware ignored: a firmware update is installing", self.cfg.id)
+            return
+        job = FirmwareJob(cmd.location, cmd.retrieve_at, retries=cmd.retries, retry_interval_s=cmd.retry_interval_s)
+        self.maint.cancel_firmware()
+        self.host.after_reply(functools.partial(self.maint.start_firmware, job))
+
+    def _get_diagnostics(self, cmd: d.GetDiagnostics) -> Optional[str]:
+        name = f"{self.cfg.id}-diagnostics-{self.host.clock().strftime('%Y%m%dT%H%M%SZ')}.log"
+        job = LogJob(cmd.location, name, retries=cmd.retries, retry_interval_s=cmd.retry_interval_s)
+        self.maint.cancel_log()
+        self.host.after_reply(functools.partial(self.maint.start_log, job))
+        return name
 
     async def _send_statuses(self, states: List[ConnectorState]) -> None:
         for st in states:
@@ -1187,7 +1263,7 @@ class Station16(VersionStation):
         if c.plugged:
             return
         c.plugged = True
-        if c.pending_tag and c.operative and not c.fault:
+        if c.pending_tag and self._usable(c) and not c.fault:
             await self._start_tx(c, c.pending_tag, c.pending_profile)  # with its pending_reservation
         else:
             self._refresh(c)
@@ -1220,7 +1296,7 @@ class Station16(VersionStation):
                 self._end_tx(c, R.LOCAL, tx=tx)
                 return A.STOPPED
             return A.BUSY  # TODO(spec): stopping with a different tag of the same parent id is not simulated
-        if c.fault or not c.operative:
+        if c.fault or not self._usable(c):
             return A.UNAVAILABLE
         if not self._reservation_for(c, id_tag, None)[0] and not self._parent_may_help(c, id_tag):
             return A.RESERVED  # reserved for another tag: refused without asking the CSMS

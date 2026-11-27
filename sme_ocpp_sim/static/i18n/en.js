@@ -40,6 +40,8 @@ Shell.addStrings("en", {
   "detail.heartbeat": "heartbeat {t}",
   "detail.tx_queue": "{n} queued",
   "detail.local_list": "Local list v{n}",
+  "detail.firmware": "Firmware {s}",
+  "detail.log": "Log upload {s}",
   "detail.last_error": "Last error: {e}",
   "detail.connector": "Connector {n}",
   "detail.plugged": "plugged in",

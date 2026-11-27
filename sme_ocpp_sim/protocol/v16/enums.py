@@ -286,3 +286,23 @@ class ReservationStatus(str, Enum):
 class CancelReservationStatus(str, Enum):
     accepted = "Accepted"
     rejected = "Rejected"
+
+
+# --- Firmware Management (M7) -----------------------------------------------------------
+
+
+class FirmwareStatus(str, Enum):
+    downloaded = "Downloaded"
+    download_failed = "DownloadFailed"
+    downloading = "Downloading"
+    idle = "Idle"
+    installation_failed = "InstallationFailed"
+    installing = "Installing"
+    installed = "Installed"
+
+
+class DiagnosticsStatus(str, Enum):
+    idle = "Idle"
+    uploaded = "Uploaded"
+    upload_failed = "UploadFailed"
+    uploading = "Uploading"
