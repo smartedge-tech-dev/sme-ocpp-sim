@@ -103,6 +103,8 @@ def test_firmware_update_installs_reboots_and_reports_installed(version):
         if not _v16(version):
             assert set(peer.history[0].firmware_request_ids + peer.history[1].firmware_request_ids) == {5}
             assert any('"FirmwareUpdate"' in raw for d, raw in peer.history[1].frames if d == "rx")
+        # The peer can see Installed a moment before the job task itself returns.
+        await _until(lambda: not rt.station.maint.firmware_busy)
         assert rt.snapshot()["firmware"] == {"status": "Installed", "request_id": None if _v16(version) else 5,
                                              "busy": False}
     _scenario(body, cfg_kw=_maint(), version=version)
