@@ -37,6 +37,7 @@ written to the file only by `POST /api/config/save`.
 
 | Method | Path | Body |
 |---|---|---|
+| GET | `/api/chargers/{id}` | — the charger's snapshot plus `fault_codes`, the fault codes of its OCPP version |
 | POST | `/api/chargers/{id}/connect` | — (starts the connection loop) |
 | POST | `/api/chargers/{id}/disconnect` | — (stays disconnected until `connect`; transactions survive like a network loss) |
 | POST | `/api/chargers/{id}/plug` | `{"connector": 1}` |
@@ -44,7 +45,7 @@ written to the file only by `POST /api/config/save`.
 | POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` is required |
 | POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — plug in and swipe; `id_tag` defaults to the first configured tag (`400` when there is none); `400` when the connector already has a transaction or is faulted |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — a 1.6 `ChargePointErrorCode`; ends a running transaction with reason `Other` and reports `Faulted` |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — one of the charger's `fault_codes` (1.6: `ChargePointErrorCode`), `400` otherwise; ends a running transaction with reason `Other` and reports `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — back to Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}` (charger → CSMS) |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`, `["CP-0001"]` or `{"all": true}` |

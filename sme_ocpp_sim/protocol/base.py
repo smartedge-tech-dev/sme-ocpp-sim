@@ -4,8 +4,8 @@ The runtime only speaks these types; a :class:`VersionAdapter` translates them t
 messages. Domain shape follows 2.0.1 (Station -> EVSE -> Connector); 1.6 projects 1 connector per EVSE with
 ``connectorId == evse_id`` and ``evse_id == 0`` meaning the whole charger.
 
-The only product imports are the version-neutral charging types (``charging.profiles`` / ``charging.composite``),
-which the smart-charging commands carry.
+There are no product imports. The smart-charging commands carry version-specific payloads (charging profile,
+purpose, unit, composite schedule); their fields are typed ``Any`` and documented with the 1.6 type.
 """
 
 from __future__ import annotations
@@ -15,9 +15,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
-
-from ..charging.composite import CompositeSchedule
-from ..charging.profiles import ChargingProfile, ChargingProfilePurpose, ChargingRateUnit
 
 # --------------------------------------------------------------------------------------------- status
 
@@ -77,7 +74,7 @@ class RequestStart:
     evse_id: Optional[int]
     id_token: str
     #: TxProfile without transactionId; bound to the transaction this request starts (1.6 §5.16.2).
-    profile: Optional[ChargingProfile] = None
+    profile: Optional[Any] = None  # version profile type (1.6: protocol.v16.profiles.ChargingProfile)
 
 
 @dataclass(frozen=True)
@@ -124,14 +121,14 @@ class Trigger:
 @dataclass(frozen=True)
 class SetProfile:
     evse_id: int  # 0 = whole charger
-    profile: ChargingProfile
+    profile: Any  # version profile type (1.6: protocol.v16.profiles.ChargingProfile)
 
 
 @dataclass(frozen=True)
 class ClearProfiles:
     profile_id: Optional[int] = None
     evse_id: Optional[int] = None
-    purpose: Optional[ChargingProfilePurpose] = None
+    purpose: Optional[Any] = None  # version purpose enum (1.6: profiles.ChargingProfilePurpose)
     stack_level: Optional[int] = None
 
 
@@ -139,7 +136,7 @@ class ClearProfiles:
 class GetComposite:
     evse_id: int
     duration: int  # seconds
-    unit: Optional[ChargingRateUnit] = None  # None = W
+    unit: Optional[Any] = None  # version unit enum (1.6: profiles.ChargingRateUnit); None = W
 
 
 @dataclass(frozen=True)
@@ -193,7 +190,7 @@ class GetCompositeResult:
     evse_id: Optional[int] = None
     schedule_start: Optional[datetime] = None
     #: Every period has a limit (the runtime fills unconstrained intervals with the hardware maximum).
-    schedule: Optional[CompositeSchedule] = None
+    schedule: Optional[Any] = None  # version schedule (1.6: protocol.v16.composite.CompositeSchedule)
 
 
 @dataclass(frozen=True)

@@ -37,13 +37,14 @@ CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答
 | メソッド | パス | ボディ |
 |---|---|---|
 | POST | `/api/chargers/{id}/connect` | なし（接続ループを開始） |
+| GET | `/api/chargers/{id}` | なし — 充電器のスナップショットと、その OCPP バージョンの故障コード `fault_codes` |
 | POST | `/api/chargers/{id}/disconnect` | なし（`connect` まで切断状態を維持。トランザクションはネットワーク断と同様に継続） |
 | POST | `/api/chargers/{id}/plug` | `{"connector": 1}` |
 | POST | `/api/chargers/{id}/unplug` | `{"connector": 1}` |
 | POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` は必須 |
 | POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — プラグを挿してスワイプ。`id_tag` の既定は最初に設定されたタグ（ない場合は `400`）。トランザクション中または故障中のコネクタは `400` |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — 1.6 の `ChargePointErrorCode`。実行中のトランザクションを理由 `Other` で終了し、`Faulted` を報告します |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — 充電器の `fault_codes` のいずれか（1.6 は `ChargePointErrorCode`。それ以外は `400`）。実行中のトランザクションを理由 `Other` で終了し、`Faulted` を報告します |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — Available / Preparing に戻します |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充電器 → CSMS） |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` または `{"all": true}` |

@@ -65,7 +65,7 @@ def test_many_chargers_stay_connected(monkeypatch):
             rts = engine.chargers.values()
             timeouts = sum(1 for f in engine.frame_log.since(0) if "timeout" in f.note.lower())
             reconnects = sum(rt.connect_attempts - 1 for rt in rts)
-            charging = sum(1 for rt in rts if rt.conns[1].tx is not None)
+            charging = sum(1 for rt in rts if rt.station.conns[1].tx is not None)
             print(f"\nload: {N} chargers x {SECONDS:g}s, heartbeat {HEARTBEAT}s, meter {METER}s: "
                   f"online {sum(rt.online for rt in rts)}/{N}, charging {charging}, reconnects {reconnects}, "
                   f"timeout notes {timeouts}, CPU {cpu:.0%} of one core, max loop lag {lag * 1000:.0f} ms, "

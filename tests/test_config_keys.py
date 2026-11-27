@@ -2,7 +2,7 @@ import pytest
 
 from sme_ocpp_sim.protocol.base import ConfigKeyDef, ConfigStatus, KeyType
 from sme_ocpp_sim.protocol.v16.config_keys import KEYS, KEYS_BY_NAME
-from sme_ocpp_sim.runtime.config_store import ConfigStore, normalize
+from sme_ocpp_sim.protocol.v16.config_store import ConfigStore, normalize
 
 # ------------------------------------------------------------------ table sanity
 
@@ -103,7 +103,7 @@ def test_listeners(store):
 
 def test_str_normalize_returns_stripped_value():
     from sme_ocpp_sim.protocol.base import ConfigKeyDef, KeyType
-    from sme_ocpp_sim.runtime.config_store import normalize
+    from sme_ocpp_sim.protocol.v16.config_store import normalize
     free = ConfigKeyDef("X", KeyType.STR, False, "")
     assert normalize(free, "  abc ") == "abc"
     choice = ConfigKeyDef("Y", KeyType.STR, False, "a", allowed=frozenset({"a", "b"}))
@@ -113,7 +113,7 @@ def test_str_normalize_returns_stripped_value():
 @pytest.mark.parametrize("raw, want", [("10", "10"), (" 007 ", "7"), ("0", "0"), ("1_0", None), ("+5", None),
                                        ("-1", None), ("١٢", None), ("1.0", None), ("", None)])
 def test_int_accepts_only_ascii_digits(raw, want):
-    from sme_ocpp_sim.runtime.config_store import normalize
+    from sme_ocpp_sim.protocol.v16.config_store import normalize
     assert normalize(KEYS_BY_NAME["HeartbeatInterval"], raw) == want
 
 

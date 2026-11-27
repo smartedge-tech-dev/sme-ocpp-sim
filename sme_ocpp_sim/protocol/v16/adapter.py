@@ -9,7 +9,7 @@ Outbound: ``send_*`` build 1.6 requests from domain events and parse the respons
 Transaction ids are 1.6 integers on the wire and strings in the domain.
 
 Smart charging (1.6 §3.13, §5.7, §5.16, §6.13, §7.13; errata v4.0): ``csChargingProfiles`` / ``chargingProfile``
-become :class:`charging.profiles.ChargingProfile` (naive datetimes are taken as UTC). An invalid
+become :class:`protocol.v16.profiles.ChargingProfile` (naive datetimes are taken as UTC). An invalid
 ``chargingRateUnit`` (like any other invalid enum value) is CALLERROR PropertyConstraintViolation (errata 3.24),
 raised by the codec.
 
@@ -35,7 +35,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from ...charging import profiles as cp
+from . import profiles as cp
 from ...rpc.errors import OCPP16_ERRORS, CallError
 from .. import base as d
 from . import models as m

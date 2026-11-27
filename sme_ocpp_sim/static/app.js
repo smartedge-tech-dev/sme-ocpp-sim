@@ -33,10 +33,9 @@ const PRODUCT = {
     <rect x="25.5" y="6" width="10" height="10" fill="#087def"/></svg>`,
 };
 
-// OCPP 1.6 ChargePointErrorCode values an operator may set (web.py FAULT_CODES; protocol values, not translated).
-const FAULT_CODES = ["ConnectorLockFailure", "EVCommunicationError", "GroundFailure", "HighTemperature",
-  "InternalError", "LocalListConflict", "OtherError", "OverCurrentFailure", "OverVoltage", "PowerMeterFailure",
-  "PowerSwitchFailure", "ReaderFailure", "ResetFailure", "UnderVoltage", "WeakSignal"];
+// Fault codes depend on the charger's OCPP version: the fault dialog loads them from GET /api/chargers/{id} each
+// time it opens (protocol values, not translated), so a version change in the settings is picked up.
+const DEFAULT_FAULT = "OtherError";
 const TIME_SCALES = [1, 2, 5, 10, 60];
 const MAX_FRAMES = 2000;          // frames kept client side
 const MAX_FRAME_ROWS = 500;       // frame rows in the DOM
@@ -380,6 +379,12 @@ function checkTag() {
 }
 
 async function faultThen(id, conn) {
+  let codes;
+  try {
+    codes = (await api("GET", `/api/chargers/${enc(id)}`)).fault_codes || [];
+  } catch (e) { fail(e); return; }
+  $("faultCode").replaceChildren(...codes.map((c) => h("option", { value: c }, c)));
+  if (codes.includes(DEFAULT_FAULT)) $("faultCode").value = DEFAULT_FAULT;
   $("faultTitle").textContent = t("op.fault.title", { id, n: conn });
   if (await ask($("dlgFault"))) op(id, "fault", { connector: conn, error_code: $("faultCode").value });
 }
@@ -918,8 +923,6 @@ $("simScale").addEventListener("change", (e) => setSim({ time_scale: Number(e.ta
 
 // ------------------------------------------------------------------ wiring
 
-$("faultCode").replaceChildren(...FAULT_CODES.map((c) => h("option", { value: c }, c)));
-$("faultCode").value = "OtherError";
 versionOptions($("setVersion"), false);
 versionOptions($("setCVersion"), true);
 $("setPassword").placeholder = t("settings.password.ph");

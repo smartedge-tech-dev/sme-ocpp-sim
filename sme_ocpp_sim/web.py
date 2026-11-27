@@ -4,12 +4,13 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
 ``/api/simulation``, ``/ws``, the ``/sme-sim-common`` and ``/static`` mounts) come from
 ``sme_sim_common.web.make_base_app`` (devices = ``chargers``, key = ``id``). This module adds the OCPP routes:
 
+* ``GET /api/chargers/{id}`` - the charger's snapshot plus ``fault_codes``, the fault codes of its OCPP version;
 * ``POST /api/chargers/{id}/{connect,disconnect}`` - start / stop the connection loop (engine level; a disconnect
   is sticky until ``connect``, transactions survive it like a network loss);
 * ``POST /api/chargers/{id}/{plug,unplug,swipe,start,stop,fault,clear-fault}`` - body ``{"connector": 1, ...}``
-  (``id_tag`` for swipe / start, ``error_code`` for fault: a 1.6 ``ChargePointErrorCode``, default
-  ``OtherError``; a fault ends a running transaction with reason ``Other`` and reports ``Faulted``, clear-fault
-  returns the connector to Available / Preparing);
+  (``id_tag`` for swipe / start, ``error_code`` for fault: one of the charger's ``fault_codes`` (1.6:
+  ``ChargePointErrorCode``), default ``OtherError``; a fault ends a running transaction with reason ``Other``
+  and reports ``Faulted``, clear-fault returns the connector to Available / Preparing);
 * ``POST /api/chargers/{id}/datatransfer`` - body ``{"vendor_id", "message_id", "data"}``, CP -> CSMS;
 * ``GET /api/chargers/{id}/profiles?connector=`` - installed charging profiles;
 * ``GET /api/chargers/{id}/composite?connector=&duration=&unit=`` - the GetCompositeSchedule answer computed
@@ -80,16 +81,18 @@ from starlette.responses import JSONResponse, PlainTextResponse, StreamingRespon
 from starlette.routing import Route
 
 from . import __version__
-from .charging.profiles import ChargingRateUnit
 from .config import PASSWORD_MASK, CsmsDefaults, SimConfig
 from .engine import OcppEngine, OperationNotPossible
 from .protocol.base import DataTransferStatus
-from .protocol.v16.enums import ChargePointErrorCode
+from .protocol.registry import get_station_class, list_versions
 from .rpc.errors import CallError
 
 STATIC = Path(__file__).resolve().parent / "static"
-#: Fault codes an operator may set (1.6 ``ChargePointErrorCode`` without ``NoError``).
-FAULT_CODES = tuple(e.value for e in ChargePointErrorCode if e is not ChargePointErrorCode.no_error)
+#: Fault codes an operator may set on some charger: the union over the available OCPP versions (each version's
+#: station provides its own; 1.6 = ``ChargePointErrorCode`` without ``NoError``). ``POST .../fault`` also checks
+#: the charger's own list, which ``GET /api/chargers/{id}`` returns.
+FAULT_CODES = tuple(dict.fromkeys(code for v in list_versions() if v.available
+                                  for code in get_station_class(v.version).fault_codes))
 #: Literal type of :data:`FAULT_CODES` (an enum in the OpenAPI schema).
 FaultCode = Literal[FAULT_CODES]  # type: ignore[valid-type]
 MAX_FRAMES = 5000
@@ -323,6 +326,13 @@ def _router(engine: OcppEngine) -> APIRouter:
         ids = bulk_ids(body)
         return {"ok": True, "changed": {cid: await engine_op(engine.disconnect, cid) for cid in ids}}
 
+    @r.get("/chargers/{cid}", summary="One charger: its snapshot plus the fault codes of its OCPP version")
+    async def charger(cid: str):
+        try:
+            return engine.charger_detail(cid)
+        except KeyError:
+            raise bad(404, f"unknown charger {cid!r}") from None
+
     @r.post("/chargers/{cid}/connect", summary="Start the connection loop")
     async def connect(cid: str):
         return {"ok": True, "changed": await engine_op(engine.connect, cid)}
@@ -384,6 +394,8 @@ def _router(engine: OcppEngine) -> APIRouter:
     async def fault(cid: str, body: FaultBody = Body(default_factory=FaultBody)):
         rt = runtime(cid)
         conn_ok(rt, body.connector)
+        if body.error_code not in rt.fault_codes:
+            raise bad(400, f"error_code {body.error_code!r} is not a fault code of OCPP {rt.adapter.version}")
         await rt.fault(body.connector, body.error_code)
         return {"ok": True}
 
@@ -428,7 +440,7 @@ def _router(engine: OcppEngine) -> APIRouter:
         cid_ = connector if connector is not None else (evse if evse is not None else 0)
         if cid_:
             conn_ok(rt, cid_)
-        res = rt.composite(cid_, duration, ChargingRateUnit(unit) if unit else None)
+        res = rt.composite(cid_, duration, unit)
         if res.schedule is None:
             raise bad(400, f"composite schedule rejected ({res.status.value})")
         return {"connector": cid_, "schedule_start": res.schedule_start, **jsonable_encoder(res.schedule)}
@@ -491,7 +503,7 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.get("/chargers/{cid}/configuration", summary="Run-time configuration keys (as GetConfiguration sees them)")
     async def configuration(cid: str):
-        known, _ = runtime(cid).store.get()
+        known = runtime(cid).configuration()
         return {"keys": [{"key": e.key, "readonly": e.readonly, "value": e.value} for e in known]}
 
     def frame_filters(charger, action, dir_):

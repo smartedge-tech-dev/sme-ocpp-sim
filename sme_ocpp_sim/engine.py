@@ -402,6 +402,11 @@ class OcppEngine(BaseEngine):
 
     # ------------------------------------------------------------ operator (Web API, M6)
 
+    def charger_detail(self, cid: str) -> Dict[str, Any]:
+        """The snapshot of charger ``cid`` plus ``fault_codes`` (its version's); ``KeyError`` when there is none."""
+        rt = self.charger(cid)
+        return {**self._charger_snapshot(cid, rt), "fault_codes": list(rt.fault_codes)}
+
     def charger(self, cid: str) -> ChargerRuntime:
         """The runtime of charger ``cid``; ``KeyError`` when there is none."""
         return self.state[cid].runtime

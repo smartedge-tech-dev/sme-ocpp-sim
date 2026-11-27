@@ -49,7 +49,7 @@ def _statuses(s, cid):
 
 
 async def _online(peer, rt):
-    await _until(lambda: rt.online and CP in peer.sessions and len(peer.sessions[CP].statuses) >= 1 + len(rt.conns))
+    await _until(lambda: rt.online and CP in peer.sessions and len(peer.sessions[CP].statuses) >= 1 + len(rt.station.conns))
     return peer.sessions[CP]
 
 
@@ -59,10 +59,10 @@ def test_boot_accepted_heartbeats_and_status():
         assert sorted(c for c, _, _ in s.statuses) == [0, 1, 2]
         assert all(st == "Available" and e == "NoError" for _, st, e in s.statuses)
         await _until(lambda: s.heartbeats >= 2)
-        assert rt.store.value("HeartbeatInterval") == "1"
+        assert rt.station.store.value("HeartbeatInterval") == "1"
         snap = rt.snapshot()
         assert snap["registration"] == "Accepted" and snap["boots"] == 1 and snap["last_heartbeat"]
-        assert rt.store.value("NumberOfConnectors") == "2"
+        assert rt.station.store.value("NumberOfConnectors") == "2"
     _scenario(body, {"hb_interval": 1}, {"connectors": 2})
 
 
@@ -153,9 +153,9 @@ def test_misc_remote_control():
         assert (await peer.change_configuration(CP, "HeartbeatInterval", "7")).status == "Accepted"
         assert (await peer.change_configuration(CP, "NumberOfConnectors", "3")).status == "Rejected"
         assert (await peer.change_configuration(CP, "NoSuchKey", "1")).status == "NotSupported"
-        assert rt.store.value("HeartbeatInterval") == "7"
+        assert rt.station.store.value("HeartbeatInterval") == "7"
         r = await peer.get_configuration(CP)
-        assert len(r.configuration_key) == len(rt.store.get()[0]) and not r.unknown_key
+        assert len(r.configuration_key) == len(rt.station.store.get()[0]) and not r.unknown_key
         n = len(s.statuses)
         assert (await peer.trigger(CP, "StatusNotification", 1)).status == "Accepted"
         await _until(lambda: len(s.statuses) == n + 1)
@@ -313,24 +313,24 @@ def test_swipe_rechecks_state_after_authorize():
     async def body(peer, rt):
         await _online(peer, rt)
         await rt.plug(1)
-        real = rt._authorize
+        real = rt.station._authorize
 
         async def auth_then_fault(tag):
             res = await real(tag)
             await rt.fault(1, "GroundFailure")
             return res
-        rt._authorize = auth_then_fault
+        rt.station._authorize = auth_then_fault
         assert await rt.swipe(1, "T") == "Unavailable"
         await rt.clear_fault(1)
 
         async def auth_then_other_start(tag):
             res = await real(tag)
-            await rt._start_tx(rt.conns[1], "OTHER")
+            await rt.station._start_tx(rt.station.conns[1], "OTHER")
             return res
-        rt._authorize = auth_then_other_start
+        rt.station._authorize = auth_then_other_start
         assert await rt.swipe(1, "T") == "Busy"
         assert rt.snapshot()["connectors"][0]["transaction"]["id_tag"] == "OTHER"
-        rt._authorize = real
+        rt.station._authorize = real
         assert await rt.swipe(1, "X") == "Busy"
         assert await rt.swipe(1, "OTHER") == "Stopped"
     _scenario(body, cfg_kw={"auth_mode": "accept_all"})
@@ -339,7 +339,7 @@ def test_swipe_rechecks_state_after_authorize():
 def test_heartbeat_interval_change_takes_effect_promptly():
     async def body(peer, rt):
         s = await _online(peer, rt)
-        assert rt.store.value("HeartbeatInterval") == "30" and s.heartbeats == 0
+        assert rt.station.store.value("HeartbeatInterval") == "30" and s.heartbeats == 0
         assert (await peer.change_configuration(CP, "HeartbeatInterval", "1")).status == "Accepted"
         await _until(lambda: s.heartbeats >= 1, timeout=4)
     _scenario(body)
@@ -422,7 +422,7 @@ def test_lost_answer_keeps_start_queued_and_resends_it():
         gate.set()
         await _until(lambda: len(peer.history) == 2 and rt.snapshot()["connectors"][0]["status"] == "Charging")
         s2 = peer.history[1]
-        assert rt.conns[1].tx.tx_id == str(s2.starts[-1]["transaction_id"])
+        assert rt.station.conns[1].tx.tx_id == str(s2.starts[-1]["transaction_id"])
         await _until(lambda: (1, "Charging", "NoError") in s2.statuses)
     _scenario(body, cfg_kw={"auth_mode": "accept_all"})
 
@@ -435,7 +435,7 @@ def test_reset_during_inflight_start():
         swipe = asyncio.create_task(rt.swipe(1, "T"))
         await _until(lambda: _rx_seen(s, "StartTransaction"))
         reset = asyncio.create_task(peer.reset(CP, "Soft"))  # answered once the peer reads again
-        await _until(lambda: rt.conns[1].tx is None)  # Reset ended the pending transaction
+        await _until(lambda: rt.station.conns[1].tx is None)  # Reset ended the pending transaction
         gate.set()
         assert await swipe == "Accepted" and (await reset).status == "Accepted"
         await _until(lambda: len(peer.history) == 2 and rt.online)
@@ -458,7 +458,7 @@ def test_reset_waits_for_stop_queued_by_inflight_start_answer():
         swipe = asyncio.create_task(rt.swipe(1, "T"))
         await _until(lambda: _rx_seen(s, "StartTransaction"))
         reset = asyncio.create_task(peer.reset(CP, "Soft"))
-        await _until(lambda: rt.conns[1].tx is None)  # Reset ended the pending transaction, no Stop queued yet
+        await _until(lambda: rt.station.conns[1].tx is None)  # Reset ended the pending transaction, no Stop queued yet
         gate.set()
         assert await swipe == "Accepted" and (await reset).status == "Accepted"
         await _until(lambda: len(peer.history) == 2 and rt.online)
@@ -473,16 +473,16 @@ def test_exception_applying_start_answer_restarts_session():
     async def body(peer, rt):
         await _online(peer, rt)
         await rt.plug(1)
-        real = rt._on_started
+        real = rt.station._on_started
 
         def boom(c, tx, res):
-            rt._on_started = real
+            rt.station._on_started = real
             raise RuntimeError("injected")
-        rt._on_started = boom
+        rt.station._on_started = boom
         async with asyncio.timeout(5):
             assert await rt.swipe(1, "T") == "Error"
         await _until(lambda: len(peer.history) == 2 and rt.online)
-        assert rt.conns[1].tx is None and rt.snapshot()["tx_queue"] == 0
+        assert rt.station.conns[1].tx is None and rt.snapshot()["tx_queue"] == 0
         assert rt.snapshot()["connectors"][0]["status"] == "Preparing"  # plugged, no transaction
         assert await rt.swipe(1, "T") == "Accepted"  # the new session's worker runs
     _scenario(body, cfg_kw={"auth_mode": "accept_all"})
@@ -491,27 +491,27 @@ def test_exception_applying_start_answer_restarts_session():
 def test_rejected_remote_start_keeps_newer_pending_tag():
     async def body(peer, rt):
         await _online(peer, rt)
-        c = rt.conns[1]
+        c = rt.station.conns[1]
 
         async def other_start_then_reject(tag):
-            assert await rt._start_tx(c, "OTHER") == "Accepted"  # unplugged: OTHER waits for the cable
+            assert await rt.station._start_tx(c, "OTHER") == "Accepted"  # unplugged: OTHER waits for the cable
             return AuthResult.INVALID
         c.pending_tag = "R1"  # reserved by RequestStartTransaction
-        rt._authorize = other_start_then_reject
-        await rt._remote_start_go(c, "R1")
+        rt.station._authorize = other_start_then_reject
+        await rt.station._remote_start_go(c, "R1")
         assert c.pending_tag == "OTHER"
         c.pending_tag = "R2"
 
         async def reject(tag):
             return AuthResult.INVALID
-        rt._authorize = reject
-        await rt._remote_start_go(c, "R2")
+        rt.station._authorize = reject
+        await rt.station._remote_start_go(c, "R2")
         assert c.pending_tag is None
     _scenario(body, cfg_kw={"auth_mode": "accept_all", "config_keys": {"AuthorizeRemoteTxRequests": "true"}})
 
 
 def test_queue_bound_drops_oldest_meter_values_only(monkeypatch):
-    from sme_ocpp_sim.runtime import charger as ch
+    from sme_ocpp_sim.protocol.v16 import station as ch
     monkeypatch.setattr(ch, "MAX_TX_QUEUE", 2)
 
     async def main():
@@ -522,7 +522,7 @@ def test_queue_bound_drops_oldest_meter_values_only(monkeypatch):
         kinds = [ch._Kind.STOP, ch._Kind.METER, ch._Kind.METER, ch._Kind.START, ch._Kind.METER]
         msgs = [ch._OutMsg(k, noop) for k in kinds]
         for m in msgs:
-            rt._outq_push(m)
-        assert list(rt._outq) == [msgs[0], msgs[2], msgs[3], msgs[4]]
+            rt.station._outq_push(m)
+        assert list(rt.station._outq) == [msgs[0], msgs[2], msgs[3], msgs[4]]
         assert rt.snapshot()["tx_queue"] == 4
     asyncio.run(main())

@@ -45,7 +45,7 @@ def _conn1(rt):
 async def _charge(rt):
     await rt.plug(1)
     await rt.swipe(1, "TAG")
-    await _until(lambda: rt.conns[1].tx is not None and rt.conns[1].tx.tx_id is not None)
+    await _until(lambda: rt.station.conns[1].tx is not None and rt.station.conns[1].tx.tx_id is not None)
 
 
 def _run(body, ids=("A", "B", "C"), **charger_kw):
@@ -120,7 +120,7 @@ def test_rolled_back_charger_keeps_its_transaction():
     async def body(peer, engine):
         old = engine.chargers
         await _charge(old["B"])
-        tx = old["B"].conns[1].tx
+        tx = old["B"].station.conns[1].tx
         launch = engine._launch
 
         def failing(cid, rt):
@@ -132,7 +132,7 @@ def test_rolled_back_charger_keeps_its_transaction():
             await engine.reload(_config(peer.url, ["A", "B", "C"], B={"vendor": "Other", **CHARGE}))
         await _until(lambda: _connections(peer)["B"] == 2 and old["B"].online)
         assert engine._runs["B"].runtime is old["B"]
-        assert old["B"].conns[1].tx is tx and tx.tx_id is not None and tx.ended is None
+        assert old["B"].station.conns[1].tx is tx and tx.tx_id is not None and tx.ended is None
     _run(body, B=CHARGE)
 
 
@@ -189,13 +189,13 @@ def test_pause_freezes_power_model_without_catch_up():
         assert rt.paused
         frozen = _conn1(rt)
         await asyncio.sleep(0.3)
-        rt._settle()
+        rt.station.settle()
         now = _conn1(rt)
         assert {k: now[k] for k in ("power_w", "meter_wh", "soc_pct")} == \
             {k: frozen[k] for k in ("power_w", "meter_wh", "soc_pct")}
         assert rt.online  # the OCPP session keeps running
         engine.set_running(running=True)
-        rt._settle()
+        rt.station.settle()
         assert _conn1(rt)["meter_wh"] - frozen["meter_wh"] < 100  # the paused 0.3 s (~300 Wh) is not caught up
         await _until(lambda: _conn1(rt)["meter_wh"] > frozen["meter_wh"] + 50)
     _run(body, ids=("A",), A=CHARGE)

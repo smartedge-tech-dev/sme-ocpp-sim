@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Internal split for OCPP 2.0.1: the charger runtime is a version-neutral shell (connection, boot / heartbeat,
+  power-model clock) hosting a per-version station; the OCPP 1.6 state machine, transactions, configuration keys
+  and smart-charging rules moved to `sme_ocpp_sim.protocol.v16`. No change on the 1.6 wire.
+- The fault dialog takes the fault codes of the charger's OCPP version from the new `GET /api/chargers/{id}`;
+  `POST /api/chargers/{id}/fault` rejects a code that is not one of them with `400`.
+
 ## [0.1.0] - 2026-11-27
 
 First release.

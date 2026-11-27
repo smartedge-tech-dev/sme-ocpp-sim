@@ -35,13 +35,14 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | 方法 | 路径 | 请求体 |
 |---|---|---|
 | POST | `/api/chargers/{id}/connect` | 无（启动连接循环） |
+| GET | `/api/chargers/{id}` | 无——充电桩快照，外加其 OCPP 版本的故障码 `fault_codes` |
 | POST | `/api/chargers/{id}/disconnect` | 无（在 `connect` 之前保持断开；交易像网络中断一样保留） |
 | POST | `/api/chargers/{id}/plug` | `{"connector": 1}` |
 | POST | `/api/chargers/{id}/unplug` | `{"connector": 1}` |
 | POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` 必填 |
 | POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — 插枪并刷卡；`id_tag` 默认为第一个配置的 tag（没有则 `400`）；connector 已有 transaction 或处于故障时为 `400` |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——1.6 的 `ChargePointErrorCode`；以原因 `Other` 结束进行中的交易并上报 `Faulted` |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——该桩 `fault_codes` 之一（1.6 为 `ChargePointErrorCode`，否则 `400`）；以原因 `Other` 结束进行中的交易并上报 `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}`——恢复为 Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充电桩 → CSMS） |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` 或 `{"all": true}` |
