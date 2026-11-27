@@ -66,8 +66,10 @@ README とドキュメントの画像は `scripts/screenshots.py` で作成し�
 `scripts/screenshots.yaml`（充電器 8 台、うち 3 台が OCPP 2.0.1、`initial_soc` をずらし、`time_scale` 60）でシミュレーターを `127.0.0.1`
 の空きポートに起動、全充電器でトランザクションを開始して 2.0.1 の `CP-0001` に TxDefaultProfile と外部制限値を送ります。そのうえで全言語の
 ライトテーマと暗いテーマの概要を撮影し、`overview.png`、`charger.png`、`smart-charging.png`、`frames.png`、
-`variables.png`、`settings.png`、`overview-dark.png`、`live.gif` を `docs/assets/screenshots/{en,ja,zh}/` に書き出します（日本語の横長画像
-`ja/overview-wide.png` も）。言語とテーマは上記の `localStorage` キーで設定します。
+`variables.png`、`settings.png`、`add-charger.png`（テンプレートからの一括追加を入力した充電器追加ダイアログ。送信はしません）、
+`overview-dark.png`、`live.gif` を `docs/assets/screenshots/{en,ja,zh}/` に書き出します（日本語の横長画像
+`ja/overview-wide.png` も）。`mini-csms.png` は、`configs/mini-csms-demo.yaml` を Mini CSMS の空きポートで動かす
+2 つ目のシミュレーターから撮影します。言語とテーマは上記の `localStorage` キーで設定します。
 
 ## ドキュメント
 

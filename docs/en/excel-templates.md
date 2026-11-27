@@ -69,6 +69,8 @@ Allowed keys: `name`, `title`, `description`, `params` and the template fields `
 
 ### Adding many chargers
 
+![Add charger dialog: ten chargers from a charger template](../assets/screenshots/en/add-charger.png)
+
 The **Add charger** dialog takes a template and a number of chargers. With more than one, the ID and the password
 count up from their trailing digits: first ID `CP-0001`, count 3 → `CP-0001`, `CP-0002`, `CP-0003`; password
 `pass01` → `pass01`, `pass02`, `pass03` (a password without trailing digits is the same for all). An ID without

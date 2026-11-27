@@ -43,6 +43,8 @@ suite against the response schemas of the `ocpp` library.
 
 ## The panel
 
+![Mini CSMS panel with a connected station, its records and the JSON editor](../assets/screenshots/en/mini-csms.png)
+
 **Simulation → Mini CSMS** shows:
 
 - the listen URL (or why it is not running) and the refused connections (wrong password, unknown subprotocol);

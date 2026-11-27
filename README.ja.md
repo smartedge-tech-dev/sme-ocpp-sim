@@ -29,9 +29,16 @@ Windows / Linux / Docker で動作します。数十〜数百台の AC 充電器
 - **EV と電力のモデル。** 電池、SoC、充電カーブ、相数、ランプ、日本の 200 V 単相・三相デルタ電源を扱い、
   Charging / SuspendedEV / SuspendedEVSE はモデルから決まります。
 - **1 プロセスで 200 台以上**。個別または一括で接続できます。
-- **セキュリティプロファイル 0 / 1 / 2**: `ws://`、HTTP Basic、Basic 認証付き `wss://`。
+- **認証・予約・保守（1.6 と 2.0.1）。** ローカル認証リストと認証キャッシュ、ReserveNow / CancelReservation、
+  ステータス通知と故障注入付きのファームウェア更新・診断 / ログアップロードの模擬。
+- **セキュリティプロファイル 0 / 1 / 2 / 3**: `ws://`、HTTP Basic、Basic 認証付き `wss://`、TLS クライアント証明書付き `wss://`。
+  証明書管理（生成した CSR による SignCertificate、CertificateSigned、InstallCertificate など）と SecurityEventNotification。
+- **内蔵 Mini CSMS**（ポート 9000）: 同じプロセスで動くシンプルな OCPP 1.6J / 2.0.1 CSMS。SteVe なしで試せ、
+  ステーションが送った内容の確認や JSON エディターからの任意の CALL 送信ができます。
+- **Excel のインポート / エクスポートと充電器テンプレート。** 充電器一覧を Excel で編集したり、
+  組み込みまたは独自のテンプレートから N 台を一括追加したりできます。
 - **フレームログ** ですべての OCPP フレームを絞り込み・JSON Lines エクスポート。テストスクリプト向けに HTTP API と WebSocket を提供します。
-- **YAML 設定** をブラウザで編集し、ファイルへ保存できます。
+- **YAML 設定** をブラウザで編集し、ファイルへ保存できます（Windows exe は `~/.sme-ocpp-sim/config.yaml` に保存）。
 - **英語、日本語、簡体字中国語。** UI はブラウザの言語に従います。
 
 SME OCPPSim は無償の MIT ライセンスで、[smart-edge (智届科技)](https://smartedge-tech.com) が開発しています —
@@ -54,6 +61,10 @@ SME OCPPSim は無償の MIT ライセンスで、[smart-edge (智届科技)](ht
   </tr>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/variables.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/variables.png" alt="OCPP 2.0.1 の Device Model 変数（参照のみ）"></a><br><sub>OCPP 2.0.1 の Device Model 変数（参照のみ）</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/mini-csms.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/mini-csms.png" alt="Mini CSMS: 内蔵 CSMS（接続中のステーション、記録、任意の CALL を送る JSON エディター）"></a><br><sub>Mini CSMS: 内蔵 CSMS（接続中のステーション、記録、任意の CALL を送る JSON エディター）</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/add-charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/add-charger.png" alt="充電器の追加: 充電器テンプレートから複数台を一括追加"></a><br><sub>充電器の追加: 充電器テンプレートから複数台を一括追加</sub></td>
     <td width="50%"><sub>1.6 / 2.0.1 混在サイトの例: <code>configs/mixed-site.yaml</code></sub></td>
   </tr>
 </table>
@@ -82,9 +93,11 @@ SteVe の準備とすべてのオプションは [クイックスタート](http
 
 - [設定](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/configuration/) — YAML の全フィールド。UI から保存すると `chargers:` ブロック全体を書き直すため、
   個々の充電器エントリの中にはコメントを書かないでください。
-- [OCPP 1.6J メッセージ](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/messages/) — 対応・非対応のアクション
+- [OCPP メッセージ](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/messages/) — 1.6J / 2.0.1 の対応・非対応のアクション
 - [Smart Charging](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/smart-charging/) — ルールと本実装での解釈
-- [セキュリティプロファイル](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/security-profiles/)
+- [セキュリティプロファイル](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/security-profiles/) — プロファイル 0〜3 と証明書管理
+- [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/mini-csms/) — ポート 9000 の内蔵 CSMS
+- [Excel と充電器テンプレート](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/excel-templates/) — インポート / エクスポートとテンプレートからの一括追加
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/http-api/) — REST ルートと `/ws` の仕様
 - [開発](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/development/)
 - [変更履歴](CHANGELOG.md)

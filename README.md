@@ -29,9 +29,19 @@ CSMS (SteVe, your own CSMS, an EMS...) sends.
 - **EV and power model.** Battery, SoC, charging curve, phases, ramps, Japanese 200 V single-phase and
   3-phase delta supplies; Charging / SuspendedEV / SuspendedEVSE follow from the model.
 - **200+ chargers in one process**, connected individually or in bulk.
-- **Security profiles 0 / 1 / 2**: `ws://`, HTTP Basic, `wss://` with Basic.
+- **Authorization, reservations and maintenance (1.6 and 2.0.1).** Local authorization list and
+  authorization cache, ReserveNow / CancelReservation, and simulated firmware update, diagnostics and log
+  upload with status notifications and failure injection.
+- **Security profiles 0 / 1 / 2 / 3**: `ws://`, HTTP Basic, `wss://` with Basic, `wss://` with a TLS client
+  certificate; certificate management (SignCertificate with a generated CSR, CertificateSigned,
+  InstallCertificate ...) and SecurityEventNotification.
+- **Built-in Mini CSMS** (port 9000): a simple OCPP 1.6J / 2.0.1 CSMS in the same process, to try the
+  simulator without SteVe, see what the stations send and send any CALL from a JSON editor.
+- **Excel import / export and charger templates.** Edit the charger list in Excel, or add N chargers at
+  once from a built-in or your own template.
 - **Frame log** of every OCPP frame with filters and JSON Lines export; HTTP API and WebSocket for test scripts.
-- **YAML configuration**, edited in the browser and saved back to the file.
+- **YAML configuration**, edited in the browser and saved back to the file (the Windows exe keeps it in
+  `~/.sme-ocpp-sim/config.yaml`).
 - **English, Japanese and Simplified Chinese.** The UI follows the browser language.
 
 SME OCPPSim is free and MIT-licensed, developed by [smart-edge (智届科技)](https://smartedge-tech.com) —
@@ -54,6 +64,10 @@ custom development is available, see [Commercial support & custom development](#
   </tr>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/variables.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/variables.png" alt="OCPP 2.0.1 Device Model variables (read-only)"></a><br><sub>OCPP 2.0.1 Device Model variables (read-only)</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/mini-csms.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/mini-csms.png" alt="Mini CSMS: the built-in CSMS with the connected stations, their records and a JSON editor for any CALL"></a><br><sub>Mini CSMS: the built-in CSMS with the connected stations, their records and a JSON editor for any CALL</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/add-charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/add-charger.png" alt="Add charger: several chargers at once from a charger template"></a><br><sub>Add charger: several chargers at once from a charger template</sub></td>
     <td width="50%"><sub>Mixed 1.6 / 2.0.1 sites: see <code>configs/mixed-site.yaml</code></sub></td>
   </tr>
 </table>
@@ -83,9 +97,11 @@ Open <http://127.0.0.1:8082/>. The demo configuration connects three chargers to
 
 - [Configuration](https://smartedge-tech-dev.github.io/sme-ocpp-sim/configuration/) — every YAML field. Saving from the UI rewrites the whole `chargers:`
   block, so don't put comments inside individual charger entries.
-- [OCPP 1.6J messages](https://smartedge-tech-dev.github.io/sme-ocpp-sim/messages/) — supported and unsupported actions
+- [OCPP messages](https://smartedge-tech-dev.github.io/sme-ocpp-sim/messages/) — supported and unsupported 1.6J / 2.0.1 actions
 - [Smart Charging](https://smartedge-tech-dev.github.io/sme-ocpp-sim/smart-charging/) — rules and the interpretations in this implementation
-- [Security profiles](https://smartedge-tech-dev.github.io/sme-ocpp-sim/security-profiles/)
+- [Security profiles](https://smartedge-tech-dev.github.io/sme-ocpp-sim/security-profiles/) — profiles 0 to 3 and certificate management
+- [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/mini-csms/) — the built-in CSMS on port 9000
+- [Excel & charger templates](https://smartedge-tech-dev.github.io/sme-ocpp-sim/excel-templates/) — import / export and bulk add from a template
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/http-api/) — REST routes and the `/ws` contract
 - [Development](https://smartedge-tech-dev.github.io/sme-ocpp-sim/development/)
 - [Changelog](CHANGELOG.md)

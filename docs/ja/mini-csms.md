@@ -41,6 +41,8 @@ NotifyEVChargingSchedule → `Accepted`。その他の応答は空オブジェ�
 
 ## パネル
 
+![Mini CSMS パネル（接続中のステーション、記録、JSON エディター）](../assets/screenshots/ja/mini-csms.png)
+
 **シミュレーション → Mini CSMS** に表示されるもの:
 
 - 待受 URL（または停止している理由）と拒否した接続（パスワード誤り、未対応サブプロトコル）

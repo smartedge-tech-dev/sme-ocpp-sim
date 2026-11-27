@@ -24,8 +24,16 @@ charging power follows the Smart Charging profiles your CSMS sends.
 - **EV and power model.** Battery capacity, SoC, charging curve, phases, minimum current, ramps, Japanese
   200 V single-phase and 3-phase delta supplies; status moves between Charging, SuspendedEV and SuspendedEVSE.
 - **Many chargers.** 200+ chargers in one process; connect / disconnect them individually or in bulk.
-- **Security profiles 0 / 1 / 2.** Plain `ws://`, HTTP Basic authentication, and `wss://` with Basic
-  authentication. See [Security profiles](security-profiles.md).
+- **Authorization, reservations and maintenance (1.6 and 2.0.1).** Local authorization list and
+  authorization cache, ReserveNow / CancelReservation, and simulated firmware update, diagnostics and log
+  upload with status notifications and failure injection. See [OCPP messages](messages.md).
+- **Security profiles 0 / 1 / 2 / 3.** Plain `ws://`, HTTP Basic authentication, `wss://` with Basic
+  authentication and `wss://` with a TLS client certificate; certificate management and
+  SecurityEventNotification. See [Security profiles](security-profiles.md).
+- **Built-in Mini CSMS.** A simple OCPP 1.6J / 2.0.1 CSMS on port 9000 in the same process: try the
+  simulator without an external CSMS and send any CALL from a JSON editor. See [Mini CSMS](mini-csms.md).
+- **Excel and charger templates.** Import / export the charger list as an Excel workbook and add many
+  chargers at once from a template. See [Excel import / export and charger templates](excel-templates.md).
 - **Frame log.** Every OCPP frame, filterable by charger, action and direction, with JSON Lines export.
 - **YAML configuration.** Edit chargers in the browser and save back to the file. See [Configuration](configuration.md).
 - **English, Japanese and Simplified Chinese** UI, light and dark theme.

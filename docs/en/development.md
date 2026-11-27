@@ -68,9 +68,11 @@ The script works in a temporary directory: it starts the dev CSMS peers `tests/p
 them OCPP 2.0.1, staggered `initial_soc`, `time_scale` 60) on a free
 port of `127.0.0.1`, starts a transaction on every charger and sends a TxDefaultProfile and an external limit to the 2.0.1 station `CP-0001`. It then
 captures every language in the light theme plus a dark overview and writes `overview.png`, `charger.png`,
-`smart-charging.png`, `frames.png`, `variables.png`, `settings.png`, `overview-dark.png` and `live.gif` to
-`docs/assets/screenshots/{en,ja,zh}/` (and the wide `ja/overview-wide.png`). Language and theme are set through the
-`localStorage` keys above.
+`smart-charging.png`, `frames.png`, `variables.png`, `settings.png`, `add-charger.png` (the Add charger dialog
+filled in for a bulk add from a template, not submitted), `overview-dark.png` and `live.gif` to
+`docs/assets/screenshots/{en,ja,zh}/` (and the wide `ja/overview-wide.png`). A second simulator runs
+`configs/mini-csms-demo.yaml` with the Mini CSMS on a free port for `mini-csms.png`. Language and theme are set
+through the `localStorage` keys above.
 
 ## Documentation
 

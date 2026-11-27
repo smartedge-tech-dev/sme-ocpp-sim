@@ -4,8 +4,9 @@ Starts the dev CSMS peers ``tests/peers/ocpp16_peer.py`` and ``tests/peers/ocpp2
 (MobilityHouse ``ocpp``, a dev dependency), runs the simulator with the mixed 1.6 / 2.0.1 site
 ``scripts/screenshots.yaml`` in a temporary directory on a free port of 127.0.0.1, starts a transaction on every
 charger, sends a TxDefaultProfile to the 2.0.1 station CP-0001 and sets an external (EMS) limit on it, and
-captures the web UI with Playwright in English, Japanese and Chinese (light) plus a dark overview.
-Output: ``docs/assets/screenshots/{en,ja,zh}/``.
+captures the web UI with Playwright in English, Japanese and Chinese (light) plus a dark overview. A second
+simulator runs ``configs/mini-csms-demo.yaml`` (two chargers on the built-in Mini CSMS, its port moved to a free
+one) for the Mini CSMS panel. Output: ``docs/assets/screenshots/{en,ja,zh}/``.
 
     .venv\\Scripts\\python scripts\\screenshots.py
 """
@@ -39,6 +40,13 @@ from tests.peers.ocpp201_peer import CsmsPeer201  # noqa: E402
 
 OUT = ROOT / "docs" / "assets" / "screenshots"
 CONFIG = ROOT / "scripts" / "screenshots.yaml"
+MINI_CONFIG = ROOT / "configs" / "mini-csms-demo.yaml"
+MINI_URL = "ws://127.0.0.1:9000/ocpp"  # the Mini CSMS URL of MINI_CONFIG, moved to a free port
+MINI_FOCUS = "DEMO-201"            # the Mini CSMS station selected in mini-csms.png
+MINI_WARMUP_S = 35                 # past the plan's SetChargingProfile 30 s after boot
+MINI_VIEWPORT = {"width": 1440, "height": 1600}  # tall enough for the whole panel without its inner scroll
+MINI_ACTION, MINI_PAYLOAD = "TriggerMessage", '{"requestedMessage": "StatusNotification", "evse": {"id": 1, "connectorId": 1}}'
+ADD_TEMPLATE, ADD_COUNT, ADD_ID = "jp-ac-6kw-dual", 10, "CP-0101"  # the Add charger dialog in add-charger.png
 LANGS = ("en", "ja", "zh")
 STORAGE = "sme-ocpp-sim"           # data-storage prefix of the shell script tag (index.html)
 VIEWPORT = {"width": 1440, "height": 1000}
@@ -214,6 +222,16 @@ async def capture_lang(browser, lang: str, base: str) -> None:
     await page.evaluate(f"openChargerDialog({CARDS!r})")
     await page.wait_for_timeout(1500)
     await page.screenshot(path=out / "charger.png", clip=await page.evaluate(CARDS_CLIP_JS))
+
+    # Add charger dialog filled in for a bulk add from a built-in template (not submitted).
+    await page.evaluate("openAddChargerDialog()")
+    await page.wait_for_function("document.getElementById('addTemplate').options.length > 1")
+    await page.select_option("#addTemplate", ADD_TEMPLATE)
+    await page.fill("#addCount", str(ADD_COUNT))
+    await page.fill("#addId", ADD_ID)
+    await page.wait_for_timeout(400)
+    await page.screenshot(path=out / "add-charger.png", clip=await inner_rect(page, "#dlgAdd"))
+    await page.keyboard.press("Escape")
     await ctx.close()
 
     ctx, page = await page_for(browser, lang, "dark", VIEWPORT, base)
@@ -226,6 +244,40 @@ async def capture_lang(browser, lang: str, base: str) -> None:
         await ctx.close()
 
 
+async def capture_mini_csms(browser, lang: str, base: str) -> None:
+    ctx = await browser.new_context(viewport=MINI_VIEWPORT, device_scale_factor=1, locale=lang)
+    await ctx.add_init_script(
+        f"try {{ localStorage.setItem('{STORAGE}.lang', '{lang}');"
+        f" localStorage.setItem('{STORAGE}.theme', 'light'); }} catch (e) {{}}")
+    page = await ctx.new_page()
+    await page.goto(base + "/")
+    await page.wait_for_function("document.querySelectorAll('#chargerRows tr').length >= 2")
+    # The whole dialog down to its Close button: no dialog height limit, a shorter frame list.
+    await page.add_style_tag(content="#dlgCsms { max-height: none !important; }"
+                                     " #dlgCsms .csms-frames { max-height: 260px !important; }")
+    await page.evaluate(f"openCsmsPanel({MINI_FOCUS!r})")
+    await page.wait_for_function("document.querySelectorAll('#csmsFrames tr').length > 3")
+    await page.select_option("#csmsAction", MINI_ACTION)  # a filled-in CALL in the JSON editor (not sent)
+    await page.fill("#csmsPayload", MINI_PAYLOAD)
+    await page.wait_for_timeout(1500)
+    await page.screenshot(path=OUT / lang / "mini-csms.png", clip=await inner_rect(page, "#dlgCsms"))
+    await ctx.close()
+
+
+def launch(tmp: Path, site: str, port: int, *extra: str):
+    """Write ``site`` to ``tmp`` and start the simulator on ``port``; returns (process, log file)."""
+    tmp.mkdir(parents=True, exist_ok=True)
+    with open(tmp / "site.yaml", "w", encoding="utf-8", newline="") as f:
+        f.write(site)
+    env = {**os.environ, "PYTHONPATH": str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+           "SME_OCPP_SIM_TEMPLATES": str(tmp / "templates")}  # built-in templates only, not the developer's own
+    log = open(tmp / "sim.log", "w", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-m", "sme_ocpp_sim", "-c", "site.yaml", "--host", "127.0.0.1",
+                             "--http-port", str(port), "--no-browser", *extra], cwd=tmp, env=env,
+                            stdout=log, stderr=subprocess.STDOUT)
+    return proc, log
+
+
 async def main() -> None:
     versions = charger_ids()
     ids = list(versions)
@@ -236,17 +288,15 @@ async def main() -> None:
     peers = {"1.6": peer, "2.0.1": peer201}
     tmp = Path(tempfile.mkdtemp(prefix="sme-ocpp-sim-shots-"))
     site = CONFIG.read_text(encoding="utf-8").replace("__CSMS201_URL__", peer201.url).replace("__CSMS_URL__", peer.url)
-    with open(tmp / "site.yaml", "w", encoding="utf-8", newline="") as f:
-        f.write(site)
-    port = free_port()
-    base = f"http://127.0.0.1:{port}"
-    env = {**os.environ, "PYTHONPATH": str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")}
-    log = open(tmp / "sim.log", "w", encoding="utf-8")
-    proc = subprocess.Popen([sys.executable, "-m", "sme_ocpp_sim", "-c", "site.yaml", "--host", "127.0.0.1",
-                             "--http-port", str(port), "--no-browser"], cwd=tmp, env=env,
-                            stdout=log, stderr=subprocess.STDOUT)
+    port, mini_port, csms_port = free_port(), free_port(), free_port()
+    base, mini_base = f"http://127.0.0.1:{port}", f"http://127.0.0.1:{mini_port}"
+    proc, log = launch(tmp / "site", site, port)
+    mini_site = MINI_CONFIG.read_text(encoding="utf-8").replace(MINI_URL, f"ws://127.0.0.1:{csms_port}/ocpp")
+    mini_proc, mini_log = launch(tmp / "mini", mini_site, mini_port, "--csms-port", str(csms_port))
     try:
         await wait_http(base, proc)
+        await wait_http(mini_base, mini_proc)
+        mini_started = time.monotonic()
         async with asyncio.timeout(30):
             for cid in ids:
                 sessions = peers[versions[cid]].sessions
@@ -260,16 +310,23 @@ async def main() -> None:
         await asyncio.to_thread(http, base, "POST", f"/api/chargers/{FOCUS}/external-limit",
                                 {"connector": 0, "limit_w": EXTERNAL_LIMIT_W})
         print("fault codes of", FOCUS, http(base, "GET", f"/api/chargers/{FOCUS}")["fault_codes"])
+        for cid in ("DEMO-16", MINI_FOCUS):
+            await asyncio.to_thread(http, mini_base, "POST", f"/api/chargers/{cid}/start",
+                                    {"connector": 1, "id_tag": "04D3M0A1"})  # the demo chargers accept any tag
         await asyncio.sleep(WARMUP_S)
         async with async_playwright() as pw:
             browser = await pw.chromium.launch()
             for lang in LANGS:
                 await capture_lang(browser, lang, base)
+            await asyncio.sleep(max(0.0, MINI_WARMUP_S - (time.monotonic() - mini_started)))
+            for lang in LANGS:
+                await capture_mini_csms(browser, lang, mini_base)
             await browser.close()
     finally:
-        proc.terminate()
-        proc.wait(10)
-        log.close()
+        for p, f in ((proc, log), (mini_proc, mini_log)):
+            p.terminate()
+            p.wait(10)
+            f.close()
         await peer.stop()
         await peer201.stop()
         shutil.rmtree(tmp, ignore_errors=True)
