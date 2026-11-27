@@ -9,7 +9,7 @@
 (() => {
   const POLL_MS = 2000;
   const FRAME_ROWS = 40;
-  const P = { sel: null, version: null, timer: null, actions: {} };
+  const P = { sel: null, version: null, timer: null, actions: {}, busy: false, again: false };
 
   const when = (s) => (s ? hhmmss(s * 1000) : "-");
   const enc = encodeURIComponent;
@@ -32,16 +32,14 @@
     $("csmsStatus").textContent = text;
     $("csmsStatus").className = st.error ? "err" : "muted";
     const rows = $("csmsRows");
-    rows.replaceChildren(...st.chargers.map((c) => {
-      const tr = h("tr", { class: c.id === P.sel ? "sel" : null, onclick: () => select(c.id, c.ocpp_version) },
+    rows.replaceChildren(...st.chargers.map((c) =>
+      h("tr", { class: c.id === P.sel ? "sel" : null, onclick: () => select(c.id, c.ocpp_version) },
         h("td", null, c.id), h("td", null, c.ocpp_version),
         h("td", null, c.connected ? t(`csms.boot.${c.boot_status || "none"}`) : t("csms.offline")),
-        h("td", null, when(c.heartbeat_at)), h("td", null, String(c.active_transactions)));
-      return tr;
-    }));
+        h("td", null, when(c.heartbeat_at)), h("td", null, String(c.active_transactions)))));
     $("csmsEmpty").hidden = st.chargers.length > 0;
     $("csmsRejections").replaceChildren(...st.rejections.slice(-5).reverse().map((r) =>
-      h("li", null, `${when(r.ts)} ${r.id || "?"} ${r.status}: ${r.reason}`)));
+      h("li", null, `${when(r.ts)} ${r.id || "?"} ${r.status == null ? "WS" : r.status}: ${r.reason}`)));
   }
 
   function renderDetail(d) {
@@ -83,13 +81,35 @@
     if (P.actions[version].includes(keep)) sel.value = keep;
   }
 
+  // One refresh at a time: a slow answer must not let the 2 s timer stack up overlapping requests (an older
+  // answer could otherwise overwrite a newer one). A call while one runs (e.g. after select / send) is not lost:
+  // one more refresh follows.
   async function refresh() {
+    if (P.busy) {
+      P.again = true;
+      return;
+    }
+    P.busy = true;
+    try {
+      do {
+        P.again = false;
+        await refreshOnce();
+      } while (P.again && P.timer);
+    } finally {
+      P.busy = false;
+    }
+  }
+
+  async function refreshOnce() {
     try {
       const st = await api("GET", "/api/csms");
       renderStatus(st);
       const cur = st.running && P.sel ? st.chargers.find((c) => c.id === P.sel) : null;
       $("csmsSelBox").hidden = !cur;
-      if (!cur) return;
+      if (!cur) {
+        P.version = null;  // the station is gone: its actions are reloaded when it (or another one) is selected
+        return;
+      }
       if (P.version !== cur.ocpp_version) {
         P.version = cur.ocpp_version;
         loadActions(P.version).catch(fail);

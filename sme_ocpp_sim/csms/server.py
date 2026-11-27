@@ -15,6 +15,13 @@ Frames go to the Mini CSMS's own :class:`FrameLog` (``charger`` = station id, di
 the simulator's charger frame log. Configuration changes other than ``host`` / ``port`` apply at once
 (:meth:`update`); the plan of an open connection is fixed when it connects.
 
+Limits (no rate limiting beyond these): at most :data:`MAX_CONNECTIONS` open connections (a further station gets
+HTTP 503 before the upgrade; a reconnecting id does not count twice), at most :data:`MAX_SESSIONS` remembered
+stations (the oldest disconnected one is forgotten first). Basic Auth failures answer one generic 401 with
+``WWW-Authenticate`` whatever the cause (unknown id, wrong password, malformed header), so the response does not
+tell which station ids exist; the operator's rejection list keeps the cause. Secrets in the CALLs the CSMS sends
+(AuthorizationKey, BasicAuthPassword, ...) are masked in its frame log and recorded calls (``framelog.mask_*``).
+
 Dependencies: ``rpc``, ``protocol.<version>.models / codec`` (through ``handlers``) and ``framelog`` only.
 """
 
@@ -26,7 +33,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from ..framelog import FrameLog
+from ..framelog import FrameLog, mask_payload
 from ..rpc.connection import FrameInfo, RpcConnection
 from ..rpc.errors import CallError
 from ..rpc.server import Handshake, OcppServer, Reject, parse_basic_auth
@@ -37,6 +44,14 @@ from .session import CpSession
 log = logging.getLogger(__name__)
 
 MAX_REJECTIONS = 50
+#: Open WebSocket connections at most (further handshakes: HTTP 503).
+MAX_CONNECTIONS = 500
+#: Remembered stations at most (connected ones are never forgotten).
+MAX_SESSIONS = 200
+#: 1.6 transactionId is an ``integer`` (int32 for most CSMS / stations).
+_INT32_MAX = 2 ** 31 - 1
+BASIC_REALM = "SME OCPPSim Mini CSMS"
+_UNAUTHORIZED = "unauthorized"
 
 
 class _Conn:
@@ -53,7 +68,8 @@ class MiniCsms:
         self.sessions: Dict[str, CpSession] = {}
         self._conns: Dict[str, _Conn] = {}
         self.rejections: deque = deque(maxlen=MAX_REJECTIONS)
-        self._tx_seq = 0
+        # Seeded from the clock (seconds, below 1e9) so ids issued after a restart do not repeat the last run's.
+        self._tx_seq = int(clock()) % 1_000_000_000
         self._server: Optional[OcppServer] = None
         self.port: Optional[int] = None
 
@@ -88,7 +104,7 @@ class MiniCsms:
             c.runner.cancel()
 
     def next_tx_id(self) -> int:
-        self._tx_seq += 1
+        self._tx_seq = self._tx_seq + 1 if self._tx_seq < _INT32_MAX else 1
         return self._tx_seq
 
     # ------------------------------------------------------------ handshake
@@ -98,18 +114,26 @@ class MiniCsms:
         return next((s for s in offered if s in enabled), None)
 
     def _check(self, hs: Handshake) -> None:
+        if len(self._conns) >= MAX_CONNECTIONS and hs.station_id not in self._conns:
+            raise Reject(503, f"too many connections (at most {MAX_CONNECTIONS})")
         auth = self.cfg.auth
         if not auth.basic:
             return
         creds = parse_basic_auth(hs.authorization)
         known = {c.id: c.password for c in auth.credentials}
-        if hs.station_id not in known:
-            raise Reject(401, "unknown charging station")
-        if creds is None or creds[0] != hs.station_id or not hmac.compare_digest(
+        if creds is None:
+            detail = "no or malformed Basic Authorization header"
+        elif hs.station_id not in known:
+            detail = "unknown charging station"
+        elif creds[0] != hs.station_id or not hmac.compare_digest(
                 creds[1].encode("utf-8"), known[hs.station_id].encode("utf-8")):
-            raise Reject(401, "bad credentials")
+            detail = "bad credentials"
+        else:
+            return
+        raise Reject(401, _UNAUTHORIZED, headers={"WWW-Authenticate": f'Basic realm="{BASIC_REALM}"'},
+                     detail=detail)
 
-    def _rejected(self, hs: Handshake, status: int, reason: str) -> None:
+    def _rejected(self, hs: Handshake, status: Optional[int], reason: str) -> None:
         self.rejections.append({"ts": self._clock(), "id": hs.station_id, "status": status, "reason": reason,
                                 "remote": hs.remote})
         log.info("Mini CSMS rejected %r (%s): %s", hs.station_id, status, reason)
@@ -119,13 +143,12 @@ class MiniCsms:
     async def _on_connection(self, ws: Any, hs: Handshake, subprotocol: str) -> None:
         spec = BY_SUBPROTOCOL[subprotocol]
         cp_id = hs.station_id
-        old = self._conns.pop(cp_id, None)
-        if old is not None:
-            old.runner.cancel()
-            await old.rpc.close()
+        # Everything up to ``self._conns[cp_id] = conn`` runs without an await, so two handshakes of the same id
+        # cannot interleave here: the newest connection is registered first, the one it replaces closed after.
+        old = self._conns.get(cp_id)
         session = CpSession(cp_id, spec.version, subprotocol, remote=hs.remote,
                             basic_auth=hs.authorization is not None, clock=self._clock)
-        self.sessions[cp_id] = session
+        self._remember(session)
         frame_cb = self.frame_log.callback(cp_id)
 
         def on_frame(info: FrameInfo) -> None:
@@ -145,6 +168,9 @@ class MiniCsms:
         self._conns[cp_id] = conn
         log.info("Mini CSMS: %s connected (OCPP %s)", cp_id, spec.version)
         try:
+            if old is not None:
+                old.runner.cancel()
+                await old.rpc.close()
             runner.trigger("connect")
             await rpc.run()
         finally:
@@ -153,6 +179,15 @@ class MiniCsms:
             if self._conns.get(cp_id) is conn:
                 del self._conns[cp_id]
             log.info("Mini CSMS: %s disconnected", cp_id)
+
+    def _remember(self, session: CpSession) -> None:
+        """Make ``session`` the station's newest (moved to the end) and forget the oldest disconnected stations
+        beyond :data:`MAX_SESSIONS`."""
+        self.sessions.pop(session.cp_id, None)
+        self.sessions[session.cp_id] = session
+        if len(self.sessions) > MAX_SESSIONS:
+            for cp_id in [k for k, s in self.sessions.items() if not s.connected][:len(self.sessions) - MAX_SESSIONS]:
+                del self.sessions[cp_id]
 
     # ------------------------------------------------------------ outbound CALLs
 
@@ -174,7 +209,8 @@ class MiniCsms:
                     source: str) -> Dict[str, Any]:
         session = conn.session
         check_outbound(session.version, action, payload)
-        entry: Dict[str, Any] = {"ts": self._clock(), "source": source, "action": action, "payload": payload}
+        entry: Dict[str, Any] = {"ts": self._clock(), "source": source, "action": action,
+                                 "payload": mask_payload(action, payload)}
         session.record_call(entry)
         try:
             result = await conn.rpc.call(action, payload, timeout=timeout)

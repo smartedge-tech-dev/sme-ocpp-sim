@@ -460,3 +460,231 @@ def test_config_yaml_and_masked_password_kept():
         r = c.put("/api/config", content=shown.encode(), headers={"Content-Type": "text/plain"})
         assert r.status_code == 200, r.text
     assert engine.config.mini_csms.auth.credentials[0].password == "pw-1"
+
+
+# --------------------------------------------------------------------------------------- review fixes (M9)
+
+SECRET16 = "0123456789abcdef0123"          # 1.6 AuthorizationKey: 16..40 characters
+SECRET201 = "secret-password-0123456789"   # 2.0.1 BasicAuthPassword: 16..64 characters
+SECRET_CALLS = {
+    "1.6": ("ChangeConfiguration", {"key": "AuthorizationKey", "value": SECRET16}, SECRET16),
+    "2.0.1": ("SetVariables", {"setVariableData": [{"attributeValue": SECRET201, "component": {"name": "SecurityCtrlr"},
+                                                    "variable": {"name": "BasicAuthPassword"}}]}, SECRET201),
+}
+
+
+def test_mask_helpers():
+    from sme_ocpp_sim.framelog import SECRET_MASK, mask_frame, mask_payload
+    for action, payload, secret in SECRET_CALLS.values():
+        raw = json.dumps([2, "u1", action, payload])
+        masked = mask_frame(raw, action)
+        assert secret not in masked and SECRET_MASK in masked
+        assert mask_frame(raw) == masked  # action unknown: parsed anyway
+        out = mask_payload(action, payload)
+        assert secret not in json.dumps(out) and secret in json.dumps(payload)  # the original is not mutated
+    other = json.dumps([2, "u2", "ChangeConfiguration", {"key": "HeartbeatInterval", "value": "60"}])
+    assert mask_frame(other, "ChangeConfiguration") is other
+    assert mask_frame('[3,"u1",{}]', "ChangeConfiguration") == '[3,"u1",{}]'
+    assert mask_frame("not json") == "not json"
+    net = {"configurationSlot": 1, "connectionData": {
+        "ocppVersion": "OCPP20", "ocppTransport": "JSON", "ocppCsmsUrl": "ws://x", "messageTimeout": 30,
+        "securityProfile": 1, "ocppInterface": "Wired0",
+        "vpn": {"server": "s", "user": "u", "password": "vpn-pw", "key": "vpn-key", "type": "IPSec"},
+        "apn": {"apn": "a", "apnPassword": "apn-pw", "simPin": 1234, "apnAuthentication": "AUTO"}}}
+    m = json.dumps(mask_payload("SetNetworkProfile", net))
+    assert not any(s in m for s in ("vpn-pw", "vpn-key", "apn-pw", "1234"))
+
+
+@pytest.mark.parametrize("version", ["1.6", "2.0.1"])
+def test_secrets_masked_on_both_sides_and_in_api(version):
+    action, payload, secret = SECRET_CALLS[version]
+    port = _free_port()
+    data = _demo_config(port, version).model_dump()
+    data["mini_csms"]["auth"]["credentials"] = [{"id": "CP-1", "password": "cfg-password-1"}]
+    engine = OcppEngine(SimConfig.model_validate(data))
+    with TestClient(create_app(engine)) as c:
+        _poll(lambda: [x for x in c.get("/api/csms").json()["chargers"] if x["boot_status"] == "Accepted"])
+        session = engine.csms.sessions["CP-1"]
+        r = c.post("/api/csms/chargers/CP-1/call", json={"action": action, "payload": payload})
+        assert r.status_code == 200 and r.json()["ok"], r.text
+        assert secret not in r.text
+        # The station got the real value: it accepted it (the mask would be too short for both versions).
+        res = r.json()["result"]
+        status = res["status"] if version == "1.6" else res["setVariableResult"][0]["attributeStatus"]
+        assert status in ("Accepted", "RebootRequired"), r.text
+        # Charger side: its frame log has the CALL it received, masked.
+        rx = _poll(lambda: [f for f in c.get("/api/frames").json()["frames"]
+                            if f["action"] == action and f["message_type"] == "CALL"])
+        assert "********" in rx[0]["raw"]
+        for route in ("/api/frames", "/api/csms", "/api/csms/chargers/CP-1", "/api/csms/frames", "/api/config"):
+            text = c.get(route).text
+            assert secret not in text and "cfg-password-1" not in text, route
+        # The recorded call (of that connection: the station reconnects with the new password afterwards).
+        calls = [x for x in session.calls if x["action"] == action]
+        assert calls and "********" in json.dumps(calls[0]["payload"]) and secret not in json.dumps(calls)
+
+
+def test_reconnect_same_id_while_open_replaces_connection_and_reruns_plan():
+    plan = [{"at_s": 0, "after": "connect", "action": "GetLocalListVersion", "payload": {}, "ocpp_version": "1.6"}]
+
+    async def main():
+        async def with_csms(csms, url):
+            ws1 = await connect(f"{url}/R1", subprotocols=["ocpp1.6"])
+            first = json.loads(await ws1.recv())
+            assert first[2] == "GetLocalListVersion"
+            old = csms.sessions["R1"]
+            ws2 = await connect(f"{url}/R1", subprotocols=["ocpp1.6"])
+            await _until(lambda: ws1.close_code is not None)
+            again = json.loads(await ws2.recv())
+            new = csms.sessions["R1"]
+            assert new is not old and new.connected and csms.connected("R1")
+            await _until(lambda: not old.connected)
+            assert old.plan[0]["status"] == "cancelled"
+            assert again[2] == "GetLocalListVersion"
+            await ws2.send(json.dumps([3, again[1], {"listVersion": 0}]))
+            await _until(lambda: new.plan[0]["status"] == "ok")
+            assert [s["id"] for s in csms.snapshot()["chargers"]] == ["R1"]
+            await ws2.close()
+        await _with_csms(_cfg(plan=plan), with_csms)
+    asyncio.run(main())
+
+
+def test_plan_tasks_cancelled_on_disconnect():
+    plan = [{"at_s": 30, "after": "connect", "action": "GetLocalListVersion", "payload": {}, "ocpp_version": "1.6"}]
+
+    def plan_tasks():
+        return [t for t in asyncio.all_tasks() if t.get_name().startswith("csms-plan")]
+
+    async def main():
+        async def with_csms(csms, url):
+            ws = await connect(f"{url}/P1", subprotocols=["ocpp1.6"])
+            await _until(lambda: "P1" in csms.sessions and csms.sessions["P1"].plan[0]["due_at"])
+            assert plan_tasks()
+            await ws.close()
+            s = csms.sessions["P1"]
+            await _until(lambda: not s.connected and not plan_tasks())
+            assert s.plan[0]["status"] == "cancelled"
+        await _with_csms(_cfg(plan=plan), with_csms)
+    asyncio.run(main())
+
+
+def test_basic_auth_failures_are_one_generic_401():
+    auth = {"basic": True, "credentials": [{"id": "CP1", "password": "secret-1"}]}
+
+    def b64(text):
+        return "Basic " + base64.b64encode(text.encode()).decode()
+
+    cases = [("CP1", b64("CP1:wrong"), "bad credentials"), ("CP9", b64("CP9:secret-1"), "unknown charging station"),
+             ("CP1", "Basic !!!not-base64", "malformed"), ("CP1", "Bearer abc", "malformed"),
+             ("CP1", b64("no-colon"), "malformed"), ("CP1", None, "malformed")]
+
+    async def main():
+        async def with_csms(csms, url):
+            bodies = set()
+            for cp, header, _ in cases:
+                with pytest.raises(InvalidStatus) as e:
+                    await connect(f"{url}/{cp}", subprotocols=["ocpp1.6"],
+                                  additional_headers={"Authorization": header} if header else None)
+                resp = e.value.response
+                assert resp.status_code == 401
+                assert resp.headers["WWW-Authenticate"].startswith('Basic realm="')
+                bodies.add(bytes(resp.body))
+            assert bodies == {b"unauthorized\n"}  # nothing tells an unknown id from a wrong password
+            reasons = [r["reason"] for r in csms.rejections]
+            assert len(reasons) == len(cases)
+            assert all(want in got for (_, _, want), got in zip(cases, reasons)), reasons
+            assert not csms.sessions
+        await _with_csms(_cfg(auth=auth), with_csms)
+    asyncio.run(main())
+
+
+def test_caps(monkeypatch):
+    from sme_ocpp_sim.csms import server as server_mod
+    from sme_ocpp_sim.csms import session as session_mod
+    s = CpSession("X", "1.6", "ocpp1.6")
+    s.tx_start("A", 1, "TAG", 0, None)  # stays active
+    for i in range(session_mod.MAX_TRANSACTIONS + 10):
+        s.tx_start(f"T{i}", 2, "TAG", 0, None)
+        s.tx_stop(f"T{i}", 1, None, None)
+    assert len(s.transactions) == session_mod.MAX_TRANSACTIONS and s.transactions["A"]["active"]
+    for i in range(session_mod.MAX_STATUSES + 20):
+        s.status(str(i), "Available", None, None)
+    assert len(s.statuses) == session_mod.MAX_STATUSES and str(session_mod.MAX_STATUSES + 19) in s.statuses
+
+    monkeypatch.setattr(server_mod, "MAX_SESSIONS", 3)
+    csms = MiniCsms(_cfg(), clock=lambda: 1_700_000_123.5)
+    csms._remember(CpSession("LIVE", "1.6", "ocpp1.6"))
+    for i in range(5):
+        old = CpSession(f"OLD{i}", "1.6", "ocpp1.6")
+        old.closed()
+        csms._remember(old)
+    assert list(csms.sessions) == ["LIVE", "OLD3", "OLD4"]
+    # 1.6 transactionId: seeded from the clock (no repeat after a restart), int32-safe.
+    assert csms.next_tx_id() == 700_000_124
+    csms._tx_seq = 2 ** 31 - 1
+    assert csms.next_tx_id() == 1
+
+
+def test_max_connections(monkeypatch):
+    from sme_ocpp_sim.csms import server as server_mod
+    monkeypatch.setattr(server_mod, "MAX_CONNECTIONS", 1)
+
+    async def main():
+        async def with_csms(csms, url):
+            ws = await connect(f"{url}/A", subprotocols=["ocpp1.6"])
+            await _until(lambda: csms.connected("A"))
+            with pytest.raises(InvalidStatus) as e:
+                await connect(f"{url}/B", subprotocols=["ocpp1.6"])
+            assert e.value.response.status_code == 503
+            ws2 = await connect(f"{url}/A", subprotocols=["ocpp1.6"])  # the same id may replace itself
+            await _until(lambda: ws.close_code is not None)
+            await ws2.close()
+        await _with_csms(_cfg(), with_csms)
+    asyncio.run(main())
+
+
+def test_call_to_disconnected_station_is_409():
+    port = _free_port()
+    engine = OcppEngine(_demo_config(port, "1.6"))
+    with TestClient(create_app(engine)) as c:
+        _poll(lambda: [x for x in c.get("/api/csms").json()["chargers"] if x["connected"]])
+        engine.csms._conns.clear()  # as if the station had just gone away
+        r = c.post("/api/csms/chargers/CP-1/call", json={"action": "GetLocalListVersion", "payload": {}})
+        assert r.status_code == 409 and "not connected" in r.text
+
+
+def test_engine_csms_port_change_with_connected_stations(caplog):
+    p1, p2 = _free_port(), _free_port()
+
+    async def main():
+        data = _demo_config(p1, "1.6").model_dump()
+        data["mini_csms"]["plan"] = []
+        engine = OcppEngine(SimConfig.model_validate(data))
+        await engine.start()
+        try:
+            first = engine.csms
+            rt = engine.state["CP-1"].runtime
+            await _until(lambda: rt.online and first.connected("CP-1"))
+            old_session = first.sessions["CP-1"]
+            new = engine.config.model_copy(deep=True)
+            new.mini_csms = MiniCsmsConfig(enabled=True, port=p2)
+            await engine.reload(new)
+            second = engine.csms
+            assert second is not first and not first.running and second.running and second.port == p2
+            await _until(lambda: not old_session.connected and not rt.online)
+            assert not second.sessions  # the charger still points at p1
+            back = engine.config.model_copy(deep=True)
+            back.mini_csms = MiniCsmsConfig(enabled=True, port=p1, host="0.0.0.0")
+            with caplog.at_level("WARNING", logger="sme_ocpp_sim.engine"):
+                await engine.reload(back)
+            assert any("without Basic Auth" in r.getMessage() for r in caplog.records)
+            await _until(lambda: rt.online and engine.csms.connected("CP-1"))
+        finally:
+            await engine.stop()
+    asyncio.run(main())
+
+
+def test_is_loopback():
+    from sme_ocpp_sim.engine import _is_loopback
+    assert _is_loopback("127.0.0.1") and _is_loopback("::1") and _is_loopback("localhost")
+    assert not _is_loopback("0.0.0.0") and not _is_loopback("::") and not _is_loopback("192.168.1.2")

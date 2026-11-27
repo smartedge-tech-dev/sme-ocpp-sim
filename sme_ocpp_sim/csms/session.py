@@ -2,7 +2,7 @@
 
 Recorded: the handshake (version, remote address, whether Basic Auth was sent), the last BootNotification and its
 answer, heartbeats, the last status per connector (1.6 key ``"<connectorId>"``, 2.0.1 ``"<evseId>/<connectorId>"``),
-the transactions (bounded), the newest meter values (bounded), a count and the last payload per inbound action,
+the transactions (bounded, finished ones evicted first), the newest meter values (bounded), a count and the last payload per inbound action,
 payload warnings (tolerant mode) and the CALLs the CSMS sent (manual and plan). All payloads are kept in wire form
 (camelCase JSON). Times are wall-clock seconds since the epoch.
 """
@@ -14,6 +14,7 @@ from collections import OrderedDict, deque
 from typing import Any, Callable, Dict, List, Optional
 
 MAX_TRANSACTIONS = 100
+MAX_STATUSES = 256
 MAX_METER_VALUES = 50
 MAX_CALLS = 50
 MAX_WARNINGS = 50
@@ -80,6 +81,8 @@ class CpSession:
         self.heartbeat_at = self._clock()
 
     def status(self, key: str, status: Any, error_code: Any, timestamp: Any) -> None:
+        if key not in self.statuses and len(self.statuses) >= MAX_STATUSES:
+            del self.statuses[next(iter(self.statuses))]  # the oldest key (a station inventing connector ids)
         self.statuses[key] = {"status": status, "error_code": error_code, "timestamp": timestamp,
                               "received_at": self._clock()}
 
@@ -91,8 +94,14 @@ class CpSession:
                                     "started": timestamp, "meter_start_wh": meter_start, "stopped": None,
                                     "meter_stop_wh": None, "stop_reason": None, "charging_state": None,
                                     "last_trigger": None, "energy": None}
+        # Over the bound the oldest finished transaction goes first; only when every kept one is active is the
+        # oldest active one dropped (memory stays bounded against a station that never stops its transactions).
         while len(self.transactions) > MAX_TRANSACTIONS:
-            self.transactions.popitem(last=False)
+            old = next((k for k, t in self.transactions.items() if not t["active"] and k != tx_id), None)
+            if old is None:
+                self.transactions.popitem(last=False)
+            else:
+                del self.transactions[old]
 
     def tx_update(self, tx_id: str, *, tag: Any = None, state: Any = None, trigger: Any = None) -> None:
         tx = self.transactions.get(tx_id)

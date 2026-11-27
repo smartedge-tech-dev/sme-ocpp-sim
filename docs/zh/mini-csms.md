@@ -80,6 +80,13 @@ mini_csms:
 设置 `host: "0.0.0.0"`（或 `--csms-host 0.0.0.0`），并把充电桩指向 `ws://<本机>:9000/ocpp`。在 Docker 中还需发布端口
 （`-p 9000:9000`）。Profile 1 时需在 `auth.credentials` 中登记站点。
 
+!!! warning "暴露范围"
+    `host: "0.0.0.0"` 且 `auth.basic: false` 时，任何能访问该端口的人都能以任意站点 ID 连接并得到应答（启动时会记录警告日志）。
+    Mini CSMS 没有 TLS（profile 2 / 3），也没有限流：只在可信网络中使用，监听 `127.0.0.1` 以外的地址时请开启 Basic Auth。
+    固定上限：同时连接 500（超出的握手返回 HTTP 503），记住的站点 200（先忘记最早断开的）。Basic Auth 失败无论原因都返回同样的
+    `401` 和 `WWW-Authenticate`（原因只显示在面板的拒绝列表中）。CSMS 发送的秘密值（1.6 `AuthorizationKey`、2.0.1
+    `BasicAuthPassword`、SetNetworkProfile 的 VPN / APN 密码）在报文日志和发送记录中显示为 `********`，充电桩收到的是真实值。
+
 Mini CSMS 不能替代用于一致性测试的真实 CSMS；本项目的 CI 也保留独立实现的 `ocpp` 库对端作为测试对象。
 
 配置字段：[mini_csms](configuration.md#mini_csms)。HTTP 路由：[Mini CSMS API](http-api.md#mini-csms)。

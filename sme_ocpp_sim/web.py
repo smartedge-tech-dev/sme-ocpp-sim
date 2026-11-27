@@ -54,7 +54,7 @@ Mini CSMS (``mini_csms:``, plan M9; station ids are the ids the stations connect
 * ``GET /api/csms/actions?version=`` - the CSMS -> CP actions the Mini CSMS can send for a version;
 * ``POST /api/csms/chargers/{id}/call`` - body ``{"action", "payload", "timeout"?}``: checked against the version's
   schema (400 with the field on a mismatch), then sent; ``{"ok": true, "result", "warning"?}`` or ``{"ok": false,
-  "error": {"code", "description", "details"}}`` for a CALLERROR answer; 400 when the station is not connected,
+  "error": {"code", "description", "details"}}`` for a CALLERROR answer; 409 when the station is not connected,
   404 for an unknown station, 504 when it does not answer in time, 409 while the Mini CSMS is not running;
 * ``GET /api/csms/frames?since=&charger=&limit=`` - the Mini CSMS's own frame log (direction seen from the CSMS).
 
@@ -650,8 +650,10 @@ def _csms_router(engine: OcppEngine) -> APIRouter:
         c, _ = station(cid)
         try:
             return await c.call(cid, body.action, body.payload, timeout=body.timeout)
-        except (ValueError, ConnectionError) as e:
+        except ValueError as e:
             raise bad(400, e) from None
+        except ConnectionError as e:
+            raise bad(409, e) from None
         except TimeoutError:
             raise bad(504, f"{body.action}: the station did not answer in time") from None
 

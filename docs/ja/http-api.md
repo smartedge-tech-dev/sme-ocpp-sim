@@ -95,7 +95,7 @@ OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーシ�
 | POST | `/api/csms/chargers/{id}/call` | ボディ `{"action", "payload", "timeout"?}`。スキーマで検査（不一致は該当フィールド付きで 400）してから送信。応答は `{"ok": true, "result"}`（応答がスキーマに合わなければ `warning` 付き）、CALLERROR なら `{"ok": false, "error": {"code", "description", "details"}}` |
 | GET | `/api/csms/frames?since=&charger=&limit=` | Mini CSMS 専用フレームログ（方向は CSMS 側から） |
 
-エラー: 404 未知のステーション、400 スキーマ不一致またはステーション未接続、504 時間内に応答なし、409 Mini CSMS 停止中
+エラー: 404 未知のステーション、400 スキーマ不一致、409 ステーション未接続、504 時間内に応答なし、409 Mini CSMS 停止中
 （`GET /api/csms` を除く）。
 
 ## WebSocket `/ws`

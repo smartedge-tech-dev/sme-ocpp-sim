@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Secret values are masked as `********` in the frame log (charger simulator and Mini CSMS) and in the Mini
+  CSMS's recorded calls: 1.6 ChangeConfiguration `AuthorizationKey`, 2.0.1 SetVariables `BasicAuthPassword` and
+  2.0.1 SetNetworkProfile VPN / APN credentials (#54). The frame sent on the wire is unchanged.
+
 ### Added
 
 - Mini CSMS: a simple built-in OCPP 1.6J / 2.0.1 CSMS (WebSocket server, default port 9000) in the same process,

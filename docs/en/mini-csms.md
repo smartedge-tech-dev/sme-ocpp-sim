@@ -88,6 +88,16 @@ item is sent once per connection; a reconnecting station runs the plan again.
 Set `host: "0.0.0.0"` (or `--csms-host 0.0.0.0`) and point the station at `ws://<this PC>:9000/ocpp`. In Docker
 publish the port as well (`-p 9000:9000`). For Profile 1, list the station in `auth.credentials`.
 
+!!! warning "Exposure"
+    With `host: "0.0.0.0"` and `auth.basic: false` anyone who can reach the port can connect as any station id
+    and is answered (the simulator logs a warning at start). The Mini CSMS has no TLS (profiles 2 / 3) and no rate
+    limiting: use it on a trusted network only, and turn on Basic Auth when it listens beyond `127.0.0.1`. Fixed
+    limits: 500 open connections (further handshakes get HTTP 503), 200 remembered stations (the oldest
+    disconnected one is forgotten first). A failed Basic Auth is always the same `401` with `WWW-Authenticate`
+    (the cause is only shown in the panel's refused connections). Secret values the CSMS sends (1.6
+    `AuthorizationKey`, 2.0.1 `BasicAuthPassword`, SetNetworkProfile VPN / APN passwords) are shown as `********`
+    in the frame log and the recorded calls; the station receives the real value.
+
 The Mini CSMS does not replace a real CSMS for conformance testing; the project's own CI also keeps the
 independent `ocpp` library peers as test counterparts.
 

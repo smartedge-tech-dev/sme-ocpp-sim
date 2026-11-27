@@ -93,7 +93,7 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | POST | `/api/csms/chargers/{id}/call` | 请求体 `{"action", "payload", "timeout"?}`。先用 schema 校验（不匹配返回 400 并指出字段）再发送。应答为 `{"ok": true, "result"}`（应答不符合 schema 时附 `warning`），CALLERROR 时为 `{"ok": false, "error": {"code", "description", "details"}}` |
 | GET | `/api/csms/frames?since=&charger=&limit=` | Mini CSMS 自有帧日志（方向以 CSMS 视角） |
 
-错误：404 未知站点，400 schema 不匹配或站点未连接，504 超时未应答，409 Mini CSMS 未运行（`GET /api/csms` 除外）。
+错误：404 未知站点，400 schema 不匹配，409 站点未连接，504 超时未应答，409 Mini CSMS 未运行（`GET /api/csms` 除外）。
 
 ## WebSocket `/ws`
 

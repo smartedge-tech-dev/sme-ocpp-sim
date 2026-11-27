@@ -58,6 +58,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Dict, Iterable, List, Optional, Set, Tuple
@@ -68,6 +70,8 @@ from .config import PASSWORD_MASK, ChargerConfig, MiniCsmsConfig, SimConfig, sav
 from .csms import MiniCsms
 from .framelog import FrameLog
 from .runtime.charger import ChargerRuntime
+
+log = logging.getLogger(__name__)
 
 #: Connector fields pushed as ``values``; the rest of a charger snapshot is ``charger_state``.
 VALUE_KEYS = ("power_w", "meter_wh", "soc_pct")
@@ -90,6 +94,16 @@ class _Run:
     runtime: ChargerRuntime
     stop: asyncio.Event
     task: asyncio.Task
+
+
+def _is_loopback(host: str) -> bool:
+    """True for ``localhost`` and loopback addresses; ``0.0.0.0`` / ``::`` / names are not."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class _FrameSink:
@@ -250,6 +264,11 @@ class OcppEngine(BaseEngine):
             return
         self.csms = csms
         self.log_event("info", f"Mini CSMS listening on ws://{cfg.host}:{port}")
+        if not cfg.auth.basic and not _is_loopback(cfg.host):
+            msg = (f"Mini CSMS listens on {cfg.host} without Basic Auth: any host that can reach port {port} can "
+                   "connect as any station id (mini_csms.auth.basic)")
+            log.warning(msg)
+            self.log_event("warning", msg)
 
     async def _undo(self, old_state: Dict[str, _Entry], launched: List[str]) -> None:
         """Undo a partly applied diff: stop the runtimes it launched, restart the old ones it stopped and restore

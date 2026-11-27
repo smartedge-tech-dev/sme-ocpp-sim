@@ -98,7 +98,7 @@ Routes of the built-in [Mini CSMS](mini-csms.md). Station ids are the ids the st
 | POST | `/api/csms/chargers/{id}/call` | Body `{"action", "payload", "timeout"?}`. Checked against the schema (400 naming the field), then sent. Answer `{"ok": true, "result"}` (plus `warning` if the answer does not match its schema) or `{"ok": false, "error": {"code", "description", "details"}}` for a CALLERROR |
 | GET | `/api/csms/frames?since=&charger=&limit=` | The Mini CSMS's own frame log (direction seen from the CSMS) |
 
-Errors: 404 unknown station, 400 schema mismatch or station not connected, 504 no answer in time, 409 while the
+Errors: 404 unknown station, 400 schema mismatch, 409 station not connected, 504 no answer in time, 409 while the
 Mini CSMS is not running (except `GET /api/csms`).
 
 ## WebSocket `/ws`

@@ -7,10 +7,14 @@ Handshake (in this order):
 * no station id in the path -> HTTP 404;
 * ``check(handshake)`` raises :class:`Reject` -> that HTTP status (e.g. 401 for wrong Basic Auth credentials);
 * subprotocol: ``select(offered)`` picks one of the subprotocols the client offered. When it picks none, the
-  handshake completes *without* a ``Sec-WebSocket-Protocol`` header and the server closes the connection at once
-  (close code 1002). Interpretation: OCPP-J says a server that agrees to none of the offered versions answers
-  without the header and closes the connection (UNVERIFIED against the local PDFs: no text extraction tool here);
-  our own client and the ``ocpp`` library both refuse such a handshake anyway.
+  handshake completes *without* a ``Sec-WebSocket-Protocol`` header and the server closes the connection at once.
+  This is what OCPP-J 1.6 §3.2 and OCPP 2.0.1 Part 4 §3.2 require: a server that agrees to none of the offered
+  subprotocols MUST complete the handshake without the header and then immediately close the connection. Neither
+  specifies the close code; we send 1002 (RFC 6455 protocol error). The operator's view gets the close as a
+  rejection with ``status`` ``None`` (it is not an HTTP status).
+
+Compression: ``websockets`` negotiates permessage-deflate by default, which OCPP 2.0.1 Part 4 §3.3 allows (a client
+may offer it, the server may accept it); 1.6 says nothing about it and its clients may simply not offer it.
 
 The ``Authorization`` header is never logged by this module; the ``websockets`` server logger gets the same
 redaction filter as the client one (``transport._RedactAuthorization``).
@@ -51,10 +55,16 @@ class Handshake:
 class Reject(Exception):
     """Raised by a ``check`` callback: refuse the handshake with HTTP ``status``."""
 
-    def __init__(self, status: int, reason: str) -> None:
+    def __init__(self, status: int, reason: str, *, headers: Optional[dict] = None,
+                 detail: Optional[str] = None) -> None:
+        """``reason`` is the response body (keep it generic for auth failures); ``detail`` (default ``reason``) is
+        what the operator's view (``on_reject``) gets; ``headers`` are added to the response
+        (e.g. ``WWW-Authenticate``)."""
         super().__init__(reason)
         self.status = status
         self.reason = reason
+        self.headers = dict(headers or {})
+        self.detail = detail or reason
 
 
 def station_id_from_path(path: str) -> str:
@@ -95,8 +105,9 @@ def handshake_of(ws: Any) -> Handshake:
 
 #: ``on_connection(ws, handshake, subprotocol)``: runs for the lifetime of an accepted connection.
 OnConnection = Callable[[Any, Handshake, str], Awaitable[None]]
-#: ``on_reject(handshake, status, reason)``: a refused handshake (for the operator's view).
-OnReject = Callable[[Handshake, int, str], None]
+#: ``on_reject(handshake, status, reason)``: a refused handshake (for the operator's view); ``status`` is the HTTP
+#: status, or ``None`` for a connection closed after the upgrade (no supported subprotocol).
+OnReject = Callable[[Handshake, Optional[int], str], None]
 
 
 class OcppServer:
@@ -131,13 +142,20 @@ class OcppServer:
         await self._server.wait_closed()
         self._server = None
 
-    def _reject(self, connection: ServerConnection, hs: Handshake, status: int, reason: str):
+    def _notify_reject(self, hs: Handshake, status: Optional[int], reason: str) -> None:
         if self._on_reject is not None:
             try:
                 self._on_reject(hs, status, reason)
             except Exception:  # noqa: BLE001 - an observer must not break the handshake
                 log.exception("on_reject failed")
-        return connection.respond(HTTPStatus(status), reason + "\n")
+
+    def _reject(self, connection: ServerConnection, hs: Handshake, status: int, reason: str,
+                headers: Optional[dict] = None, detail: Optional[str] = None):
+        self._notify_reject(hs, status, detail or reason)
+        response = connection.respond(HTTPStatus(status), reason + "\n")
+        for k, v in (headers or {}).items():
+            response.headers[k] = v
+        return response
 
     def _process_request(self, connection: ServerConnection, request: Any):
         hs = Handshake(request.path, station_id_from_path(request.path), (), request.headers.get("Authorization"),
@@ -148,18 +166,14 @@ class OcppServer:
             try:
                 self._check(hs)
             except Reject as e:
-                return self._reject(connection, hs, e.status, e.reason)
+                return self._reject(connection, hs, e.status, e.reason, e.headers, e.detail)
         return None
 
     async def _handler(self, ws: ServerConnection) -> None:
         hs = handshake_of(ws)
         if not ws.subprotocol:
             reason = f"no supported subprotocol offered ({', '.join(hs.offered) or 'none'})"
-            if self._on_reject is not None:
-                try:
-                    self._on_reject(hs, 101, reason)
-                except Exception:  # noqa: BLE001
-                    log.exception("on_reject failed")
+            self._notify_reject(hs, None, reason)
             await ws.close(CLOSE_NO_SUBPROTOCOL, "unsupported subprotocol")
             return
         try:
