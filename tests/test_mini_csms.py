@@ -139,8 +139,9 @@ def test_boot_status_configurable(status):
         async def with_csms(csms, url):
             async def body(rt):
                 await _until(lambda: "CP1" in csms.sessions and csms.sessions["CP1"].boot_status == status)
+                # The CSMS records its answer as it sends it; the charger handles it a moment later.
+                await _until(lambda: (rt.snapshot()["registration"] or "").lower() == status.lower())
                 assert not rt.online
-                assert rt.snapshot()["registration"].lower() == status.lower()
                 # The plan's boot trigger never fired: Pending / Rejected is no accepted boot.
                 assert csms.sessions["CP1"].plan[0]["status"] == "waiting"
             await _with_charger(url, "2.0.1", body)
