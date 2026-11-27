@@ -204,3 +204,28 @@ def test_installed_root_is_trusted_via_ca_data(tmp_path):
     cert, key = pki.client(tmp_path)
     kw = {"ca_data": pki.ca_pem, "client_cert_file": str(cert), "client_key_file": str(key)}
     assert asyncio.run(_try(kw, **server)) == "ocpp1.6"
+
+
+def test_unloadable_ca_file_is_a_handshake_error(tmp_path):
+    """A missing ca_file must not escape as OSError (the charger retries with back-off instead of dying)."""
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(open_connection(TransportConfig("wss://127.0.0.1:1/o", "CP1", ca_file=str(tmp_path / "no.pem"))))
+    assert ei.value.kind == "tls"
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(open_connection(TransportConfig("wss://127.0.0.1:1/o", "CP1", ca_data="not PEM")))
+    assert ei.value.kind == "tls"
+
+
+def test_only_certificate_alerts_mean_client_cert_rejected():
+    import ssl
+    from sme_ocpp_sim.rpc.transport import classify_ssl
+    cfg = TransportConfig("wss://h/o", "A", client_cert_file="c.pem", client_key_file="c.key")
+
+    def err(reason):
+        e = ssl.SSLError(1, reason)
+        e.reason = reason
+        return e
+    assert classify_ssl(err("TLSV1_ALERT_UNKNOWN_CA"), cfg).kind == "client_cert_rejected"
+    assert classify_ssl(err("TLSV13_ALERT_CERTIFICATE_REQUIRED"), cfg).kind == "client_cert_rejected"
+    assert classify_ssl(err("TLSV1_ALERT_INTERNAL_ERROR"), cfg).kind == "tls"
+    assert classify_ssl(err("SSLV3_ALERT_HANDSHAKE_FAILURE"), cfg).kind == "tls"

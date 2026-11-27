@@ -1099,6 +1099,9 @@ class Station201(VersionStation):
                 e.pending_timer.cancel()
                 e.pending_timer = None
         self.maint.close()
+        files = self.security.close()  # renewed certificates do not outlive the run (runtime.security)
+        if files is not None and self.cfg.client_cert_file is not None:
+            self.host.use_client_certificate(*files, reconnect=False)
 
     def _drop_reservation(self, r: Reservation, update: Optional[ReservationUpdateStatusEnumType]) -> None:
         """End ``r``; ``update`` = the ReservationStatusUpdate to send (before the StatusNotifications)."""
@@ -1528,12 +1531,13 @@ class Station201(VersionStation):
     # ================================================================== security (M8)
 
     async def _sign_certificate(self) -> None:
-        """A02.FR.02 / FR.03: a new key pair and its CSR in a SignCertificateRequest; Rejected drops the key."""
+        """A02.FR.02 / FR.03: a new key pair and its CSR in a SignCertificateRequest; Rejected drops the key (a
+        timeout or CALLERROR keeps it: the CSMS may still send the CertificateSigned)."""
         csr = self.security.new_csr(self.cfg.serial or self.cfg.id, self.dm.value(dm.ORGANIZATION_NAME) or None)
         req = m.SignCertificateRequest(csr=csr, certificate_type=CertificateSigningUseEnumType.charging_station_certificate)
         res = await self.host.safe(self._adapter.send_sign_certificate(req), "SignCertificate")
-        if res is None or res.status is not GenericStatusEnumType.accepted:
-            self.security.drop_csr()
+        if res is not None and res.status is not GenericStatusEnumType.accepted:
+            self.security.drop_csr(csr)
 
     def _certificate_signed(self, req: m.CertificateSignedRequest) -> m.CertificateSignedResponse:
         def rejected(code: str, why: str) -> m.CertificateSignedResponse:

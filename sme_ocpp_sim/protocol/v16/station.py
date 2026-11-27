@@ -147,6 +147,7 @@ from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Option
 from ...charging import power
 from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
+from ...rpc.transport import derived_security_profile
 from ...runtime.local_auth import AuthCache, LocalAuthList, Reservation
 from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
 from ...runtime.security import Security
@@ -299,8 +300,7 @@ class Station16(VersionStation):
         self._adapter = Adapter16(strict=strict)
         names = {k.name for k in self._adapter.config_keys}
         url = getattr(host, "csms_url", "") or ""
-        profile = (3 if cfg.client_cert_file else 2 if url.startswith("wss://") else 1) if (
-            cfg.password is not None or cfg.client_cert_file) else 0
+        profile = derived_security_profile(cfg.password, url, cfg.client_cert_file is not None)
         derived = {CONNECTORS_KEY: str(cfg.connectors), SECURITY_PROFILE_KEY: str(profile), CPO_NAME_KEY: cfg.vendor}
         if cfg.meter_sample_interval_s is not None:
             derived[SAMPLE_KEY] = str(cfg.meter_sample_interval_s)
@@ -772,6 +772,9 @@ class Station16(VersionStation):
         for r in self.reservations.values():
             r.cancel_timer()
         self.maint.close()
+        files = self.security.close()  # renewed certificates do not outlive the run (runtime.security)
+        if files is not None and self.cfg.client_cert_file is not None:
+            self.host.use_client_certificate(*files, reconnect=False)
 
     def _drop_reservation(self, r: Reservation, why: str) -> None:
         if self.reservations.get(r.id) is not r:
@@ -1225,10 +1228,11 @@ class Station16(VersionStation):
     # ------------------------------------------------------------------ security (M8)
 
     async def _sign_certificate(self) -> None:
-        """A new key pair and its CSR in a SignCertificate; a Rejected answer drops the key."""
+        """A new key pair and its CSR in a SignCertificate; a Rejected answer drops the key (a timeout or
+        CALLERROR keeps it: the CSMS may still send the CertificateSigned)."""
         csr = self.security.new_csr(self.cfg.serial or self.cfg.id, self.store.value(CPO_NAME_KEY) or None)
-        if not await self.host.safe(self._adapter.send_sign_certificate(csr), "SignCertificate"):
-            self.security.drop_csr()
+        if await self.host.safe(self._adapter.send_sign_certificate(csr), "SignCertificate") is False:
+            self.security.drop_csr(csr)
 
     def _certificate_signed(self, cmd: d.CertificateSigned) -> d.CertStatus:
         st, why = self.security.accept_signed(cmd.chain)

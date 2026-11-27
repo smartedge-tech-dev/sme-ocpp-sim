@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime as dt
+from pathlib import Path
 
 import pytest
 from cryptography import x509
@@ -400,3 +401,126 @@ def test_install_respects_the_capacity(tmp_path):
     assert s.install(CertUse.MANUFACTURER_ROOT, second.public_bytes(Encoding.PEM).decode()) is CertStatus.REJECTED
     two = (first.public_bytes(Encoding.PEM) + second.public_bytes(Encoding.PEM)).decode()
     assert s.install(CertUse.CSMS_ROOT, two) is CertStatus.REJECTED  # exactly one certificate per request
+
+
+def test_install_rejects_a_certificate_that_is_no_ca(tmp_path):
+    """A non-CA certificate must not become a root (it would be a TLS trust anchor for the CSMS check)."""
+    pki = make_pki(tmp_path)
+    leaf = pki.sign(ec.generate_private_key(ec.SECP256R1()).public_key(),
+                    x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "not a CA")]))
+    s = sec.Security(clock=_clock)
+    for use in CertUse:
+        assert s.install(use, leaf.public_bytes(Encoding.PEM).decode()) is CertStatus.REJECTED
+    assert s.install(CertUse.MANUFACTURER_ROOT, pki.ca_pem) is CertStatus.ACCEPTED
+    assert s.trusted_pem() is None
+
+
+def test_full_queue_drops_the_oldest_non_critical_event_first(monkeypatch):
+    monkeypatch.setattr(sec, "QUEUE_MAX", 3)
+    s = sec.Security(clock=_clock)
+    s.record(SecurityEventKind.STARTUP_OF_THE_DEVICE, connected=False)                      # critical
+    s.record(SecurityEventKind.RECONFIGURATION_OF_SECURITY_PARAMETERS, connected=True)      # not critical
+    s.record(SecurityEventKind.RESET_OR_REBOOT, connected=False)                            # critical
+    s.record(SecurityEventKind.FIRMWARE_UPDATED, connected=False)                           # critical
+    assert [e.kind for e in s.queued] == [SecurityEventKind.STARTUP_OF_THE_DEVICE, SecurityEventKind.RESET_OR_REBOOT,
+                                          SecurityEventKind.FIRMWARE_UPDATED]
+    s.record(SecurityEventKind.INVALID_TLS_VERSION, connected=False)  # all critical: the oldest goes
+    assert [e.kind for e in s.queued] == [SecurityEventKind.RESET_OR_REBOOT, SecurityEventKind.FIRMWARE_UPDATED,
+                                          SecurityEventKind.INVALID_TLS_VERSION]
+    assert len(s.events) == 5  # the log keeps every event
+
+
+def test_delivery_retries_the_head_event_after_a_timeout(monkeypatch):
+    monkeypatch.setattr(sec, "RETRY_S", 0.01)
+
+    async def main():
+        s = sec.Security(clock=_clock)
+        s.record(SecurityEventKind.STARTUP_OF_THE_DEVICE, connected=False)
+        s.record(SecurityEventKind.RESET_OR_REBOOT, connected=False)
+        sent = []
+
+        async def slow_first(ev):
+            sent.append(ev.kind)
+            if len(sent) == 1:
+                raise TimeoutError
+        task = asyncio.create_task(s.deliver(slow_first))
+        await _until(lambda: not s.queued)
+        task.cancel()
+        assert sent == [SecurityEventKind.STARTUP_OF_THE_DEVICE, SecurityEventKind.STARTUP_OF_THE_DEVICE,
+                        SecurityEventKind.RESET_OR_REBOOT]
+    asyncio.run(main())
+
+
+def _renewing(tmp_path):
+    pki = make_pki(tmp_path)
+    cert, key = pki.client(tmp_path)
+    s = sec.Security(clock=_clock, client_cert_file=str(cert), client_key_file=str(key))
+
+    def renew():
+        assert s.accept_signed(pki.sign_csr(s.new_csr("CP1", None))) == (CertStatus.ACCEPTED, None)
+        return s.client_cert_file, s.client_key_file
+    return s, (str(cert), str(key)), renew
+
+
+def test_only_certificate_failures_discard_an_unconfirmed_renewal(tmp_path):
+    """A02.FR.28: a network / timeout / CSMS-certificate / other TLS failure keeps the renewed certificate."""
+    s, configured, renew = _renewing(tmp_path)
+    renewed = renew()
+    for kind in ("network", "timeout", "tls", "handshake", "tls_verify", "tls_version", "not_found"):
+        assert s.connect_failed(kind, "x") is None, kind
+        assert s.renewal_unconfirmed and (s.client_cert_file, s.client_key_file) == renewed
+    assert SecurityEventKind.DISCARDED_RENEWED_CLIENT_CERTIFICATE not in [e.kind for e in s.events]
+    assert s.connect_failed("client_cert_rejected", "refused") == configured
+    assert not s.renewal_unconfirmed
+    assert s.events[-1].kind is SecurityEventKind.DISCARDED_RENEWED_CLIENT_CERTIFICATE
+    assert not any(Path(p).exists() for p in renewed)  # the discarded pair is deleted
+    s.close()
+
+
+def test_second_renewal_before_confirmation_and_temporary_files(tmp_path):
+    import os
+    s, configured, renew = _renewing(tmp_path)
+    first = renew()
+    if os.name != "nt":
+        assert os.stat(first[1]).st_mode & 0o777 == 0o600
+    second = renew()  # the first renewal was not confirmed yet
+    assert s.renewal_unconfirmed and s._previous == configured
+    assert not any(Path(p).exists() for p in first) and all(Path(p).exists() for p in second)
+    assert s.fall_back() == configured  # back to the original, not to the first renewal
+    assert not any(Path(p).exists() for p in second)
+    third = renew()
+    s.confirm()  # the configured files belong to the user: never deleted
+    assert all(Path(p).exists() for p in (*configured, *third))
+    tmp_dir = Path(third[0]).parent
+    assert s.close() == configured  # the charger stops: the temporary directory goes, the configured pair is back
+    assert not tmp_dir.exists() and (s.client_cert_file, s.client_key_file) == configured
+    assert s.close() is None
+
+
+def test_outstanding_csr_keys(tmp_path):
+    """A late CertificateSigned for an earlier CSR is still accepted; Rejected drops only that CSR key."""
+    pki = make_pki(tmp_path)
+    s = sec.Security(clock=_clock)
+    first, second = s.new_csr("CP1", None), s.new_csr("CP1", None)
+    assert s.accept_signed(pki.sign_csr(first))[0] is CertStatus.ACCEPTED
+    s.drop_csr(second)
+    assert not s.csr_pending
+    assert s.accept_signed(pki.sign_csr(second))[0] is CertStatus.REJECTED
+    csrs = [s.new_csr("CP1", None) for _ in range(sec.PENDING_MAX + 1)]
+    assert s.accept_signed(pki.sign_csr(csrs[0]))[0] is CertStatus.REJECTED  # beyond PENDING_MAX
+    assert s.accept_signed(pki.sign_csr(csrs[-1]))[0] is CertStatus.ACCEPTED
+    s.close()
+
+
+@VERSIONS
+def test_sign_certificate_rejected_drops_the_csr_key(version, tmp_path):
+    """1.6 ExtendedTriggerMessage / 2.0.1 TriggerMessage -> SignCertificate answered Rejected: the key is dropped."""
+    async def body(peer, rt, pki):
+        await _online(peer, rt)
+        peer.sign_status = "Rejected"
+        assert (await _trigger_csr(peer, version)).status == "Accepted"
+        await _until(lambda: _csrs(peer, version))
+        await _until(lambda: not rt.station.security.csr_pending)
+        chain = pki.sign_csr(_csrs(peer, version)[0])
+        assert (await _certificate_signed(peer, version, chain)).status == "Rejected"
+    _p3(body, version, tmp_path)

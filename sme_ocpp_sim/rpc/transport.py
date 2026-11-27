@@ -12,8 +12,11 @@ sent (``password`` must be ``None``; the config refuses a password with profile 
 defines the same profile (UNVERIFIED: the whitepaper is not in the local spec folder).
 
 A CSMS that refuses the client certificate aborts the TLS handshake with an alert; with TLS 1.3 the client only
-sees it while reading the HTTP upgrade response. Such failures are classified ``client_cert_rejected`` (see
-:data:`_CLIENT_CERT_ALERTS`).
+sees it while reading the HTTP upgrade response. Such failures are classified ``client_cert_rejected``: a
+certificate-related alert (:data:`_CLIENT_CERT_ALERTS`), or - with a client certificate configured - the server
+closing the connection after the TLS handshake before any HTTP response (:func:`_lost_after_tls`; e.g. Windows
+reports no alert at all, only end-of-stream while reading the status line). Any other alert is ``tls``, a reset
+while connecting is ``network``.
 
 The Basic Auth password never appears in logs, reprs or error messages.
 """
@@ -31,7 +34,7 @@ from typing import Callable, Optional
 from urllib.parse import quote, urlsplit
 
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import InvalidHandshake, InvalidStatus, InvalidURI, NegotiationError
+from websockets.exceptions import InvalidHandshake, InvalidMessage, InvalidStatus, InvalidURI, NegotiationError
 
 log = logging.getLogger(__name__)
 
@@ -97,16 +100,31 @@ def basic_auth_header(user: str, password: str) -> str:
     return f"Basic {token}"
 
 
+def derived_security_profile(password: Optional[str], url: str, client_cert: bool = False) -> int:
+    """The security profile a charger reports (1.6 SecurityProfile, 2.0.1 SecurityCtrlr.SecurityProfile): 3 with a
+    client certificate over wss://, else 2 / 1 with a Basic Auth password over wss:// / ws://; 0 without
+    credentials is a simulator-only value (the spec defines profiles 1 / 2 / 3)."""
+    tls = url.lower().startswith("wss://")
+    if client_cert and tls:
+        return 3
+    if password is None:
+        return 0
+    return 2 if tls else 1
+
+
 def make_ssl_context(cfg: TransportConfig) -> Optional[ssl.SSLContext]:
     """TLS context of a wss:// connection; ``HandshakeError("client_cert")`` when the client certificate or key
-    cannot be loaded."""
+    cannot be loaded, ``HandshakeError("tls")`` when ``ca_file`` / ``ca_data`` cannot."""
     if not cfg.is_tls:
         return None
-    ctx = ssl.create_default_context(cafile=cfg.ca_file)
+    try:
+        ctx = ssl.create_default_context(cafile=cfg.ca_file)
+        if cfg.ca_data:
+            ctx.load_verify_locations(cadata=cfg.ca_data)
+    except (OSError, ssl.SSLError, ValueError) as e:
+        raise HandshakeError("tls", f"CA certificates could not be loaded: {e}") from None
     # A00.FR.313 / FR.416: TLS 1.2 or above only.
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    if cfg.ca_data:
-        ctx.load_verify_locations(cadata=cfg.ca_data)
     if cfg.client_cert_file is not None:
         try:
             ctx.load_cert_chain(cfg.client_cert_file, cfg.client_key_file)
@@ -179,10 +197,11 @@ def _ssl_cause(e: BaseException) -> Optional[ssl.SSLError]:
 
 
 def _lost_after_tls(e: BaseException) -> bool:
-    """The server closed the connection while the client waited for the HTTP upgrade response (no SSL error was
-    surfaced): with TLS 1.3 a server that refuses the client certificate may just close."""
+    """The server closed the connection after the TLS handshake, before any HTTP upgrade response (no SSL error
+    was surfaced): with TLS 1.3 a server that refuses the client certificate may just close. A narrow heuristic,
+    applied only with a client certificate configured (Windows surfaces nothing else for a refused certificate)."""
     cur: Optional[BaseException] = e.__cause__ or e.__context__
-    return isinstance(cur, (EOFError, ConnectionResetError))
+    return isinstance(e, InvalidMessage) and isinstance(cur, (EOFError, ConnectionResetError))
 
 
 def classify_ssl(e: ssl.SSLError, cfg: TransportConfig) -> HandshakeError:
@@ -191,7 +210,7 @@ def classify_ssl(e: ssl.SSLError, cfg: TransportConfig) -> HandshakeError:
     reason = getattr(e, "reason", None) or ""
     if reason in _TLS_VERSION_REASONS:
         return HandshakeError("tls_version", str(e))
-    if reason in _CLIENT_CERT_ALERTS or (cfg.client_cert_file is not None and "ALERT" in reason):
+    if reason in _CLIENT_CERT_ALERTS:
         return HandshakeError("client_cert_rejected", str(e))
     return HandshakeError("tls", str(e))
 
@@ -205,8 +224,8 @@ async def open_connection(cfg: TransportConfig) -> ClientConnection:
              cfg.subprotocol)
     if cfg.is_tls and not cfg.verify_tls:
         log.warning("%s: TLS certificate verification is OFF (testing only)", cfg.charger_id)
-    ctx = make_ssl_context(cfg)
     try:
+        ctx = make_ssl_context(cfg)
         ws = await connect(
             cfg.url,
             subprotocols=[cfg.subprotocol],
@@ -216,6 +235,8 @@ async def open_connection(cfg: TransportConfig) -> ClientConnection:
             ping_interval=cfg.ping_interval,
             logger=ws_log,
         )
+    except HandshakeError:
+        raise
     except InvalidStatus as e:
         status = e.response.status_code
         raise HandshakeError(classify_status(status), status=status) from None
@@ -235,8 +256,6 @@ async def open_connection(cfg: TransportConfig) -> ClientConnection:
     except TimeoutError:
         raise HandshakeError("timeout") from None
     except OSError as e:
-        if cfg.client_cert_file is not None and isinstance(e, ConnectionResetError):
-            raise HandshakeError("client_cert_rejected", e.strerror or str(e)) from None
         raise HandshakeError("network", e.strerror or str(e)) from None
 
     if ws.subprotocol != cfg.subprotocol:

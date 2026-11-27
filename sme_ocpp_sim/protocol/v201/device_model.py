@@ -200,6 +200,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from ...rpc.transport import derived_security_profile
 from . import models as m
 from .enums import (AttributeEnumType, DataEnumType, GetVariableStatusEnumType, MutabilityEnumType,
                     ReportBaseEnumType, SetVariableStatusEnumType)
@@ -644,14 +645,8 @@ def _b(flag: bool) -> str:
     return "true" if flag else "false"
 
 
-def security_profile(password: Optional[str], url: str, client_cert: bool = False) -> int:
-    """1 / 2 / 3 as the shell connects (password: Basic Auth; wss://: TLS; a client certificate: profile 3); 0
-    without credentials is a simulator-only value (Part 2 §2.2.5 / A00 define profiles 1 / 2 / 3)."""
-    if client_cert and url.startswith("wss://"):
-        return 3
-    if password is None:
-        return 0
-    return 2 if url.startswith("wss://") else 1
+#: 1 / 2 / 3 as the shell connects; 0 without credentials is a simulator-only value (Part 2 §2.2.5 / A00).
+security_profile = derived_security_profile
 
 
 def _decimal(x: float) -> str:
