@@ -89,6 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `cryptography` is now a runtime dependency (CSR generation, certificate parsing); it is bundled in the exe
   and the Docker image.
 
+### Fixed
+
+- Windows executable: saving the config from the web UI was written to the temporary PyInstaller extraction
+  directory and lost when the exe exited (#27). Started without `-c`, the exe now uses the per-user
+  `~/.sme-ocpp-sim/config.yaml` (created from the bundled demo config on the first run); `-c FILE` is used and
+  saved in place. pip, source and Docker runs are unchanged. The config file in use is logged at startup.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

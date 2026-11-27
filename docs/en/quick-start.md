@@ -8,8 +8,11 @@ any OCPP 1.6J CSMS works. For OCPP 2.0.1 see [An OCPP 2.0.1 charger](#ocpp-201) 
 
 Download `sme-ocpp-sim-vX.Y.Z-windows.exe` from the
 [latest release](https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest) and run it. Without
-`-c` it starts with the bundled demo configuration (`configs/demo-site.yaml`) and opens the web UI at
-<http://127.0.0.1:8082/>.
+`-c` it uses the per-user file `%USERPROFILE%\.sme-ocpp-sim\config.yaml`, created from the bundled demo
+configuration (`configs/demo-site.yaml`) on the first run, and opens the web UI at <http://127.0.0.1:8082/>.
+Saving from the web UI writes back to that file, so changes are kept across restarts; delete it to start
+again from the demo configuration. With `-c FILE` that file is used and saved in place. The console log shows
+the config file in use at startup (`config file: ...`).
 
 ```powershell
 .\sme-ocpp-sim-v0.2.0-windows.exe -c my-site.yaml
@@ -56,7 +59,7 @@ attached to every release.
 
 | Option | Meaning |
 |---|---|
-| `-c, --config FILE` | YAML configuration (default: the bundled `configs/demo-site.yaml`) |
+| `-c, --config FILE` | YAML configuration (default: the bundled `configs/demo-site.yaml`; Windows executable: `~/.sme-ocpp-sim/config.yaml`, see above) |
 | `--host 127.0.0.1` | Web UI bind address (default localhost only; `0.0.0.0` exposes it on the LAN) |
 | `--http-port 8082` | Web UI port |
 | `--no-browser` | Do not open the browser on start |

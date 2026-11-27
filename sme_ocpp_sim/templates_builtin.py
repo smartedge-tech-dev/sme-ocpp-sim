@@ -39,13 +39,21 @@ template. :func:`next_ids` is the id rule of the bulk create (``CP001`` -> ``CP0
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ValidationError
 from sme_sim_common.templates import TemplateRegistry
 
 APP_NAME = "sme-ocpp-sim"
+
+
+def user_data_dir() -> Path:
+    """Per-user data directory ``~/.sme-ocpp-sim``: user templates (``templates/``) and, for the Windows
+    executable, the default config file (``config.yaml``, see ``__main__.default_config_path``)."""
+    return Path.home() / f".{APP_NAME}"
 
 #: Charger fields a template may set (``TemplateRegistry`` extra keys).
 TEMPLATE_FIELDS = ("vendor", "model", "firmware", "connectors", "max_power_w", "voltage_v", "phases",
@@ -65,6 +73,12 @@ class ChargerTemplates(TemplateRegistry):
 
     def __init__(self) -> None:
         super().__init__(_NoItem, app_name=APP_NAME, items_attr="items", extra_keys=TEMPLATE_FIELDS)
+
+    def default_templates_dir(self) -> Path:
+        """``$SME_OCPP_SIM_TEMPLATES`` or ``templates/`` in :func:`user_data_dir` (same rule as the base class,
+        with the base directory taken from the one helper)."""
+        env = os.environ.get(self.env_var)
+        return Path(env).expanduser() if env else user_data_dir() / "templates"
 
     def register_charger(self, name: str, title: str, fields: Dict[str, Any], *, description: str,
                          params: Optional[Dict[str, Any]] = None) -> None:
