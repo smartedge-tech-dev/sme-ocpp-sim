@@ -22,6 +22,8 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | DataTransfer | 从 UI 或 HTTP API 手动发送 |
 | FirmwareStatusNotification | Downloading → Downloaded → Installing →（重启、BootNotification）→ Installed；失败注入时为 DownloadFailed / InstallationFailed |
 | DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
+| SecurityEventNotification | Security Whitepaper；与 2.0.1 相同的事件，使用 1.6 名称 InvalidCentralSystemCertificate / FailedToAuthenticateAtCentralSystem / InvalidChargePointCertificate（critical 事件离线时也排队） |
+| SignCertificate | Security Whitepaper；收到 ExtendedTriggerMessage `SignChargePointCertificate` 后生成新密钥和 CSR（CN = `serial` 或充电桩 ID，O = `CpoName`，默认 `vendor`） |
 
 交易相关消息（StartTransaction、StopTransaction、周期 MeterValues）和状态变化引起的 StatusNotification 通过同一个有序队列发送。
 因断线而没收到应答的消息会在下次 Boot 被接受后重发，因此 CSMS 可能收到两次（1.6 没有幂等键）。
@@ -50,6 +52,9 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | CancelReservation | 已知预约应答 `Accepted`，否则 `Rejected` |
 | UpdateFirmware | 仅模拟（不实际下载）：等到 `retrieveDate`，下载失败时按 `retries` / `retryInterval` 重试；没有交易的连接器在交易全部结束前为 `Unavailable`，之后安装并重启（同 Hard Reset）。各步骤时长与失败注入：每台充电桩的 `maintenance`（`download_s`、`install_s`、`upload_s`、`retry_interval_s`、`fail_download`、`fail_install`、`fail_upload`）。尚未安装的更新被新请求替换；安装中收到的请求被忽略 |
 | GetDiagnostics | 应答 `fileName` `<id>-diagnostics-<时间>.log` 并模拟上传（不实际上传）；进行中的上传被新请求替换 |
+| ExtendedTriggerMessage | Security Whitepaper：TriggerMessage 的消息加上 `SignChargePointCertificate`；`LogStatusNotification` 为 `NotImplemented` |
+| CertificateSigned | Security Whitepaper；与 2.0.1 相同：与未完成的 CSR 一致时 `Accepted`，然后（Profile 3）用新证书重连 |
+| InstallCertificate / DeleteCertificate / GetInstalledCertificateIds | Security Whitepaper；CentralSystemRootCertificate / ManufacturerRootCertificate，与 2.0.1 相同 |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -82,8 +87,8 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | PublishFirmwareStatusNotification | Not supported |  |
 | ReportChargingProfiles | 支持 | 应答 GetChargingProfiles：每个 EVSE 与 `chargingLimitSource` 一段，除最后一段外 `tbc` |
 | ReservationStatusUpdate | 支持 | 到达 `expiryDateTime` 时 `Expired`；预约的 EVSE（无 `evseId` 时为整个充电站）变为 Faulted / Unavailable 时 `Removed` |
-| SecurityEventNotification | Not supported |  |
-| SignCertificate | Not supported |  |
+| SecurityEventNotification | 支持 | StartupOfTheDevice、ResetOrReboot、FirmwareUpdated、InvalidCsmsCertificate、InvalidTLSVersion、FailedToAuthenticateAtCsms、InvalidChargingStationCertificate、DiscardedRenewedClientCertificate、ReconfigurationOfSecurityParameters。critical 事件离线时也排队，在下一次 Boot 被接受后发送；其它事件只在连接期间发生时发送 |
+| SignCertificate | 支持 | 收到 TriggerMessage `SignChargingStationCertificate` 后生成新的 EC P-256 密钥和 CSR（CN = `serial`，未设置时为充电桩 ID；O = `SecurityCtrlr.OrganizationName`），`certificateType` 为 `ChargingStationCertificate`。没有应答的 CSR 不重发（未模拟 CertSigningWaitMinimum） |
 | StatusNotification | 支持 | 每个 EVSE（connector 1）一条，EVSE 0 不发送。`connectorStatus` 为 Available / Occupied / Reserved / Unavailable / Faulted；更细的状态（充电、暂停）由 TransactionEvent 的 `chargingState` 表示 |
 | TransactionEvent | 支持 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）由充电站生成；`seqNo` 每笔交易从 0 计数；每隔 `SampledDataCtrlr.TxUpdatedInterval` 发送周期性 `Updated`；断线期间产生的事件带 `offline: true` |
 
@@ -101,7 +106,7 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | 消息 | 支持 | 备注 |
 |---|---|---|
 | CancelReservation | 支持 | 已知预约应答 `Accepted`（不发送 ReservationStatusUpdate），否则 `Rejected` |
-| CertificateSigned | Not supported |  |
+| CertificateSigned | 支持 | 证书与未完成的 CSR 密钥一致且当前有效时 `Accepted`（不检查 CA 层级，由 CSMS 在下一次 TLS 握手中检查），否则 `Rejected` 并产生 InvalidChargingStationCertificate。Profile 3 下用新证书重连；该连接失败时回退到旧证书（DiscardedRenewedClientCertificate）。`V2GCertificate` 为 `Rejected` |
 | ChangeAvailability | 支持 | 无 `evse` 或 EVSE 0 设置充电站自身的可用性，与 EVSE 的可用性分开保存（EVSE `Operative` 不会解除充电站 `Inoperative`）。交易进行中（该 EVSE，或对充电站而言任一 EVSE）改为 Inoperative 应答 `Scheduled`，交易结束后生效；充电站 Inoperative 时空闲 EVSE 立即变为 Unavailable |
 | ClearCache | 支持 | 清空授权缓存；`AuthCacheCtrlr.Enabled` 为 false 时应答 `Rejected` |
 | ClearChargingProfile | 支持 | `chargingProfileId` 优先于其他条件，条件之间为 AND；外部约束不会被 CSMS 清除 |
@@ -110,19 +115,19 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | CostUpdated | Not supported |  |
 | CustomerInformation | Not supported |  |
 | DataTransfer | 支持 | 默认应答 `UnknownVendorId` |
-| DeleteCertificate | Not supported |  |
+| DeleteCertificate | 支持 | 按哈希数据（SHA256 / SHA384 / SHA512）`Accepted` / `NotFound`；客户端证书不能删除（`Failed`） |
 | GetBaseReport | 支持 | ConfigurationInventory（所有非 ReadOnly 变量）、FullInventory、SummaryInventory；应答之后发送 NotifyReport 各段 |
 | GetChargingProfiles | 支持 | 有匹配的 profile 时 `Accepted`，否则 `NoProfiles`；应答之后发送 ReportChargingProfiles 各段 |
 | GetCompositeSchedule | 支持 | 与实际功率限值使用同一计算函数；各时段的值以硬件最大值封顶，该最大值也表示“无限制”。未知 EVSE 或 duration < 1 → `Rejected`；`chargingRateUnit` 不在 `SmartChargingCtrlr.RateUnit` 中 → `Rejected`（`UnsupportedRateUnit`） |
 | GetDisplayMessages | Not supported |  |
-| GetInstalledCertificateIds | Not supported |  |
+| GetInstalledCertificateIds | 支持 | 已安装 CA 证书的 SHA256 哈希数据；无匹配时 `NotFound`（V2GCertificateChain 永远无匹配） |
 | GetLocalListVersion | 支持 | 保存的版本号；收到第一份列表之前、或 `LocalAuthListCtrlr.Enabled` 为 false 时为 0 |
 | GetLog | 支持 | `Accepted` 并返回 `filename` `<id>_<logType>_<时间>.log`；取消进行中的上传时为 `AcceptedCanceled`；上传为模拟（`maintenance` 设置） |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | 请使用 GetBaseReport |
 | GetTransactionStatus | Not supported |  |
 | GetVariables | 支持 | 属性类型 Actual / Target / MinSet / MaxSet；`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`；WriteOnly 变量 `Rejected`。条目数超过 `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurrenceConstraintViolation` |
-| InstallCertificate | Not supported |  |
+| InstallCertificate | 支持 | 仅接受一张当前有效的 PEM 证书；其它内容或已装满 20 张 CA 证书时 `Rejected`。安装的 CSMS 根证书在下一次 TLS 连接中被信任。只保存在内存中 |
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | 支持 | `remoteStartId` 与可选的 `chargingProfile`（不带 `transactionId` 的 TxProfile，安装后绑定到新交易）。无 `evseId` 时使用第一个已插枪且可启动的 EVSE。`AuthCtrlr.AuthorizeRemoteStart` 为 true 时，令牌与现场出示一样进行授权。type 为 `Central` / `NoAuthorization` 的令牌不授权。由它启动的交易 `triggerReason` 为 `RemoteStart`（之后才插枪也一样）。超过 `TxCtrlr.EVConnectionTimeOut` 仍在等待插枪的令牌被丢弃 |
 | RequestStopTransaction | 支持 | 本充电站进行中的交易应答 `Accepted`（以 `RemoteStop` 结束），否则 `Rejected` |
@@ -146,5 +151,5 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | 功能 | 状态 |
 |---|---|
 | OCPP 2.1 | 计划在 v0.3 支持（UI 中灰色显示） |
-| Security Profile 3（TLS 客户端证书）、证书管理、Security Whitepaper 消息（SecurityEventNotification 等） | 计划中 |
+| 1.6 Security Whitepaper 的 SignedUpdateFirmware、GetLog、LogStatusNotification、SignedFirmwareStatusNotification | 不支持（CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 不支持（付费标准） |

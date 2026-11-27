@@ -27,7 +27,8 @@ Successful requests answer `{"ok": true, ...}` (GET routes return the data itsel
 Passwords are always returned as `********`; sending the mask back keeps the stored password. Since a PUT
 replaces the whole item, an omitted `password` means no password.
 
-`/api/chargers/{id}/settings` covers `csms_url`, `ocpp_version`, `password`, `ca_file`, `verify_tls`,
+`/api/chargers/{id}/settings` covers `csms_url`, `ocpp_version`, `password`, `ca_file`, `client_cert_file`, `client_key_file`,
+`verify_tls`,
 `id_tags` and `config_keys`, plus the `effective` CSMS URL and OCPP version. PATCH changes only the fields
 it contains; `null` unsets a field (`id_tags` / `config_keys` become empty; `verify_tls` must be true or
 false). The password mask round-trips as above. Changes are applied with a configuration reload and are

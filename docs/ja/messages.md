@@ -22,6 +22,8 @@ SME OCPPSim は OCPP 1.6J の Charge Point と OCPP 2.0.1 の Charging Station �
 | DataTransfer | UI または HTTP API から手動で送信します |
 | FirmwareStatusNotification | Downloading → Downloaded → Installing →（再起動、BootNotification）→ Installed。失敗注入で DownloadFailed / InstallationFailed |
 | DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
+| SecurityEventNotification | Security Whitepaper。2.0.1 と同じイベントを 1.6 の名前（InvalidCentralSystemCertificate / FailedToAuthenticateAtCentralSystem / InvalidChargePointCertificate）で送信（critical なものはオフライン中もキューに保持） |
+| SignCertificate | Security Whitepaper。ExtendedTriggerMessage `SignChargePointCertificate` の後に新しい鍵と CSR（CN = `serial` または充電器 ID、O = `CpoName`、既定は `vendor`） |
 
 トランザクション関連のメッセージ（StartTransaction、StopTransaction、定期 MeterValues）と状態変化による
 StatusNotification は、1 本の順序付きキューで送信されます。切断で応答を受け取れなかったメッセージは次回の
@@ -51,6 +53,9 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 | CancelReservation | 既知の予約なら `Accepted`、それ以外は `Rejected` |
 | UpdateFirmware | 模擬のみ（実際のダウンロードはしません）。`retrieveDate` まで待ち、ダウンロード失敗時は `retries` / `retryInterval` に従います。トランザクションのないコネクタはトランザクションがなくなるまで `Unavailable` にし、その後インストールして再起動します（Hard Reset と同じ）。各段階の時間と失敗注入は充電器ごとの `maintenance`（`download_s`、`install_s`、`upload_s`、`retry_interval_s`、`fail_download`、`fail_install`、`fail_upload`）。インストール前の更新は新しい要求で置き換え、インストール中に届いた要求は無視します |
 | GetDiagnostics | `fileName` `<id>-diagnostics-<時刻>.log` を返し、アップロードを模擬します（実際の送信はしません）。実行中の送信は新しい要求で置き換えます |
+| ExtendedTriggerMessage | Security Whitepaper。TriggerMessage のメッセージと `SignChargePointCertificate`。`LogStatusNotification` は `NotImplemented` |
+| CertificateSigned | Security Whitepaper。2.0.1 と同様に未処理の CSR と一致すれば `Accepted`、その後（プロファイル 3）新しい証明書で再接続 |
+| InstallCertificate / DeleteCertificate / GetInstalledCertificateIds | Security Whitepaper。CentralSystemRootCertificate / ManufacturerRootCertificate、2.0.1 と同様 |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -84,8 +89,8 @@ Web UI や HTTP API が「コネクター」と言う場合は EVSE id を指し
 | PublishFirmwareStatusNotification | Not supported |  |
 | ReportChargingProfiles | 対応 | GetChargingProfiles への応答: EVSE と `chargingLimitSource` ごとに 1 通、最後以外は `tbc` |
 | ReservationStatusUpdate | 対応 | `expiryDateTime` で `Expired`、予約した EVSE（`evseId` なしの場合はステーション）が Faulted / Unavailable になると `Removed` |
-| SecurityEventNotification | Not supported |  |
-| SignCertificate | Not supported |  |
+| SecurityEventNotification | 対応 | StartupOfTheDevice、ResetOrReboot、FirmwareUpdated、InvalidCsmsCertificate、InvalidTLSVersion、FailedToAuthenticateAtCsms、InvalidChargingStationCertificate、DiscardedRenewedClientCertificate、ReconfigurationOfSecurityParameters。critical なイベントはオフライン中もキューに保持し、次に Boot が受理された後に送信。それ以外は接続中に発生したものだけ送信 |
+| SignCertificate | 対応 | TriggerMessage `SignChargingStationCertificate` の後に新しい EC P-256 鍵と CSR（CN = `serial`、未設定なら充電器 ID。O = `SecurityCtrlr.OrganizationName`）を送信、`certificateType` は `ChargingStationCertificate`。応答のない CSR は再送しない（CertSigningWaitMinimum は未モデル化） |
 | StatusNotification | 対応 | EVSE ごと（コネクター 1）に送信し、EVSE 0 の分はありません。`connectorStatus` は Available / Occupied / Reserved / Unavailable / Faulted。より細かい状態（充電中、一時停止）は TransactionEvent の `chargingState` で表します |
 | TransactionEvent | 対応 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）はステーションが生成します。`seqNo` はトランザクションごとに 0 から。定期 `Updated` は `SampledDataCtrlr.TxUpdatedInterval` ごと。切断中に発生したイベントは `offline: true` |
 
@@ -105,7 +110,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | メッセージ | 対応 | 備考 |
 |---|---|---|
 | CancelReservation | 対応 | 既知の予約なら `Accepted`（ReservationStatusUpdate は送りません）、それ以外は `Rejected` |
-| CertificateSigned | Not supported |  |
+| CertificateSigned | 対応 | 未処理の CSR と鍵が一致し現在有効な証明書なら `Accepted`（CA 階層は検査しない。CSMS が次の TLS ハンドシェイクで検査する）、それ以外は `Rejected` と InvalidChargingStationCertificate。プロファイル 3 では新しい証明書で再接続し、その接続が失敗したら旧証明書に戻す（DiscardedRenewedClientCertificate）。`V2GCertificate` は `Rejected` |
 | ChangeAvailability | 対応 | `evse` なし、または EVSE 0 はステーション自体の可用性で、EVSE の可用性とは別に保持します（EVSE の `Operative` はステーションの `Inoperative` を解除しません）。トランザクション中（その EVSE、ステーションならいずれかの EVSE）に Inoperative にする場合は `Scheduled` で、終了時に反映します。ステーションの Inoperative では空いている EVSE はすぐに Unavailable になります |
 | ClearCache | 対応 | 認証キャッシュを消去します。`AuthCacheCtrlr.Enabled` が false の間は `Rejected` |
 | ClearChargingProfile | 対応 | `chargingProfileId` が条件より優先し、条件は AND。外部制約は CSMS からは削除されません |
@@ -114,19 +119,19 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | CostUpdated | Not supported |  |
 | CustomerInformation | Not supported |  |
 | DataTransfer | 対応 | 既定の応答は `UnknownVendorId` |
-| DeleteCertificate | Not supported |  |
+| DeleteCertificate | 対応 | ハッシュデータ（SHA256 / SHA384 / SHA512）で `Accepted` / `NotFound`。クライアント証明書は削除できない（`Failed`） |
 | GetBaseReport | 対応 | ConfigurationInventory（ReadOnly 以外の全変数）、FullInventory、SummaryInventory。応答の後に NotifyReport を送信します |
 | GetChargingProfiles | 対応 | 一致するプロファイルがあれば `Accepted`、なければ `NoProfiles`。応答の後に ReportChargingProfiles を送信します |
 | GetCompositeSchedule | 対応 | 実際の電力制限と同じ評価関数。期間の値はハードウェア最大値で頭打ちになり、最大値は「制限なし」も表します。未知の EVSE または duration < 1 は `Rejected`。`SmartChargingCtrlr.RateUnit` にない `chargingRateUnit` は `Rejected`（`UnsupportedRateUnit`） |
 | GetDisplayMessages | Not supported |  |
-| GetInstalledCertificateIds | Not supported |  |
+| GetInstalledCertificateIds | 対応 | インストール済み CA 証明書の SHA256 ハッシュデータ。該当なしは `NotFound`（V2GCertificateChain は常に該当なし） |
 | GetLocalListVersion | 対応 | 保持しているバージョン。最初のリストを受け取るまで、または `LocalAuthListCtrlr.Enabled` が false の間は 0 |
 | GetLog | 対応 | `Accepted` と `filename` `<id>_<logType>_<時刻>.log`。実行中の送信を取り消したときは `AcceptedCanceled`。送信は模擬（`maintenance` の設定） |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | GetBaseReport を使用してください |
 | GetTransactionStatus | Not supported |  |
 | GetVariables | 対応 | 属性タイプ Actual / Target / MinSet / MaxSet。`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`。WriteOnly の変数は `Rejected`。`DeviceDataCtrlr.ItemsPerMessage[GetVariables]` を超える件数は CALLERROR `OccurrenceConstraintViolation` |
-| InstallCertificate | Not supported |  |
+| InstallCertificate | 対応 | 現在有効な PEM 証明書 1 枚のみ。それ以外や CA 証明書が 20 枚に達した場合は `Rejected`。インストールした CSMS ルート証明書は次の TLS 接続で信頼される。メモリ上のみ保持 |
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | 対応 | `remoteStartId` と任意の `chargingProfile`（`transactionId` なしの TxProfile。新しいトランザクションに紐付けて設定）。`evseId` がなければケーブル接続済みで開始可能な最初の EVSE を使います。`AuthCtrlr.AuthorizeRemoteStart` が true ならトークンを提示時と同様に認証します。type が `Central` / `NoAuthorization` のトークンは認証しません。これで開始したトランザクションの `triggerReason` は、ケーブルが後から接続された場合も `RemoteStart` です。`TxCtrlr.EVConnectionTimeOut` を過ぎてもケーブルを待っているトークンは破棄します |
 | RequestStopTransaction | 対応 | このステーションで実行中のトランザクションなら `Accepted`（`RemoteStop` で終了）、それ以外は `Rejected` |
@@ -150,5 +155,5 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | 機能 | 状況 |
 |---|---|
 | OCPP 2.1 | v0.3 で対応予定（UI ではグレー表示） |
-| セキュリティプロファイル 3（TLS クライアント証明書）、証明書管理、Security Whitepaper のメッセージ（SecurityEventNotification など） | 対応予定 |
+| 1.6 Security Whitepaper の SignedUpdateFirmware、GetLog、LogStatusNotification、SignedFirmwareStatusNotification | 未対応（CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 非対応（有償規格のため） |

@@ -103,6 +103,15 @@ KEYS: Tuple[ConfigKeyDef, ...] = (
     _k("ChargingScheduleMaxPeriods", _INT, True, "48"),  # §9.4.3 p.107
     _k("ConnectorSwitch3to1PhaseSupported", _BOOL, True, "false"),  # §9.4.4 p.107, errata 4.28
     _k("MaxChargingProfilesInstalled", _INT, True, "10"),  # §9.4.5 p.108
+    # ---- Security Whitepaper (M8). The whitepaper is not in the local spec folder: names from the ``ocpp``
+    # library's 1.6 ConfigurationKey enum, so ``verified=False``. SecurityProfile is RW in the whitepaper; the
+    # simulator cannot switch profiles at run time (the url scheme and credentials come from the YAML), so it is
+    # R here and derived from the connection. CpoName sets the O RDN of a CSR; CertificateStoreMaxLength bounds
+    # InstallCertificate (runtime.security.CERT_MAX); AdditionalRootCertificateCheck is not supported.
+    ConfigKeyDef("SecurityProfile", _INT, True, "0"),
+    ConfigKeyDef("CpoName", KeyType.STR, False, ""),
+    ConfigKeyDef("CertificateStoreMaxLength", _INT, True, "20"),
+    ConfigKeyDef("AdditionalRootCertificateCheck", _BOOL, True, "false"),
 )
 
 KEYS_BY_NAME: Dict[str, ConfigKeyDef] = {k.name: k for k in KEYS}

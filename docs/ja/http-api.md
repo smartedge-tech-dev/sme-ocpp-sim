@@ -26,7 +26,7 @@ CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答
 パスワードは常に `********` で返します。マスクのまま送り返すと保存済みのパスワードが維持されます。PUT は項目全体を
 置き換えるため、`password` を省略するとパスワードなしになります。
 
-`/api/chargers/{id}/settings` は `csms_url`、`ocpp_version`、`password`、`ca_file`、`verify_tls`、`id_tags`、
+`/api/chargers/{id}/settings` は `csms_url`、`ocpp_version`、`password`、`ca_file`、`client_cert_file`、`client_key_file`、`verify_tls`、`id_tags`、
 `config_keys` と、実際に使われる CSMS URL / OCPP バージョン（`effective`）を扱います。PATCH は含まれる
 フィールドだけを変更し、`null` はその設定を解除します（`id_tags` / `config_keys` は空になります。`verify_tls`
 は true か false のみ）。パスワードのマスクは上記と同じく送り返せます。変更は設定の再読み込みで反映され、

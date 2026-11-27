@@ -8,6 +8,7 @@
 #
 # No protocol library data: the OCPP-J RPC layer and message models are in-house, and the `ocpp`
 # package is a dev-only test peer, so there is no collect_data_files("ocpp") / collect_submodules.
+# cryptography (runtime dependency since v0.2 M8) is collected by the hook in pyinstaller-hooks-contrib.
 import os
 from PyInstaller.utils.hooks import collect_submodules
 

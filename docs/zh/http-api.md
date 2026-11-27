@@ -25,7 +25,7 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 
 密码始终以 `********` 返回；原样发回掩码会保留已保存的密码。由于 PUT 整项替换，省略 `password` 表示没有密码。
 
-`/api/chargers/{id}/settings` 包含 `csms_url`、`ocpp_version`、`password`、`ca_file`、`verify_tls`、`id_tags`、
+`/api/chargers/{id}/settings` 包含 `csms_url`、`ocpp_version`、`password`、`ca_file`、`client_cert_file`、`client_key_file`、`verify_tls`、`id_tags`、
 `config_keys`，以及实际生效的 CSMS URL / OCPP 版本（`effective`）。PATCH 只修改请求中出现的字段；`null` 表示
 取消该设置（`id_tags` / `config_keys` 变为空；`verify_tls` 只能是 true 或 false）。密码掩码同上可原样发回。
 修改通过重新加载配置生效，只有 `POST /api/config/save` 才写入文件。

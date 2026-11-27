@@ -177,9 +177,28 @@ Interpretations (not defined by the spec)
   LogStatusNotification sends ``Uploading`` (with the requestId) while a log upload runs, else ``Idle`` (F06.FR.13 /
   FR.14, N01.FR.13); FirmwareStatusNotification sends the last sent status with its requestId, ``Idle`` when that
   was ``Installed`` or none was sent (L02.FR.16 / FR.17, F06.FR.16; a stopped charger forgets an unfinished
-  update, so it answers ``Idle``). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
-  ``requestedMessage`` values (the certificate messages, PublishFirmwareStatusNotification) answer
-  ``NotImplemented``.
+  update, so it answers ``Idle``). An unknown EVSE or a connector other than 1 is ``Rejected``.
+  SignChargingStationCertificate is ``Accepted`` and sends a SignCertificateRequest (M8, below). The other
+  ``requestedMessage`` values (SignV2GCertificate, SignCombinedCertificate: ISO 15118;
+  PublishFirmwareStatusNotification) answer ``NotImplemented``.
+- Security (M8, A02 / A04 / M03 - M05; ``runtime.security`` has the shared interpretations): the CSR of a
+  SignCertificateRequest (``certificateType`` ChargingStationCertificate) has CN = ``serial`` (the charger id
+  without one, A00.FR.511) and O = SecurityCtrlr.OrganizationName (A00.FR.509). CertificateSigned is ``Accepted``
+  for a chain matching the outstanding CSR, else ``Rejected`` (reasonCode ``InvalidCertificate``) with an
+  InvalidChargingStationCertificate event (A02.FR.07); ``certificateType`` V2GCertificate is ``Rejected``
+  (``NotSupported``). With security profile 3 the station then reconnects with the new certificate (A02.FR.08),
+  falls back to the old one when that connection fails (A02.FR.28, DiscardedRenewedClientCertificate, A02.FR.29)
+  and discards the old one once a boot is accepted (A02.FR.10); with profile 1 / 2 the certificate is only stored.
+  CertSigningWaitMinimum / CertSigningRepeatTimes (A02.FR.17 - FR.19, optional variables) are not modelled: an
+  unanswered CSR is not resent. InstallCertificate / DeleteCertificate / GetInstalledCertificateIds (M03 - M05)
+  manage CSMSRootCertificate / ManufacturerRootCertificate / V2GRootCertificate / MORootCertificate entries;
+  V2GCertificateChain is always ``NotFound``. SecurityEventNotification (A04): StartupOfTheDevice (the station is
+  created), ResetOrReboot (a Reset or the firmware reboot), FirmwareUpdated (Installed), InvalidCsmsCertificate
+  (TLS server check failed, A00.FR.310), InvalidTLSVersion (A00.FR.316), FailedToAuthenticateAtCsms (HTTP 401 or
+  client certificate refused), InvalidChargingStationCertificate, DiscardedRenewedClientCertificate and
+  ReconfigurationOfSecurityParameters (a new client certificate or BasicAuthPassword). SettingSystemTime,
+  InvalidFirmwareSignature and the other events of the appendix are never raised (nothing in the simulator
+  produces them).
 - Firmware update (M7, L01 / L02; ``runtime.maintenance`` has the shared interpretations): UpdateFirmware is
   ``Accepted``, or ``AcceptedCanceled`` when it cancels an update that has not started installing (L02.FR.15, no
   status is sent for the cancelled one); one received while ``Installing`` or later is ``Rejected`` (L02.FR.18,
@@ -263,6 +282,7 @@ from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
 from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
 from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
+from ...runtime.security import Security
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
@@ -283,6 +303,9 @@ from .enums import (BootReasonEnumType, CancelReservationStatusEnumType, ChangeA
                     SendLocalListStatusEnumType, TransactionEventEnumType, TriggerMessageStatusEnumType,
                     TriggerReasonEnumType, UnlockStatusEnumType, UpdateEnumType, UpdateFirmwareStatusEnumType,
                     UploadLogStatusEnumType)
+from .enums import (CertificateSignedStatusEnumType, CertificateSigningUseEnumType, DeleteCertificateStatusEnumType,
+                    GetCertificateIdUseEnumType, GetInstalledCertificateStatusEnumType, HashAlgorithmEnumType,
+                    InstallCertificateStatusEnumType)
 from .profiles import (REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT, ChargingProfile, ChargingSchedule, ClearStatus,
                        InstalledProfile, Limits, ProfileStatus, ProfileStore, SchedulePeriod)
 
@@ -343,9 +366,13 @@ def external_profile_id(evse_id: int) -> int:
 
 T = TriggerReasonEnumType
 MT = MessageTriggerEnumType
+SE = d.SecurityEventKind
+#: statusInfo.reasonCode of a Rejected CertificateSigned (informative).
+REASON_INVALID_CERTIFICATE = "InvalidCertificate"
 #: TriggerMessage values this station serves; every other one is NotImplemented.
 TRIGGERABLE = frozenset({MT.boot_notification, MT.heartbeat, MT.status_notification, MT.meter_values,
-                         MT.transaction_event, MT.log_status_notification, MT.firmware_status_notification})
+                         MT.transaction_event, MT.log_status_notification, MT.firmware_status_notification,
+                         MT.sign_charging_station_certificate})
 #: idToken types a RequestStartTransaction never authorizes, also with AuthorizeRemoteStart (F01.FR.02).
 NOT_AUTHORIZED_TYPES = frozenset({IdTokenEnumType.central, IdTokenEnumType.no_authorization})
 _ACCEPTED, _PENDING = d.BootStatus.ACCEPTED.value, d.BootStatus.PENDING.value
@@ -437,11 +464,16 @@ class Station201(VersionStation):
         self.local_list = LocalAuthList(dm.LOCAL_LIST_MAX)
         self.cache = AuthCache(dm.AUTH_CACHE_MAX)
         self.reservations: Dict[int, Reservation] = {}
+        #: Security log / events, CA certificates, client certificate (M8).
+        self.security = Security(clock=lambda: self.host.clock(), client_cert_file=cfg.client_cert_file,
+                                 client_key_file=cfg.client_key_file, max_certificates=dm.CERTIFICATE_ENTRIES_MAX)
+        self.security.record(SE.STARTUP_OF_THE_DEVICE, connected=False)
         #: The Device Model (M4); ``ValueError`` when the charger's ``variables`` do not apply.
         self.dm = dm.build(cfg, message_timeout_s=host.call_timeout, url=getattr(host, "csms_url", "") or "",
                            availability=lambda i: connector_status(self.evses[i].status).value,
                            power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()),
-                           list_entries=lambda: len(self.local_list))
+                           list_entries=lambda: len(self.local_list),
+                           certificate_entries=lambda: self.security.certificate_entries)
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
         self.dm.on_change(dm.TX_UPDATED_INTERVAL, lambda v: self._restart_meters())
@@ -490,6 +522,10 @@ class Station201(VersionStation):
             m.CancelReservationRequest: self._cancel_reservation,
             m.UpdateFirmwareRequest: self._update_firmware,
             m.GetLogRequest: self._get_log,
+            m.CertificateSignedRequest: self._certificate_signed,
+            m.InstallCertificateRequest: self._install_certificate,
+            m.DeleteCertificateRequest: self._delete_certificate,
+            m.GetInstalledCertificateIdsRequest: self._get_installed_certificate_ids,
         }
 
     # ================================================================== session (called by the shell)
@@ -521,6 +557,13 @@ class Station201(VersionStation):
             if r.timer is None:  # cancelled by close(): the charger was stopped and started again
                 self._arm(r)
         self.maint.on_online()
+        self.security.confirm()  # A02.FR.10
+        self.host.spawn(self.security.deliver(self._adapter.send_security_event))
+
+    def on_connect_failed(self, kind: str, message: str) -> None:
+        files = self.security.connect_failed(kind, message)
+        if files is not None:  # A02.FR.28: back to the previous client certificate
+            self.host.use_client_certificate(*files, reconnect=False)
 
     def on_session_ended(self) -> None:
         for e in self.evses.values():
@@ -576,6 +619,7 @@ class Station201(VersionStation):
                         "operative": self.station_operative},
             "connectors": [evse(e) for e in self.evses.values()],
             **self.maint.snapshot(),
+            "security": self.security.snapshot(),
         }
 
     def configuration(self) -> List[d.ConfigEntry]:
@@ -1386,6 +1430,7 @@ class Station201(VersionStation):
             self._reset_scheduled = True  # a transaction started before this task ran: wait for it again
             return
         self._resetting = True  # refuses new starts until the session is closed
+        self.security.record(SE.RESET_OR_REBOOT, reason.value, connected=False)
         try:
             self._reset_scheduled = False
             self._end_all_for_reset()
@@ -1465,6 +1510,8 @@ class Station201(VersionStation):
             fw_ev = (d.FirmwareStatus(last, self.maint.firmware_request_id)
                      if last not in (None, d.FirmwareState.INSTALLED) else d.FirmwareStatus(d.FirmwareState.IDLE))
             self.host.after_reply(functools.partial(self._send_firmware_status, fw_ev, triggered=True))
+        elif what is MT.sign_charging_station_certificate:  # A02.FR.02: after the TriggerMessageResponse
+            self.host.after_reply(self._sign_certificate)
         elif what is MT.heartbeat:
             self.host.after_reply(self.host.heartbeat)
         elif what is MT.status_notification:
@@ -1478,10 +1525,73 @@ class Station201(VersionStation):
             self.host.after_reply(functools.partial(self._trigger_tx_events, with_tx))
         return answer(TriggerMessageStatusEnumType.accepted)
 
+    # ================================================================== security (M8)
+
+    async def _sign_certificate(self) -> None:
+        """A02.FR.02 / FR.03: a new key pair and its CSR in a SignCertificateRequest; Rejected drops the key."""
+        csr = self.security.new_csr(self.cfg.serial or self.cfg.id, self.dm.value(dm.ORGANIZATION_NAME) or None)
+        req = m.SignCertificateRequest(csr=csr, certificate_type=CertificateSigningUseEnumType.charging_station_certificate)
+        res = await self.host.safe(self._adapter.send_sign_certificate(req), "SignCertificate")
+        if res is None or res.status is not GenericStatusEnumType.accepted:
+            self.security.drop_csr()
+
+    def _certificate_signed(self, req: m.CertificateSignedRequest) -> m.CertificateSignedResponse:
+        def rejected(code: str, why: str) -> m.CertificateSignedResponse:
+            return m.CertificateSignedResponse(status=CertificateSignedStatusEnumType.rejected,
+                                               status_info=m.StatusInfoType(reason_code=code, additional_info=why))
+
+        if req.certificate_type is CertificateSigningUseEnumType.v2g_certificate:
+            return rejected(REASON_NOT_SUPPORTED, "ISO 15118 certificates are not supported")
+        st, why = self.security.accept_signed(req.certificate_chain)
+        if st is not d.CertStatus.ACCEPTED:  # A02.FR.07
+            self.security.record(SE.INVALID_CHARGING_STATION_CERTIFICATE, why, connected=self.host.connected)
+            return rejected(REASON_INVALID_CERTIFICATE, why or "")
+        self.security.record(SE.RECONFIGURATION_OF_SECURITY_PARAMETERS, "new client certificate",
+                             connected=self.host.connected)
+        if self.cfg.client_cert_file is not None:  # profile 3: switch by reconnecting (A02.FR.08)
+            self.host.use_client_certificate(self.security.client_cert_file, self.security.client_key_file,
+                                             reconnect=True)
+        return m.CertificateSignedResponse(status=CertificateSignedStatusEnumType.accepted)
+
+    def _install_certificate(self, req: m.InstallCertificateRequest) -> m.InstallCertificateResponse:
+        st = self.security.install(d.CertUse(req.certificate_type.value), req.certificate)
+        if st is d.CertStatus.ACCEPTED:
+            self.host.set_trusted_roots(self.security.trusted_pem())
+        return m.InstallCertificateResponse(status=InstallCertificateStatusEnumType(st.value))
+
+    def _delete_certificate(self, req: m.DeleteCertificateRequest) -> m.DeleteCertificateResponse:
+        h = req.certificate_hash_data
+        st = self.security.delete(d.CertificateHashData(h.hash_algorithm.value, h.issuer_name_hash, h.issuer_key_hash,
+                                                        h.serial_number))
+        if st is d.CertStatus.ACCEPTED:
+            self.host.set_trusted_roots(self.security.trusted_pem())
+        return m.DeleteCertificateResponse(status=DeleteCertificateStatusEnumType(st.value))
+
+    def _get_installed_certificate_ids(
+            self, req: m.GetInstalledCertificateIdsRequest) -> m.GetInstalledCertificateIdsResponse:
+        # V2GCertificateChain never matches: no ISO 15118 certificates are installed.
+        uses = tuple(d.CertUse(t.value) for t in req.certificate_type or ()
+                     if t is not GetCertificateIdUseEnumType.v2g_certificate_chain)
+        if req.certificate_type and not uses:
+            found = []
+        else:
+            found = self.security.installed(uses)
+        chain = [m.CertificateHashDataChainType(
+            certificate_type=GetCertificateIdUseEnumType(use.value),
+            certificate_hash_data=m.CertificateHashDataType(
+                hash_algorithm=HashAlgorithmEnumType(h.hash_algorithm), issuer_name_hash=h.issuer_name_hash,
+                issuer_key_hash=h.issuer_key_hash, serial_number=h.serial_number)) for use, h in found]
+        if not chain:  # M03.FR.02
+            return m.GetInstalledCertificateIdsResponse(status=GetInstalledCertificateStatusEnumType.not_found)
+        return m.GetInstalledCertificateIdsResponse(status=GetInstalledCertificateStatusEnumType.accepted,
+                                                    certificate_hash_data_chain=chain)
+
     # ================================================================== firmware / log (M7)
 
     async def _send_firmware_status(self, ev: d.FirmwareStatus, *, triggered: bool = False) -> None:
         """Progress needs an accepted boot; a triggered one may also go out while Pending (B02.FR.02)."""
+        if ev.status is d.FirmwareState.INSTALLED and not triggered:
+            self.security.record(SE.FIRMWARE_UPDATED, connected=self.host.connected)
         req = m.FirmwareStatusNotificationRequest(status=FirmwareStatusEnumType(ev.status.value),
                                                   request_id=ev.request_id)
         if self.host.connected if triggered else self.host.online:
@@ -1592,6 +1702,8 @@ class Station201(VersionStation):
         """BasicAuthPassword was set (A01): the shell uses it at once and reconnects after the answer went out."""
         self.dm.put(dm.SECURITY_PROFILE, str(dm.security_profile(password, getattr(self.host, "csms_url", "")
                                                                  or "")))
+        self.security.record(SE.RECONFIGURATION_OF_SECURITY_PARAMETERS, "BasicAuthPassword changed",
+                             connected=self.host.connected)  # A01.FR.12
         self.host.reconnect_with_password(password)
 
     async def _send_report(self, request_id: int, parts: Sequence[Sequence[m.ReportDataType]],

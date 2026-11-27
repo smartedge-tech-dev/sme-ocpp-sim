@@ -74,7 +74,7 @@ mask keeps the stored password.
 |---|---|---|
 | `url` | none | CSMS WebSocket URL (`ws://` or `wss://`); the charger id is appended as the last path segment. Required unless every charger has `csms_url` |
 | `ocpp_version` | `"1.6"` | `"1.6"` or `"2.0.1"`; `"2.1"` is rejected as coming in v0.3 |
-| `security_profile` | `0` | `0`, `1` or `2`; every charger is checked against it, see [Security profiles](security-profiles.md) |
+| `security_profile` | `0` | `0`, `1`, `2` or `3`; every charger is checked against it, see [Security profiles](security-profiles.md) |
 | `reconnect.min_s` | `1.0` | First reconnect delay in seconds |
 | `reconnect.max_s` | `60.0` | Maximum reconnect delay (≥ `min_s`); the delay grows exponentially |
 | `reconnect.jitter` | `0.2` | Random spread of the delay (0–1) |
@@ -106,6 +106,8 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `ocpp_version` | `csms_defaults.ocpp_version` | Per-charger OCPP version (`"1.6"` or `"2.0.1"`); one site may mix both |
 | `password` | none | Basic auth password (security profile 1 / 2) |
 | `ca_file` | system trust store | Extra CA bundle (PEM) to verify the CSMS certificate on `wss://` |
+| `client_cert_file` | none | Security profile 3: the charger's TLS client certificate (PEM, a chain is allowed) |
+| `client_key_file` | none | Security profile 3: its private key (PEM, not encrypted) |
 | `verify_tls` | `true` | `false` skips certificate verification (testing only; a warning is logged) |
 | `require_subprotocol` | `true` | `false` keeps the connection when the CSMS does not echo the `ocpp1.6` / `ocpp2.0.1` subprotocol |
 | `vendor` | `"SmartEdge"` | BootNotification `chargePointVendor` (max. 20 characters) |

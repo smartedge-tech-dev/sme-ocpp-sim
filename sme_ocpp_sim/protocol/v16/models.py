@@ -72,6 +72,17 @@ from .enums import (
     UpdateType,
     ValueFormat,
 )
+from .enums import (
+    CertificateSignedStatusEnumType,
+    CertificateUseEnumType,
+    DeleteCertificateStatusEnumType,
+    GenericStatusEnumType,
+    GetInstalledCertificateStatusEnumType,
+    HashAlgorithmEnumType,
+    InstallCertificateStatusEnumType,
+    MessageTriggerEnumType,
+    TriggerMessageStatusEnumType,
+)
 
 
 def format_datetime(value: datetime) -> str:
@@ -89,6 +100,11 @@ CiString25 = Annotated[str, StringConstraints(max_length=25)]
 CiString50 = Annotated[str, StringConstraints(max_length=50)]
 CiString255 = Annotated[str, StringConstraints(max_length=255)]
 CiString500 = Annotated[str, StringConstraints(max_length=500)]
+# Plain (not CiString) strings of the Security Whitepaper schemas.
+String40 = Annotated[str, StringConstraints(max_length=40)]
+String128 = Annotated[str, StringConstraints(max_length=128)]
+String5500 = Annotated[str, StringConstraints(max_length=5500)]
+String10000 = Annotated[str, StringConstraints(max_length=10000)]
 IdToken = CiString20
 
 
@@ -475,6 +491,77 @@ class DiagnosticsStatusNotificationResponse(OcppModel):
     pass
 
 
+# --- Security (M8, OCPP 1.6 Security Whitepaper; shapes of the ``ocpp`` library's 1.6 security schemas) ----
+
+
+class CertificateHashDataType(OcppModel):
+    hash_algorithm: HashAlgorithmEnumType
+    issuer_name_hash: String128
+    issuer_key_hash: String128
+    serial_number: String40
+
+
+class SignCertificateRequest(OcppModel):
+    csr: String5500
+
+
+class SignCertificateResponse(OcppModel):
+    status: GenericStatusEnumType
+
+
+class CertificateSignedRequest(OcppModel):
+    certificate_chain: String10000
+
+
+class CertificateSignedResponse(OcppModel):
+    status: CertificateSignedStatusEnumType
+
+
+class InstallCertificateRequest(OcppModel):
+    certificate_type: CertificateUseEnumType
+    certificate: String5500
+
+
+class InstallCertificateResponse(OcppModel):
+    status: InstallCertificateStatusEnumType
+
+
+class DeleteCertificateRequest(OcppModel):
+    certificate_hash_data: CertificateHashDataType
+
+
+class DeleteCertificateResponse(OcppModel):
+    status: DeleteCertificateStatusEnumType
+
+
+class GetInstalledCertificateIdsRequest(OcppModel):
+    certificate_type: CertificateUseEnumType
+
+
+class GetInstalledCertificateIdsResponse(OcppModel):
+    certificate_hash_data: Optional[Annotated[list[CertificateHashDataType], Field(min_length=1)]] = None
+    status: GetInstalledCertificateStatusEnumType
+
+
+class SecurityEventNotificationRequest(OcppModel):
+    type: CiString50
+    timestamp: DateTime
+    tech_info: Optional[CiString255] = None
+
+
+class SecurityEventNotificationResponse(OcppModel):
+    pass
+
+
+class ExtendedTriggerMessageRequest(OcppModel):
+    requested_message: MessageTriggerEnumType
+    connector_id: Optional[int] = None
+
+
+class ExtendedTriggerMessageResponse(OcppModel):
+    status: TriggerMessageStatusEnumType
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -506,7 +593,17 @@ ACTIONS = (
     "GetDiagnostics",
     "FirmwareStatusNotification",
     "DiagnosticsStatusNotification",
+    # Security (M8)
+    "SignCertificate",
+    "CertificateSigned",
+    "InstallCertificate",
+    "DeleteCertificate",
+    "GetInstalledCertificateIds",
+    "SecurityEventNotification",
+    "ExtendedTriggerMessage",
 )
+#: Security Whitepaper actions: their schemas are not in the OCA 1.6 JSON set (``ocpp`` library's 1.6 schemas).
+SECURITY_ACTIONS = ACTIONS[ACTIONS.index("SignCertificate"):]
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}
 RESPONSES: dict[str, type[OcppModel]] = {a: globals()[f"{a}Response"] for a in ACTIONS}

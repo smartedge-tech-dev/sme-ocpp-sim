@@ -306,3 +306,64 @@ class DiagnosticsStatus(str, Enum):
     uploaded = "Uploaded"
     upload_failed = "UploadFailed"
     uploading = "Uploading"
+
+
+# --- Security (M8): OCPP 1.6 Security Whitepaper messages. Names and values are the type names / enums of the
+# 1.6 security schemas shipped with the ``ocpp`` library (``ocpp/v16/schemas``; the whitepaper itself is not in
+# the local spec folder).
+
+
+class CertificateSignedStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class CertificateUseEnumType(str, Enum):
+    central_system_root_certificate = "CentralSystemRootCertificate"
+    manufacturer_root_certificate = "ManufacturerRootCertificate"
+
+
+class DeleteCertificateStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    failed = "Failed"
+    not_found = "NotFound"
+
+
+class GenericStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class GetInstalledCertificateStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    not_found = "NotFound"
+
+
+class HashAlgorithmEnumType(str, Enum):
+    sha256 = "SHA256"
+    sha384 = "SHA384"
+    sha512 = "SHA512"
+
+
+class InstallCertificateStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    failed = "Failed"
+    rejected = "Rejected"
+
+
+class MessageTriggerEnumType(str, Enum):
+    """ExtendedTriggerMessage ``requestedMessage``."""
+
+    boot_notification = "BootNotification"
+    log_status_notification = "LogStatusNotification"
+    firmware_status_notification = "FirmwareStatusNotification"
+    heartbeat = "Heartbeat"
+    meter_values = "MeterValues"
+    sign_charge_point_certificate = "SignChargePointCertificate"
+    status_notification = "StatusNotification"
+
+
+class TriggerMessageStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    not_implemented = "NotImplemented"

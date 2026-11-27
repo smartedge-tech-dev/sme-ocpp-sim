@@ -71,7 +71,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 |---|---|---|
 | `url` | なし | CSMS の WebSocket URL（`ws://` または `wss://`）。充電器 ID を最後のパスセグメントとして付加します。すべての充電器に `csms_url` がある場合を除き必須です |
 | `ocpp_version` | `"1.6"` | `"1.6"` または `"2.0.1"`。`"2.1"` は v0.3 で対応予定としてエラーになります |
-| `security_profile` | `0` | `0`、`1`、`2`。各充電器の設定をこれに照らして検査します。[セキュリティプロファイル](security-profiles.md) を参照 |
+| `security_profile` | `0` | `0`、`1`、`2`、`3`。各充電器の設定をこれに照らして検査します。[セキュリティプロファイル](security-profiles.md) を参照 |
 | `reconnect.min_s` | `1.0` | 最初の再接続待ち時間（秒） |
 | `reconnect.max_s` | `60.0` | 再接続待ち時間の上限（≥ `min_s`）。待ち時間は指数的に増えます |
 | `reconnect.jitter` | `0.2` | 待ち時間のランダムなばらつき（0〜1） |
@@ -103,6 +103,8 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `ocpp_version` | `csms_defaults.ocpp_version` | 充電器ごとの OCPP バージョン（`"1.6"` または `"2.0.1"`）。1 つのサイトで混在できます |
 | `password` | なし | Basic 認証のパスワード（セキュリティプロファイル 1 / 2） |
 | `ca_file` | システムの信頼ストア | `wss://` で CSMS の証明書を検証する追加の CA バンドル（PEM） |
+| `client_cert_file` | なし | セキュリティプロファイル 3：充電器の TLS クライアント証明書（PEM、チェーン可） |
+| `client_key_file` | なし | セキュリティプロファイル 3：その秘密鍵（PEM、暗号化なし） |
 | `verify_tls` | `true` | `false` で証明書の検証を省略します（試験専用。警告をログに出力します） |
 | `require_subprotocol` | `true` | `false` にすると、CSMS が `ocpp1.6` / `ocpp2.0.1` サブプロトコルを返さなくても接続を続けます |
 | `vendor` | `"SmartEdge"` | BootNotification の `chargePointVendor`（最大 20 文字） |

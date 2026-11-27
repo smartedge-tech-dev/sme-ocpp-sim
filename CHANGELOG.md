@@ -32,6 +32,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   DiagnosticsStatusNotification (1.6, was NotImplemented) and LogStatusNotification (2.0.1) report the current
   status. New per-charger `maintenance` settings: step durations, retry interval and failure injection
   (`fail_download`, `fail_install`, `fail_upload`). The Web UI charger detail shows the firmware / log status.
+- Security profile 3 for OCPP 1.6J and 2.0.1: `wss://` with a TLS client certificate (`client_cert_file` /
+  `client_key_file` per charger, `csms_defaults.security_profile: 3`, no Basic Auth); TLS 1.2 or above; a
+  refused client certificate is reported as `client_cert_rejected`.
+- Certificate management for OCPP 2.0.1 and the 1.6 Security Whitepaper: SignCertificate with a generated CSR
+  (TriggerMessage `SignChargingStationCertificate` / ExtendedTriggerMessage `SignChargePointCertificate`),
+  CertificateSigned (the new certificate is used after a reconnect, with a fallback to the old one when the CSMS
+  refuses it), InstallCertificate (installed CSMS roots are trusted for the next TLS connection),
+  DeleteCertificate and GetInstalledCertificateIds; ExtendedTriggerMessage (1.6).
+- SecurityEventNotification for both versions: StartupOfTheDevice, ResetOrReboot, FirmwareUpdated, invalid
+  CSMS / charging station certificate, TLS version, failed authentication, discarded renewed certificate and
+  reconfiguration events; critical events are queued while offline. New 1.6 keys SecurityProfile, CpoName,
+  CertificateStoreMaxLength, AdditionalRootCertificateCheck; the 2.0.1 SecurityCtrlr.SecurityProfile reports 3,
+  CertificateEntries counts the installed certificates, AdditionalRootCertificateCheck is `false`.
+- Web UI: the charger detail shows the security profile and the client certificate subject; the settings
+  dialog has profile 3 and the client certificate / key files.
+
+### Changed
+
+- `cryptography` is now a runtime dependency (CSR generation, certificate parsing); it is bundled in the exe
+  and the Docker image.
 
 ## [0.2.0] - 2026-11-27
 

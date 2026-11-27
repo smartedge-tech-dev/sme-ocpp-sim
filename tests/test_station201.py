@@ -145,7 +145,9 @@ def test_boot_rejected_is_retried_and_sends_nothing_else():
     call.GetReport(request_id=1),
     call.Get15118EVCertificate(iso15118_schema_version="urn:iso:15118:2:2013:MsgDef", action="Install",
                                exi_request="AAAA"),
-    call.CertificateSigned(certificate_chain="x"),
+    call.GetCertificateStatus(ocsp_request_data={"hashAlgorithm": "SHA256", "issuerNameHash": "a",
+                                                 "issuerKeyHash": "b", "serialNumber": "1",
+                                                 "responderURL": "http://ocsp.example.com"}),
 ], ids=lambda a: type(a).__name__)
 def test_other_actions_answer_not_implemented(action):
     async def body(peer, rt):

@@ -99,6 +99,9 @@ class _FakeHost:
         self.cfg = ChargerConfig(id="CP")
         self.ev = self.supply = None
 
+    def clock(self) -> datetime:
+        return datetime.now(timezone.utc)
+
 
 class _FakeAdapter(d.VersionAdapter):
     version = "9.9"

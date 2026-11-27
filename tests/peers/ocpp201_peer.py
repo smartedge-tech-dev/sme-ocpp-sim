@@ -67,6 +67,9 @@ class Session:
     log_request_ids: list = field(default_factory=list)       # requestId per LogStatusNotification
     firmware_request_ids: list = field(default_factory=list)  # requestId per FirmwareStatusNotification
     reservation_updates: list = field(default_factory=list)  # (reservationId, status) per ReservationStatusUpdate
+    security_events: list = field(default_factory=list)  # (type, techInfo) per SecurityEventNotification
+    csrs: list = field(default_factory=list)             # (csr, certificateType) per SignCertificate
+    peercert: object = None  # the TLS client certificate (ssl getpeercert dict) of a wss:// session
     cs: object = None
 
 
@@ -184,6 +187,16 @@ class PeerCS(OcppCP201):
         self.session.data_transfers.append({"vendor_id": vendor_id, **kw})
         return call_result.DataTransfer(status="Accepted", data="pong")
 
+    @on("SecurityEventNotification")
+    async def on_security_event(self, type, timestamp, tech_info=None, **_):
+        self.session.security_events.append((type, tech_info))
+        return call_result.SecurityEventNotification()
+
+    @on("SignCertificate")
+    async def on_sign_certificate(self, csr, certificate_type=None, **_):
+        self.session.csrs.append((csr, certificate_type))
+        return call_result.SignCertificate(status=self.peer.sign_status)
+
 
 class CsmsPeer201:
     def __init__(self, *, hb_interval: int = 1, registered: Optional[set] = None,
@@ -195,6 +208,7 @@ class CsmsPeer201:
         self.retry_interval = retry_interval              # interval answered with Pending / Rejected
         self.token_statuses = dict(token_statuses or {})  # idToken -> AuthorizationStatus (default Accepted)
         self.token_groups = dict(token_groups or {})      # idToken -> groupIdToken of the Authorize answer
+        self.sign_status = "Accepted"                     # SignCertificate answer
         self.gates: dict[str, asyncio.Event] = {}         # action -> answer only once the event is set
         self.delays: dict[str, float] = {}                # action -> answer delay in seconds
         self.history: list = []                           # every Session, oldest first
@@ -256,6 +270,7 @@ class CsmsPeer201:
     async def _handler(self, ws) -> None:
         cs_id = _cs_id(ws.request.path)
         s = Session(cs_id, ws.subprotocol, ws.request.headers.get("Authorization"))
+        s.peercert = ws.transport.get_extra_info("peercert") if self.ssl_context else None
         self.sessions[cs_id] = s
         self.history.append(s)
         cs = PeerCS(cs_id, TapConnection(ws, s.frames), response_timeout=5)

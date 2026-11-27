@@ -286,6 +286,9 @@ function renderDetail(fresh) {
   if (c.local_list_version) info.push(t("detail.local_list", { n: c.local_list_version }));
   if (c.firmware && c.firmware.status) info.push(t("detail.firmware", { s: c.firmware.status }));
   if (c.log && c.log.status) info.push(t("detail.log", { s: c.log.status }));
+  if (c.security_profile != null) info.push(t("detail.security_profile", { n: c.security_profile }));
+  const sec = c.security || {};
+  if (sec.client_certificate) info.push(t("detail.client_cert", { s: sec.client_certificate }));
   $("dInfo").textContent = info.join(" · ");
   $("dError").textContent = c.last_error ? t("detail.last_error", { e: errText(c.last_error) }) : "";
   $("dConnect").disabled = c.enabled !== false;
@@ -745,6 +748,8 @@ async function openSettingsDialog(id) {
     $("setCVersion").value = c.ocpp_version || "";
     $("setPassword").value = c.password || "";   // the mask "********" keeps the stored password (web.py)
     $("setCa").value = c.ca_file || "";
+    $("setCert").value = c.client_cert_file || "";
+    $("setKey").value = c.client_key_file || "";
   }
   $("dlgSettings").showModal();
 }
@@ -754,7 +759,8 @@ async function applySettings() {
   const c = SET.charger;
   if (SET.id && c) {
     const want = { csms_url: $("setCUrl").value.trim() || null, ocpp_version: $("setCVersion").value || null,
-      password: $("setPassword").value || null, ca_file: $("setCa").value.trim() || null };
+      password: $("setPassword").value || null, ca_file: $("setCa").value.trim() || null,
+      client_cert_file: $("setCert").value.trim() || null, client_key_file: $("setKey").value.trim() || null };
     const patch = {};
     for (const [k, v] of Object.entries(want)) if (v !== (c[k] ?? null)) patch[k] = v;
     if (Object.keys(patch).length) SET.charger = await api("PATCH", chargerUrl(SET.id, "settings"), patch);

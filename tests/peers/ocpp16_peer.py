@@ -62,6 +62,9 @@ class Session:
     data_transfers: list = field(default_factory=list)
     firmware_statuses: list = field(default_factory=list)     # status per FirmwareStatusNotification
     diagnostics_statuses: list = field(default_factory=list)  # status per DiagnosticsStatusNotification
+    security_events: list = field(default_factory=list)  # (type, techInfo) per SecurityEventNotification
+    csrs: list = field(default_factory=list)             # csr per SignCertificate
+    peercert: object = None  # the TLS client certificate (ssl getpeercert dict) of a wss:// session
     cp: object = None
 
 
@@ -154,6 +157,16 @@ class PeerCP(OcppCP16):
         self.session.diagnostics_statuses.append(status)
         return call_result.DiagnosticsStatusNotification()
 
+    @on("SecurityEventNotification")
+    async def on_security_event(self, type, timestamp, tech_info=None, **_):
+        self.session.security_events.append((type, tech_info))
+        return call_result.SecurityEventNotification()
+
+    @on("SignCertificate")
+    async def on_sign_certificate(self, csr, **_):
+        self.session.csrs.append(csr)
+        return call_result.SignCertificate(status=self.peer.sign_status)
+
 
 class CsmsPeer:
     def __init__(self, *, hb_interval: int = 1, exercise: bool = False,
@@ -174,6 +187,7 @@ class CsmsPeer:
         self.registered = registered      # None = accept any charger id
         self.passwords = passwords        # None = no auth; {cp_id: password}
         self.ssl_context = ssl_context
+        self.sign_status = "Accepted"     # SignCertificate answer
         self.sessions: dict[str, Session] = {}
         self.port: Optional[int] = None
         self._server = None
@@ -270,6 +284,7 @@ class CsmsPeer:
     async def _handler(self, ws) -> None:
         cp_id = _cp_id(ws.request.path)
         s = Session(cp_id, ws.subprotocol, ws.request.headers.get("Authorization"))
+        s.peercert = ws.transport.get_extra_info("peercert") if self.ssl_context else None
         self.sessions[cp_id] = s
         self.history.append(s)
         cp = PeerCP(cp_id, TapConnection(ws, s.frames), response_timeout=5)

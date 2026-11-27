@@ -496,3 +496,48 @@ class LogStatusEnumType(str, Enum):
     accepted = "Accepted"
     rejected = "Rejected"
     accepted_canceled = "AcceptedCanceled"
+
+
+# --- M8 security / certificate management (Part 2 A02 / A04, M03 - M05)
+
+
+class CertificateSigningUseEnumType(str, Enum):
+    charging_station_certificate = "ChargingStationCertificate"
+    v2g_certificate = "V2GCertificate"
+
+
+class CertificateSignedStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class InstallCertificateUseEnumType(str, Enum):
+    v2g_root_certificate = "V2GRootCertificate"
+    mo_root_certificate = "MORootCertificate"
+    csms_root_certificate = "CSMSRootCertificate"
+    manufacturer_root_certificate = "ManufacturerRootCertificate"
+
+
+class InstallCertificateStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    failed = "Failed"
+
+
+class DeleteCertificateStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    failed = "Failed"
+    not_found = "NotFound"
+
+
+class GetCertificateIdUseEnumType(str, Enum):
+    v2g_root_certificate = "V2GRootCertificate"
+    mo_root_certificate = "MORootCertificate"
+    csms_root_certificate = "CSMSRootCertificate"
+    v2g_certificate_chain = "V2GCertificateChain"
+    manufacturer_root_certificate = "ManufacturerRootCertificate"
+
+
+class GetInstalledCertificateStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    not_found = "NotFound"

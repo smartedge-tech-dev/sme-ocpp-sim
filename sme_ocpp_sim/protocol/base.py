@@ -110,12 +110,17 @@ class TriggerWhat(str, Enum):
     STATUS = "StatusNotification"
     DIAGNOSTICS_STATUS = "DiagnosticsStatusNotification"
     FIRMWARE_STATUS = "FirmwareStatusNotification"
+    #: 1.6 Security ExtendedTriggerMessage only (M8).
+    LOG_STATUS = "LogStatusNotification"
+    SIGN_CERTIFICATE = "SignChargePointCertificate"
 
 
 @dataclass(frozen=True)
 class Trigger:
     what: TriggerWhat
     evse_id: Optional[int] = None
+    #: Sent as 1.6 ExtendedTriggerMessage (M8) instead of TriggerMessage.
+    extended: bool = False
 
 
 @dataclass(frozen=True)
@@ -208,6 +213,88 @@ class GetDiagnostics:
     retry_interval_s: Optional[int] = None
     start: Optional[datetime] = None
     stop: Optional[datetime] = None
+
+
+# --------------------------------------------------------------------------------------------- security (M8)
+
+
+class CertUse(str, Enum):
+    """Kind of an installed CA certificate. Values are the 2.0.1 ``InstallCertificateUseEnumType`` names; 1.6
+    Security calls the CSMS root ``CentralSystemRootCertificate`` and has only the first two kinds."""
+
+    CSMS_ROOT = "CSMSRootCertificate"
+    MANUFACTURER_ROOT = "ManufacturerRootCertificate"
+    V2G_ROOT = "V2GRootCertificate"
+    MO_ROOT = "MORootCertificate"
+
+
+class CertStatus(str, Enum):
+    """Result of a certificate command (Install / Delete / CertificateSigned / GetInstalledCertificateIds)."""
+
+    ACCEPTED = "Accepted"
+    REJECTED = "Rejected"
+    FAILED = "Failed"
+    NOT_FOUND = "NotFound"
+
+
+@dataclass(frozen=True)
+class CertificateHashData:
+    """``CertificateHashDataType`` (1.6 Security / 2.0.1 §2.6): hex digests of the issuer name and key."""
+
+    hash_algorithm: str  # "SHA256" | "SHA384" | "SHA512"
+    issuer_name_hash: str
+    issuer_key_hash: str
+    serial_number: str  # hex, no "0x", no leading zeroes
+
+
+class SecurityEventKind(str, Enum):
+    """Security events the simulator raises. Values are the 2.0.1 names (Part 2 Appendices, security_events.csv);
+    each version station maps them to its wire name (1.6 Security says ``CentralSystem`` / ``ChargePoint``)."""
+
+    FIRMWARE_UPDATED = "FirmwareUpdated"
+    FAILED_TO_AUTHENTICATE_AT_CSMS = "FailedToAuthenticateAtCsms"
+    STARTUP_OF_THE_DEVICE = "StartupOfTheDevice"
+    RESET_OR_REBOOT = "ResetOrReboot"
+    RECONFIGURATION_OF_SECURITY_PARAMETERS = "ReconfigurationOfSecurityParameters"
+    INVALID_CSMS_CERTIFICATE = "InvalidCsmsCertificate"
+    INVALID_CHARGING_STATION_CERTIFICATE = "InvalidChargingStationCertificate"
+    DISCARDED_RENEWED_CLIENT_CERTIFICATE = "DiscardedRenewedClientCertificate"
+    INVALID_TLS_VERSION = "InvalidTLSVersion"
+
+
+@dataclass(frozen=True)
+class SecurityEvent:
+    """SecurityEventNotification payload (the wire ``type`` is the version's name of ``kind``)."""
+
+    kind: SecurityEventKind
+    timestamp: datetime
+    tech_info: Optional[str] = None
+    critical: bool = False
+
+
+@dataclass(frozen=True)
+class CertificateSigned:
+    """1.6 CertificateSigned (M8); 2.0.1 hands its request model to the station."""
+
+    chain: str
+
+
+@dataclass(frozen=True)
+class InstallCertificate:
+    use: CertUse
+    certificate: str
+
+
+@dataclass(frozen=True)
+class DeleteCertificate:
+    hash_data: CertificateHashData
+
+
+@dataclass(frozen=True)
+class GetInstalledCertificateIds:
+    """Result: ``(CertStatus, tuple of (CertUse, CertificateHashData))``."""
+
+    uses: Tuple[CertUse, ...] = ()  # empty = every kind
 
 
 Command = Any  # union of the command dataclasses above

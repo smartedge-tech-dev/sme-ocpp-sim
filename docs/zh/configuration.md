@@ -70,7 +70,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 |---|---|---|
 | `url` | 无 | CSMS 的 WebSocket URL（`ws://` 或 `wss://`）；充电桩 ID 作为最后一段路径追加。除非每台充电桩都有 `csms_url`，否则必填 |
 | `ocpp_version` | `"1.6"` | `"1.6"` 或 `"2.0.1"`；`"2.1"` 会报错，提示将在 v0.3 支持 |
-| `security_profile` | `0` | `0`、`1` 或 `2`；每台充电桩都按它检查，见 [安全配置文件](security-profiles.md) |
+| `security_profile` | `0` | `0`、`1`、`2` 或 `3`；每台充电桩都按它检查，见 [安全配置文件](security-profiles.md) |
 | `reconnect.min_s` | `1.0` | 首次重连等待时间（秒） |
 | `reconnect.max_s` | `60.0` | 重连等待时间上限（≥ `min_s`）；等待时间按指数增长 |
 | `reconnect.jitter` | `0.2` | 等待时间的随机波动（0–1） |
@@ -102,6 +102,8 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `ocpp_version` | `csms_defaults.ocpp_version` | 单台充电桩的 OCPP 版本（`"1.6"` 或 `"2.0.1"`）；同一站点可以混用 |
 | `password` | 无 | Basic 认证密码（Security Profile 1 / 2） |
 | `ca_file` | 系统信任库 | `wss://` 时用于校验 CSMS 证书的额外 CA 证书包（PEM） |
+| `client_cert_file` | 无 | Security Profile 3：充电桩的 TLS 客户端证书（PEM，可为证书链） |
+| `client_key_file` | 无 | Security Profile 3：其私钥（PEM，不加密） |
 | `verify_tls` | `true` | `false` 跳过证书校验（仅限测试；日志中会输出警告） |
 | `require_subprotocol` | `true` | `false` 时即使 CSMS 未回显 `ocpp1.6` / `ocpp2.0.1` 子协议也保持连接 |
 | `vendor` | `"SmartEdge"` | BootNotification 的 `chargePointVendor`（最多 20 个字符） |

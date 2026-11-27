@@ -147,3 +147,60 @@ def test_wss_with_own_ca(tmp_path):
         asyncio.run(_try({"password": "pw"}, **server))     # system CAs do not know ours
     assert ei.value.kind == "tls_verify"
     assert asyncio.run(_try({"password": "pw", "verify_tls": False}, **server)) == "ocpp1.6"
+
+
+# ---------------------------------------------------------------------- profile 3 (wss + client certificate)
+
+def test_profile_3_property():
+    cfg = TransportConfig("wss://h/o", "A", client_cert_file="c.pem", client_key_file="c.key")
+    assert cfg.security_profile == 3
+    assert TransportConfig("wss://h/o", "A", password="p", client_cert_file="c.pem").security_profile is None
+    assert TransportConfig("ws://h/o", "A", client_cert_file="c.pem").security_profile is None
+
+
+def _p3(tmp_path):
+    pki = make_pki(tmp_path)
+    return pki, {"subprotocols": ["ocpp1.6"], "ssl": pki.server_context(client_ca=pki.ca_file)}
+
+
+def test_profile_3_correct_client_certificate(tmp_path):
+    pki, server = _p3(tmp_path)
+    cert, key = pki.client(tmp_path)
+    kw = {"ca_file": str(pki.ca_file), "client_cert_file": str(cert), "client_key_file": str(key)}
+    assert asyncio.run(_try(kw, **server)) == "ocpp1.6"
+
+
+def test_profile_3_no_client_certificate_is_rejected(tmp_path):
+    pki, server = _p3(tmp_path)
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(_try({"ca_file": str(pki.ca_file), "open_timeout": 5}, **server))
+    # Without a configured client certificate the charger did not try profile 3: a plain TLS / handshake error.
+    assert ei.value.kind in ("tls", "handshake", "network")
+
+
+def test_profile_3_client_certificate_of_another_ca_is_rejected(tmp_path):
+    pki, server = _p3(tmp_path)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    cert, key = make_pki(other_dir).client(other_dir)
+    kw = {"ca_file": str(pki.ca_file), "client_cert_file": str(cert), "client_key_file": str(key), "open_timeout": 5}
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(_try(kw, **server))
+    assert ei.value.kind == "client_cert_rejected"
+    assert "client certificate" in str(ei.value)
+
+
+def test_profile_3_unloadable_client_certificate(tmp_path):
+    pki, server = _p3(tmp_path)
+    kw = {"ca_file": str(pki.ca_file), "client_cert_file": str(tmp_path / "missing.pem"),
+          "client_key_file": str(tmp_path / "missing.key")}
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(_try(kw, **server))
+    assert ei.value.kind == "client_cert"
+
+
+def test_installed_root_is_trusted_via_ca_data(tmp_path):
+    pki, server = _p3(tmp_path)
+    cert, key = pki.client(tmp_path)
+    kw = {"ca_data": pki.ca_pem, "client_cert_file": str(cert), "client_key_file": str(key)}
+    assert asyncio.run(_try(kw, **server)) == "ocpp1.6"
