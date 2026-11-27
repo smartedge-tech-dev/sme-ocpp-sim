@@ -29,6 +29,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # ocpp: dev-only CSMS peer for integration tests and screenshots; jsonschema: checks against the OCA schemas.
+# schema: optional runtime check of 2.0.1 payloads against user-supplied JSON schemas (protocol/v201/schema.py).
+# A dateTime "format" is only checked when rfc3339-validator is installed as well.
+schema = ["jsonschema"]
 dev = ["pytest", "httpx", "ocpp==2.1.0", "jsonschema", "cryptography", "playwright", "pillow"]
 
 [project.urls]
@@ -50,6 +53,7 @@ packages = [
   "sme_ocpp_sim.charging",
   "sme_ocpp_sim.protocol",
   "sme_ocpp_sim.protocol.v16",
+  "sme_ocpp_sim.protocol.v201",
   "sme_ocpp_sim.rpc",
   "sme_ocpp_sim.runtime",
   "sme_ocpp_sim.configs",
