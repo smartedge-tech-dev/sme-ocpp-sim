@@ -11,6 +11,9 @@ Steps (port of the spike's steve_check.py onto the real runtime):
      an unknown tag is refused
   d. CSMS-initiated GetConfiguration through the SteVe web UI (login + CSRF)
   e. an unregistered charger id: the handshake is refused (HTTP 404) and recorded as last_error "not_found"
+  e2. RemoteStopTransaction from the web UI against a second running transaction
+  e3. Security Profile 1: charge box created through the web UI (SteVe bcrypts the password), right password
+      connects, wrong password is refused (HTTP 401)
   f. DB rows of the transaction / meter values; every frame is written to --frames (JSONL)
 
 The SteVe defaults (admin/1234 web user, steve/changeme DB user) are its public test defaults.
@@ -40,6 +43,8 @@ CP_ID = "SME-SIM-1"
 UNREG_ID = "SME-SIM-UNREGISTERED"
 KNOWN_TAG = "SMETAG1"
 UNKNOWN_TAG = "NOSUCHTAG9"
+SP1_ID = "SME-SIM-SP1"
+SP1_PASSWORD = "sim-sp1-pass-0123456"  # SteVe requires 16-20 characters
 
 results: dict = {}
 
@@ -112,6 +117,30 @@ class SteveWeb:
         url, _ = self.post(path, fields)
         return url
 
+    def _op_page(self, path: str, extra, cp_id: str) -> str:
+        _, html = self.get(path)
+        form = self.parse(html)
+        values = [v for n, v in form.options if n == "chargePointSelectList" and cp_id in v]
+        if not values:
+            raise RuntimeError(f"{cp_id} not selectable on {path}")
+        url, _ = self.post(path, list(form.hidden.items()) + [("chargePointSelectList", values[0])] + extra)
+        return url
+
+    def remote_stop(self, cp_id: str, transaction_id: str) -> str:
+        return self._op_page("/manager/operations/v1.6/RemoteStopTransaction",
+                             [("transactionId", transaction_id)], cp_id)
+
+    def add_charge_box(self, cp_id: str, profile: str, password: str) -> str:
+        _, html = self.get("/manager/chargepoints/add")
+        csrf = self.parse(html).hidden.get("_csrf", "")
+        fields = [("chargeBoxId", cp_id), ("registrationStatus", "ACCEPTED"), ("securityProfile", profile),
+                  ("authPassword", password), ("insertConnectorStatusAfterTransactionMsg", "false"),
+                  ("address.street", ""), ("address.houseNumber", ""), ("address.zipCode", ""), ("address.city", ""),
+                  ("address.country", ""), ("address.latitude", ""), ("address.longitude", ""),
+                  ("address.timeZone", ""), ("_csrf", csrf), ("add", "Add")]
+        url, _ = self.post("/manager/chargepoints/add/single", fields)
+        return url
+
 
 async def _until(cond, timeout: float = 30.0) -> bool:
     try:
@@ -128,7 +157,7 @@ def _count(log: FrameLog, cp: str, action: str, message_type: str = "CALL") -> i
     return sum(1 for e in log.since(0, charger=cp, action=action) if e.message_type == message_type)
 
 
-async def registered_flow(base: str, http: str, log: FrameLog) -> None:
+async def registered_flow(base: str, http: str, log: FrameLog, compose_dir: str) -> None:
     cfg = ChargerConfig(id=CP_ID, vendor="SME", model="OCPPSim", auth_mode="csms_only", max_power_w=7400,
                         config_keys={"MeterValueSampleInterval": "5"})
     rt = ChargerRuntime(cfg, base, frame_log=log, call_timeout=15)
@@ -140,7 +169,7 @@ async def registered_flow(base: str, http: str, log: FrameLog) -> None:
             e.direction == "rx" and e.action == "GetConfiguration" for e in log.since(0, charger=CP_ID))
         # SteVe's boot interval is long (hours); shorten it locally, which also checks that an interval
         # change wakes the heartbeat loop at once.
-        rt.store.set("HeartbeatInterval", "2")
+        rt.station.store.set("HeartbeatInterval", "2")
         results["heartbeat"] = await _until(lambda: rt.last_heartbeat is not None, 5) or "no heartbeat within 5 s"
         results["swipe_unknown"] = await rt.swipe(1, UNKNOWN_TAG)
         await rt.plug(1)
@@ -166,6 +195,33 @@ async def registered_flow(base: str, http: str, log: FrameLog) -> None:
             results["task_page_excerpt"] = " ".join(re.sub(r"<[^>]+>", " ", html).split())[-600:]
 
         results["stop_tx"] = await rt.stop_tx(1)
+        await _until(lambda: not rt.has_transaction(1), 5)
+
+        # RemoteStopTransaction: a second transaction, stopped from the SteVe web UI
+        if ok:
+            await rt.swipe(1, KNOWN_TAG)
+            results["second_tx_started"] = await _until(lambda: rt.has_transaction(1), 10)
+            tx_id = ""
+            for _ in range(20):
+                tx_id = await asyncio.to_thread(
+                    sql, compose_dir,
+                    "SELECT MAX(t.transaction_pk) FROM `transaction` t JOIN evse c ON t.evse_pk = c.evse_pk"
+                    f" WHERE c.charge_box_id = '{CP_ID}' AND t.stop_value IS NULL;")
+                tx_id = tx_id.splitlines()[-1].strip()  # first line is the column header
+                if tx_id.isdigit():
+                    break
+                await asyncio.sleep(0.5)
+            results["remote_stop_tx_id"] = tx_id
+            n = _count(log, CP_ID, "StopTransaction")
+            results["remote_stop_task_url"] = await asyncio.to_thread(web.remote_stop, CP_ID, tx_id)
+            results["remote_stop_received"] = await _until(lambda: any(
+                e.direction == "rx" and e.action == "RemoteStopTransaction" for e in log.since(0, charger=CP_ID)), 10)
+            results["remote_stop_stop_transaction_sent"] = await _until(
+                lambda: _count(log, CP_ID, "StopTransaction") > n, 10)
+            results["remote_stop_tx_closed"] = await _until(lambda: not rt.has_transaction(1), 5)
+            await asyncio.sleep(1.0)
+            results["remote_stop_db"] = await asyncio.to_thread(
+                sql, compose_dir, f"SELECT transaction_pk, stop_event_actor, stop_value, stop_reason FROM `transaction` WHERE transaction_pk = {tx_id};")
         await rt.unplug(1)
         await asyncio.sleep(1.0)
         results["snapshot"] = rt.snapshot()
@@ -188,6 +244,28 @@ async def unregistered_flow(base: str, log: FrameLog) -> None:
         await asyncio.wait_for(task, 10)
 
 
+async def sp1_flow(base: str, http: str, log: FrameLog) -> None:
+    web = SteveWeb(http)
+    await asyncio.to_thread(web.login, "admin", "1234")
+    results["sp1_created"] = await asyncio.to_thread(web.add_charge_box, SP1_ID, "Profile_1", SP1_PASSWORD)
+    for label, pw in (("wrong", "wrong-password-0123456"), ("right", SP1_PASSWORD)):
+        rt = ChargerRuntime(ChargerConfig(id=SP1_ID, password=pw), base, frame_log=log, call_timeout=15,
+                            reconnect=ReconnectConfig(min_s=1, max_s=2))
+        stop = asyncio.Event()
+        task = asyncio.create_task(rt.run(stop))
+        try:
+            if label == "wrong":
+                await _until(lambda: rt.connect_attempts >= 2 and rt.last_error is not None, 15)
+                results["sp1_wrong_password"] = {"online": rt.online, "last_error": rt.last_error,
+                                                 "attempts": rt.connect_attempts}
+            else:
+                results["sp1_right_password"] = {"online": await _until(lambda: rt.online, 15),
+                                                 "last_error": rt.last_error}
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 10)
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--compose-dir", required=True)
@@ -199,8 +277,13 @@ async def main() -> None:
 
     sql(args.compose_dir, f"INSERT IGNORE INTO charge_box (charge_box_id) VALUES ('{CP_ID}');"
                           f"INSERT IGNORE INTO ocpp_tag (id_tag) VALUES ('{KNOWN_TAG}');")
+    sql(args.compose_dir, "INSERT INTO transaction_stop (transaction_pk, event_actor, stop_value, stop_reason) "
+                          "SELECT t.transaction_pk, 'manual', '0', 'Local' FROM `transaction` t "
+                          "JOIN evse e ON t.evse_pk = e.evse_pk "
+                          f"WHERE e.charge_box_id = '{CP_ID}' AND t.stop_value IS NULL;")
     log = FrameLog()
-    await registered_flow(base, http, log)
+    await registered_flow(base, http, log, args.compose_dir)
+    await sp1_flow(base, http, log)
     await unregistered_flow(base, log)
     results["db_transactions"] = sql(args.compose_dir,
                                      "SELECT * FROM `transaction` ORDER BY transaction_pk DESC LIMIT 2;")
