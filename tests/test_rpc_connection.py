@@ -7,7 +7,7 @@ import json
 import pytest
 from rpc_fakes import FakeWs
 
-from sme_ocpp_sim.rpc import OCPP201_ERRORS, CallError, FrameInfo, RpcConnection
+from sme_ocpp_sim.rpc import OCPP201_ERRORS, CallError, FrameInfo, RpcConnection, after_this_reply
 
 
 def _rpc(ws, handlers=None, **kw):
@@ -219,3 +219,26 @@ def test_broken_frame_callback_does_not_break_rpc():
         await rpc.close()
         await rx
     run(scenario)
+
+
+def test_after_this_reply_runs_once_the_answer_was_sent():
+    class SlowWs(FakeWs):
+        async def send(self, raw):
+            await asyncio.sleep(0.1)  # the answer is slow to reach the socket
+            await super().send(raw)
+
+    async def scenario(ws):
+        seen = []
+
+        async def reset(payload):
+            assert after_this_reply(lambda: seen.append(list(ws.sent_frames())))
+            return {"status": "Accepted"}
+        rpc, _ = _rpc(ws, {"Reset": reset})
+        rx = asyncio.create_task(rpc.run())
+        ws.feed([2, "csms-1", "Reset", {"type": "Immediate"}])
+        await _until(lambda: seen)
+        assert seen == [[[3, "csms-1", {"status": "Accepted"}]]]  # the hook saw the answer already sent
+        assert after_this_reply(lambda: None) is False          # outside a handler: not registered
+        await rpc.close()
+        await rx
+    run(lambda ws: scenario(SlowWs()))

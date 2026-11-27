@@ -291,8 +291,10 @@ def test_201_v2g_certificate_chain_is_not_found(tmp_path):
 def test_reset_raises_reset_or_reboot(version):
     async def body(peer, rt):
         await _until(lambda: rt.online and peer.history and peer.history[-1].booted.is_set())
-        # Let the boot-time traffic (statuses, StartupOfTheDevice) settle before the CSMS sends its CALL.
-        await _until(lambda: _name(version, SecurityEventKind.STARTUP_OF_THE_DEVICE) in _events(peer))
+        # Let StartupOfTheDevice be acknowledged before the Reset: one still unanswered when the session closes is
+        # resent after the reconnect (at-least-once delivery), which would count it twice below.
+        await _until(lambda: not rt.station.security.queued
+                     and _name(version, SecurityEventKind.STARTUP_OF_THE_DEVICE) in _events(peer))
         if _v16(version):
             await peer.request(CP, call16.Reset(type="Soft"))
         else:
@@ -578,3 +580,45 @@ def test_sign_certificate_rejected_drops_the_csr_key(version, tmp_path):
         chain = pki.sign_csr(_csrs(peer, version)[0])
         assert (await _certificate_signed(peer, version, chain)).status == "Rejected"
     _p3(body, version, tmp_path)
+
+
+# ------------------------------------------------------------------------- answer before the session closes
+
+
+def _slow_answers(monkeypatch, delay_s=0.2):
+    """Make every CALLRESULT the station sends take ``delay_s`` (far longer than REPLY_DELAY_S) to reach the socket,
+    like a busy event loop / slow socket on a loaded CI runner."""
+    from sme_ocpp_sim.rpc import connection, framer
+    orig = connection.RpcConnection._send_raw
+
+    async def slow(self, raw, info):
+        if info.message_type == framer.CALLRESULT:
+            await asyncio.sleep(delay_s)
+        await orig(self, raw, info)
+    monkeypatch.setattr(connection.RpcConnection, "_send_raw", slow)
+
+
+_CLOSING_CALLS = {
+    "1.6 AuthorizationKey": ("1.6", lambda: call16.ChangeConfiguration(key="AuthorizationKey",
+                                                                       value="a-new-password-0123")),
+    "1.6 Reset": ("1.6", lambda: call16.Reset(type="Soft")),
+    "2.0.1 BasicAuthPassword": ("2.0.1", lambda: call201.SetVariables(set_variable_data=[{
+        "component": {"name": "SecurityCtrlr"}, "variable": {"name": "BasicAuthPassword"},
+        "attribute_value": "n" * 40}])),
+    "2.0.1 Reset": ("2.0.1", lambda: call201.Reset(type="Immediate")),
+}
+
+
+@pytest.mark.parametrize("case", list(_CLOSING_CALLS))
+def test_a_call_that_closes_the_session_is_answered_first_even_when_the_send_is_slow(case, monkeypatch):
+    """The session close a CALL triggers (reconnect with a new password, Reset) waits for the answer to be sent;
+    a timer racing the send would close the socket first and the CSMS would never get the answer."""
+    version, make = _CLOSING_CALLS[case]
+    _slow_answers(monkeypatch)
+
+    async def body(peer, rt):
+        await _until(lambda: rt.online and peer.history and peer.history[-1].booted.is_set())
+        r = await asyncio.wait_for(peer.request(CP, make()), 3)
+        assert getattr(r, "status", None) == "Accepted" or r.set_variable_result[0]["attribute_status"] == "Accepted"
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+    _scenario(body, version=version, cfg_kw={"password": "the-old-password-01"})
