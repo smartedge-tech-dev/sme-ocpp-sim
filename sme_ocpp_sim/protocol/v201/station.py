@@ -132,9 +132,10 @@ Interpretations (not defined by the spec)
 - RequestStartTransaction (M3): with AuthorizeRemoteStart ``false`` (the default) the CSMS has authorized the
   token, so it is not authorized again; with ``true`` it is authorized like a presented token (``auth_mode``)
   after the answer and dropped from the EVSE when that is not ``Accepted`` (F01.FR.01), except a token of
-  ``type`` ``Central`` or ``NoAuthorization``, which is never authorized (F01.FR.02, F02.FR.09 / FR.10). Without ``evseId`` the first
-  startable EVSE with a plugged cable is used, else the first startable one. A faulted, inoperative or busy EVSE (or none free) is
-  ``Rejected``; so is a ``chargingProfile`` that is not a valid ``TxProfile`` or that carries a ``transactionId``.
+  ``type`` ``Central`` or ``NoAuthorization``, which is never authorized (F01.FR.02, F02.FR.09 / FR.10). Without
+  ``evseId`` the first startable EVSE with a plugged cable is used, else the first startable one. A faulted,
+  inoperative or busy EVSE (or none free) is ``Rejected``; so is a ``chargingProfile`` that is not a valid
+  ``TxProfile`` or that carries a ``transactionId``.
   An accepted ``chargingProfile`` is installed, bound to the new ``transactionId``, when the transaction starts
   (M5); it is discarded with the token. An accepted token waits on an unplugged
   EVSE like a local one; the transaction starts at once when the cable is plugged or when it comes, with
@@ -175,7 +176,8 @@ Interpretations (not defined by the spec)
   TransactionEvent joins the outbox and goes out after the boot is accepted, so ``seqNo`` stays in order.
   LogStatusNotification sends ``Uploading`` (with the requestId) while a log upload runs, else ``Idle`` (F06.FR.13 /
   FR.14, N01.FR.13); FirmwareStatusNotification sends the last sent status with its requestId, ``Idle`` when that
-  was ``Installed`` or none was sent (L02.FR.16 / FR.17, F06.FR.16). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
+  was ``Installed`` or none was sent (L02.FR.16 / FR.17, F06.FR.16; a stopped charger forgets an unfinished
+  update, so it answers ``Idle``). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
   ``requestedMessage`` values (the certificate messages, PublishFirmwareStatusNotification) answer
   ``NotImplemented``.
 - Firmware update (M7, L01 / L02; ``runtime.maintenance`` has the shared interpretations): UpdateFirmware is
@@ -235,7 +237,8 @@ Interpretations (not defined by the spec)
   stays stored but holds no EVSE, ends when the transaction starts (``reservationId`` in the ``Started`` event,
   H01.FR.15) and holds its EVSE again when the token is dropped (failed authorization, EVConnectionTimeOut,
   unplug, Reset, availability change; no ReservationStatusUpdate, the reservation did not end). Stopping the
-  charger cancels the expiry timers; the next accepted boot re-arms them. It ends at ``expiryDateTime`` (ReservationStatusUpdate ``Expired``, H04), by
+  charger cancels the expiry timers; the next accepted boot re-arms them. It ends at ``expiryDateTime``
+  (ReservationStatusUpdate ``Expired``, H04), by
   CancelReservation (H02, no ReservationStatusUpdate) or when its EVSE (no ``evseId``: the station) becomes
   Faulted / Unavailable (``Removed``, H01.FR.16 / FR.17). A ReservationStatusUpdate goes through the outbox like
   a StatusNotification (dropped at the end of a session, never resent). The expiry timer runs on the wall clock.
@@ -258,28 +261,28 @@ from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Sequen
 from ...charging import power
 from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
+from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
+from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
 from ..station import StationHost, VersionStation
-from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
 from . import device_model as dm
 from . import models as m
 from .adapter import (LOCAL_TOKEN_TYPE, Adapter201, charging_profile, charging_profile_type, charging_schedule_type,
                       composite_schedule_type, connector_status, id_token, id_token_info, meter_value)
 from .composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
-from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingLimitSourceEnumType,
-                    ChargingProfileKindEnumType, ChargingProfilePurposeEnumType, ChargingProfileStatusEnumType,
-                    ChargingRateUnitEnumType, ChargingStateEnumType, ClearChargingProfileStatusEnumType,
-                    ConnectorStatusEnumType, GenericDeviceModelStatusEnumType, GenericStatusEnumType,
-                    GetChargingProfileStatusEnumType, IdTokenEnumType, MessageTriggerEnumType,
-                    OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
-                    TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
-from .enums import FirmwareStatusEnumType, UploadLogStatusEnumType
-from .enums import LogStatusEnumType, UpdateFirmwareStatusEnumType
-from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
-from .enums import (CancelReservationStatusEnumType, ClearCacheStatusEnumType, ReservationUpdateStatusEnumType,
-                    ReserveNowStatusEnumType, SendLocalListStatusEnumType, UpdateEnumType)
+from .enums import (BootReasonEnumType, CancelReservationStatusEnumType, ChangeAvailabilityStatusEnumType,
+                    ChargingLimitSourceEnumType, ChargingProfileKindEnumType, ChargingProfilePurposeEnumType,
+                    ChargingProfileStatusEnumType, ChargingRateUnitEnumType, ChargingStateEnumType,
+                    ClearCacheStatusEnumType, ClearChargingProfileStatusEnumType, ConnectorStatusEnumType,
+                    FirmwareStatusEnumType, GenericDeviceModelStatusEnumType, GenericStatusEnumType,
+                    GetChargingProfileStatusEnumType, IdTokenEnumType, LogStatusEnumType, MessageTriggerEnumType,
+                    OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType,
+                    ReservationUpdateStatusEnumType, ReserveNowStatusEnumType, ResetEnumType, ResetStatusEnumType,
+                    SendLocalListStatusEnumType, TransactionEventEnumType, TriggerMessageStatusEnumType,
+                    TriggerReasonEnumType, UnlockStatusEnumType, UpdateEnumType, UpdateFirmwareStatusEnumType,
+                    UploadLogStatusEnumType)
 from .profiles import (REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT, ChargingProfile, ChargingSchedule, ClearStatus,
                        InstalledProfile, Limits, ProfileStatus, ProfileStore, SchedulePeriod)
 

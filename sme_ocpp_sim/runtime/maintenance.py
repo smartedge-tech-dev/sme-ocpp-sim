@@ -22,8 +22,11 @@ Interpretations (not defined by the spec)
 - A successful install always reboots (the 1.6 "automatic reboot" variant, 2.0.1 L02.FR.21 option (a)): the
   station closes the session as for a Reset, and Installed is sent after the next accepted boot. The reported
   firmware version (BootNotification ``firmwareVersion``) does not change: the simulator has no image to read
-  it from. A notification while not online is not sent (the step still counts as the last status).
-- Stopping the charger abandons a running update / upload (no status is sent for it).
+  it from. Only a boot accepted after the reboot has closed the session counts (a reconnect while the Reset
+  drains does not); when the station is offline the reboot is the next session. A notification while not online
+  is not sent (the step still counts as the last status).
+- Stopping the charger abandons a running update / upload (no status is sent for it) and forgets its last status:
+  a status asked for afterwards is Idle.
 """
 
 from __future__ import annotations
@@ -32,10 +35,13 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Awaitable, Callable, FrozenSet, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, FrozenSet, Optional
 
 from ..protocol.base import FirmwareState as F
 from ..protocol.base import FirmwareStatus, LogState, LogStatus
+
+if TYPE_CHECKING:
+    from ..config import MaintenanceConfig
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +80,7 @@ class Maintenance:
     session as for a Reset (the next accepted boot calls :meth:`on_online`).
     """
 
-    def __init__(self, settings: Any, *, clock: Callable[[], datetime], firmware_states: FrozenSet[F],
+    def __init__(self, settings: MaintenanceConfig, *, clock: Callable[[], datetime], firmware_states: FrozenSet[F],
                  send_firmware: Callable[[FirmwareStatus], Awaitable[Any]],
                  send_log: Callable[[LogStatus], Awaitable[Any]], busy: Callable[[], bool],
                  hold_changed: Callable[[], None], reboot: Callable[[], Awaitable[Any]]) -> None:
@@ -95,6 +101,8 @@ class Maintenance:
         self._fw_task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
         self._idle = asyncio.Event()
+        #: Accepted boots so far (:meth:`on_online`); the reboot waits for one counted after it.
+        self._boots = 0
         self._booted = asyncio.Event()
 
     # ------------------------------------------------------------------ state
@@ -122,11 +130,12 @@ class Maintenance:
         self._fw_task = asyncio.get_running_loop().create_task(self._run_firmware(job))
 
     def cancel_firmware(self) -> bool:
-        """Cancel a running update; ``True`` when one was running."""
+        """Cancel a running update and forget its status (a trigger answers Idle); ``True`` when one was running."""
         task, self._fw_task = self._fw_task, None
         if task is None or task.done():
             return False
         task.cancel()
+        self.firmware_status, self.firmware_request_id = None, None
         self.installing = False
         self._set_hold(False)
         return True
@@ -149,6 +158,7 @@ class Maintenance:
 
     def on_online(self) -> None:
         """A boot was accepted (after the firmware reboot: send Installed)."""
+        self._boots += 1
         self._booted.set()
 
     def close(self) -> None:
@@ -190,53 +200,81 @@ class Maintenance:
         return interval if interval is not None and interval >= 0 else self.settings.retry_interval_s
 
     async def _run_firmware(self, job: FirmwareJob) -> None:
-        s, rid = self.settings, job.request_id
+        rid = job.request_id
         try:
-            if job.retrieve_at > self._clock():
-                await self._firmware(F.DOWNLOAD_SCHEDULED, rid)  # L02.FR.07
-                await self._wait_until(job.retrieve_at)
-            attempts = self._attempts(job.retries)
-            for attempt in range(attempts):
-                await self._firmware(F.DOWNLOADING, rid)
-                await asyncio.sleep(s.download_s)
-                if not s.fail_download:
-                    break
-                if attempt + 1 < attempts:
-                    await asyncio.sleep(self._interval(job.retry_interval_s))
-            else:
-                await self._firmware(F.DOWNLOAD_FAILED, rid)  # L02.FR.19
+            if not await self._download(job):
                 return
-            await self._firmware(F.DOWNLOADED, rid)
-            if job.signed:
-                await self._firmware(F.SIGNATURE_VERIFIED, rid)  # L01.FR.04: the signature is taken as valid
-            if job.install_at is not None and job.install_at > self._clock():
-                await self._firmware(F.INSTALL_SCHEDULED, rid)  # L01.FR.16 / L02.FR.10
-                await self._wait_until(job.install_at)
-            self._set_hold(True)
-            while self._busy():  # 1.6 §5.19, L02.FR.03
-                self._idle.clear()
-                try:
-                    await asyncio.wait_for(self._idle.wait(), TX_POLL_S)
-                except asyncio.TimeoutError:
-                    pass
-            self.installing = True
-            await self._firmware(F.INSTALLING, rid)
-            await asyncio.sleep(s.install_s)
-            if s.fail_install:
-                self._set_hold(False)
-                await self._firmware(F.INSTALLATION_FAILED, rid)
+            await self._wait_install_window(job)
+            if not await self._install(rid):
                 return
-            await self._firmware(F.INSTALL_REBOOTING, rid)  # L02.FR.21 (a)
-            self.hold = False  # quietly: the reboot reports every state afresh
-            self._booted.clear()
-            log.info("firmware update %s: rebooting to activate", job.location)
-            await self._reboot()
-            await self._booted.wait()
+            await self._reboot_and_wait(job)
             await self._firmware(F.INSTALLED, rid)
         finally:
             self.installing = False
             if self._fw_task is asyncio.current_task():
                 self._set_hold(False)
+
+    async def _download(self, job: FirmwareJob) -> bool:
+        """[DownloadScheduled] -> Downloading (each attempt) -> Downloaded [-> SignatureVerified]; ``False``
+        after DownloadFailed."""
+        s, rid = self.settings, job.request_id
+        if job.retrieve_at > self._clock():
+            await self._firmware(F.DOWNLOAD_SCHEDULED, rid)  # L02.FR.07
+            await self._wait_until(job.retrieve_at)
+        attempts = self._attempts(job.retries)
+        for attempt in range(attempts):
+            await self._firmware(F.DOWNLOADING, rid)
+            await asyncio.sleep(s.download_s)
+            if not s.fail_download:
+                break
+            if attempt + 1 < attempts:
+                await asyncio.sleep(self._interval(job.retry_interval_s))
+        else:  # no ``break``: every attempt failed
+            await self._firmware(F.DOWNLOAD_FAILED, rid)  # L02.FR.19
+            return False
+        await self._firmware(F.DOWNLOADED, rid)
+        if job.signed:
+            await self._firmware(F.SIGNATURE_VERIFIED, rid)  # L01.FR.04: the signature is taken as valid
+        return True
+
+    async def _wait_install_window(self, job: FirmwareJob) -> None:
+        """[InstallScheduled], then hold the free connectors until no transaction is left."""
+        if job.install_at is not None and job.install_at > self._clock():
+            await self._firmware(F.INSTALL_SCHEDULED, job.request_id)  # L01.FR.16 / L02.FR.10
+            await self._wait_until(job.install_at)
+        self._set_hold(True)
+        while self._busy():  # 1.6 §5.19, L02.FR.03
+            self._idle.clear()
+            try:
+                await asyncio.wait_for(self._idle.wait(), TX_POLL_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _install(self, rid: Optional[int]) -> bool:
+        """Installing -> InstallRebooting; ``False`` after InstallationFailed (the hold ends)."""
+        self.installing = True
+        await self._firmware(F.INSTALLING, rid)
+        await asyncio.sleep(self.settings.install_s)
+        if self.settings.fail_install:
+            self._set_hold(False)
+            await self._firmware(F.INSTALLATION_FAILED, rid)
+            return False
+        await self._firmware(F.INSTALL_REBOOTING, rid)  # L02.FR.21 (a)
+        return True
+
+    async def _reboot_and_wait(self, job: FirmwareJob) -> None:
+        """Reboot and wait for a boot accepted after it."""
+        # The hold ends quietly: the station derives every connector state afresh when the next session comes
+        # online, so a refresh now would only report Available just before the session closes.
+        self.hold = False
+        log.info("firmware update %s: rebooting to activate", job.location)
+        await self._reboot()
+        # Counted after the reboot returned: it has closed the session (or a Reset already running will), so a
+        # boot accepted while it drained the outbox (an unrelated reconnect) does not count.
+        boots = self._boots
+        while self._boots == boots:
+            self._booted.clear()
+            await self._booted.wait()
 
     async def _run_log(self, job: LogJob) -> None:
         s, rid = self.settings, job.request_id

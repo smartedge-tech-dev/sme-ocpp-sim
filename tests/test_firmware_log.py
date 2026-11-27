@@ -154,6 +154,73 @@ def test_firmware_waits_for_the_transaction_and_holds_free_connectors(version):
     _scenario(body, cfg_kw={**_maint(), "connectors": 2, "auth_mode": "accept_all"}, version=version)
 
 
+@VERSIONS
+def test_firmware_connectors_available_after_the_update(version):
+    """The hold ends quietly before the reboot; the session after it reports every connector Available."""
+    async def body(peer, rt):
+        await _online(peer, rt)
+        await _update(peer, version)
+        await _until(lambda: "Installed" in _fw(peer))
+        for cid in (1, 2):
+            assert _connector_status(peer, version, cid) == ["Available"]
+        assert not rt.station.maint.hold and not rt.station.maint.installing
+    _scenario(body, cfg_kw={**_maint(), "connectors": 2}, version=version)
+
+
+@VERSIONS
+def test_firmware_progress_not_sent_while_pending_but_triggered_is(version):
+    """A progress notification needs an accepted boot; a triggered one may go out while Pending (B02.FR.02)."""
+    async def body(peer, rt):
+        await _until(lambda: rt.registration == "Pending")
+        s = peer.sessions[CP]
+        await _update(peer, version)
+        await _until(lambda: rt.station.maint.firmware_status is F.DOWNLOADING)
+        await asyncio.sleep(0.1)
+        assert s.firmware_statuses == []
+        assert (await _trigger(peer, version, "FirmwareStatusNotification")).status == "Accepted"
+        await _until(lambda: s.firmware_statuses == ["Downloading"])
+    _scenario(body, {"boot_statuses": ["Pending"], "retry_interval": 30}, cfg_kw=_maint(download_s=5),
+              version=version)
+
+
+@VERSIONS
+def test_firmware_reconnect_while_downloading_keeps_the_job(version):
+    async def body(peer, rt):
+        await _online(peer, rt)
+        await _update(peer, version)
+        await _until(lambda: _fw(peer) == ["Downloading"])
+        rt.abort_session()
+        await _until(lambda: "Installed" in _fw(peer))
+        assert _fw(peer).count("Downloading") == 1 and "Downloaded" in peer.history[1].firmware_statuses
+    _scenario(body, cfg_kw=_maint(download_s=0.6), version=version)
+
+
+@VERSIONS
+def test_charger_stop_forgets_an_unfinished_update(version):
+    """A stopped charger (``close``) abandons the update; a trigger afterwards answers Idle, not Downloading."""
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await _update(peer, version)
+        await _until(lambda: s.firmware_statuses == ["Downloading"])
+        rt.station.close()
+        await _trigger(peer, version, "FirmwareStatusNotification")
+        await _until(lambda: s.firmware_statuses == ["Downloading", "Idle"])
+        assert rt.snapshot()["firmware"]["status"] is None
+    _scenario(body, cfg_kw=_maint(download_s=5), version=version)
+
+
+def test_16_second_update_replaces_the_first():
+    async def body(peer, rt):
+        await _online(peer, rt)
+        await _update(peer, "1.6")
+        await _until(lambda: _fw(peer) == ["Downloading"])
+        await _update(peer, "1.6")
+        await _until(lambda: "Installed" in _fw(peer))
+        await asyncio.sleep(0.2)
+        assert _fw(peer) == ["Downloading", "Downloading", "Downloaded", "Installing", "Installed"]
+    _scenario(body, cfg_kw=_maint(download_s=0.4))
+
+
 def test_201_scheduled_download_signed_and_scheduled_install():
     """L02.FR.07 DownloadScheduled, L01.FR.04 SignatureVerified (taken as valid), L02.FR.10 InstallScheduled."""
     async def body(peer, rt):
@@ -269,6 +336,18 @@ def test_201_get_log_cancels_a_running_upload():
     _scenario(body, cfg_kw=_maint(upload_s=0.5), version="2.0.1")
 
 
+def test_16_get_diagnostics_replaces_a_running_upload():
+    async def body(peer, rt):
+        await _online(peer, rt)
+        await _get_log(peer, "1.6")
+        await _until(lambda: _logs(peer, "1.6") == ["Uploading"])
+        await _get_log(peer, "1.6")
+        await _until(lambda: "Uploaded" in _logs(peer, "1.6"))
+        await asyncio.sleep(0.6)
+        assert _logs(peer, "1.6") == ["Uploading", "Uploading", "Uploaded"]
+    _scenario(body, cfg_kw=_maint(upload_s=0.5))
+
+
 @VERSIONS
 def test_trigger_log_status(version):
     """1.6 §4.4 / F06.FR.13, FR.14: Idle when no upload runs, else Uploading (2.0.1 with its requestId)."""
@@ -348,4 +427,64 @@ def test_maintenance_retries_default_and_negative():
         m.start_log(LogJob("x", "f.log", retries=-3))
         await asyncio.wait_for(m._log_task, 3)
         assert h.logs == [(LogState.UPLOADING, None), (LogState.UPLOAD_FAILED, None)]
+    asyncio.run(main())
+
+
+def test_maintenance_reboot_waits_for_a_boot_after_it():
+    """A boot accepted while the reboot runs (a reconnect while the Reset drains) does not count; nor does a
+    reboot that returns without closing the session: the next accepted boot sends Installed."""
+    async def main():
+        h = _Host()
+
+        async def reboot():
+            h.reboots += 1
+            m.on_online()  # an unrelated reconnect, before the reboot closed the session
+
+        h.reboot = reboot
+        m = _make(h)
+        m.start_firmware(FirmwareJob("x", datetime.now(timezone.utc)))
+        await _until(lambda: h.reboots == 1)
+        await asyncio.sleep(0.1)
+        assert (F.INSTALLED, None) not in h.fw and m.installing and m.firmware_busy
+        m.on_online()
+        await asyncio.wait_for(m._fw_task, 3)
+        assert h.fw[-1] == (F.INSTALLED, None) and not m.installing and not m.hold
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize("phase", ["installing", "rebooting"])
+def test_maintenance_close_while_installing_clears_installing_and_hold(phase):
+    async def main():
+        h = _Host()
+
+        async def reboot():  # never comes back online
+            h.reboots += 1
+
+        h.reboot = reboot
+        m = _make(h, install_s=5 if phase == "installing" else 0.01)
+        m.start_firmware(FirmwareJob("x", datetime.now(timezone.utc), request_id=7))
+        await _until(lambda: m.installing if phase == "installing" else h.reboots == 1)
+        m.close()
+        await asyncio.sleep(0.05)
+        assert not m.installing and not m.hold and not m.firmware_busy
+        assert m.firmware_status is None and m.firmware_request_id is None
+    asyncio.run(main())
+
+
+def test_maintenance_transaction_started_in_the_install_window():
+    """A transaction that starts while waiting for installDateTime delays the install until it ends."""
+    async def main():
+        h = _Host()
+        m = _make(h)
+        now = datetime.now(timezone.utc)
+        m.start_firmware(FirmwareJob("x", now, install_at=now + timedelta(seconds=0.3)))
+        await _until(lambda: m.firmware_status is F.INSTALL_SCHEDULED)
+        h.busy = True
+        await _until(lambda: m.hold)
+        await asyncio.sleep(0.3)
+        assert not m.installing and F.INSTALLING not in [s for s, _ in h.fw]
+        h.busy = False
+        m.wake()
+        await asyncio.wait_for(m._fw_task, 3)
+        assert [s for s, _ in h.fw][-3:] == [F.INSTALLING, F.INSTALL_REBOOTING, F.INSTALLED]
     asyncio.run(main())

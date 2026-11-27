@@ -150,15 +150,16 @@ CURRENT = "Current.Import"
 VOLTAGE = "Voltage"
 SOC = "SoC"
 
-#: The firmware steps 1.6 ``FirmwareStatus`` can report (M7).
-FIRMWARE_STATES = frozenset({d.FirmwareState.DOWNLOADING, d.FirmwareState.DOWNLOADED, d.FirmwareState.DOWNLOAD_FAILED,
-                             d.FirmwareState.INSTALLING, d.FirmwareState.INSTALLED,
-                             d.FirmwareState.INSTALLATION_FAILED})
 POWER_DECIMALS = 1  # same resolution as the GetCompositeSchedule limits
 CURRENT_DECIMALS = 3
 SOC_DECIMALS = 1
 LOCATION = "Outlet"
 SOC_LOCATION = "EV"
+
+#: The firmware steps 1.6 ``FirmwareStatus`` can report (M7).
+FIRMWARE_STATES = frozenset({d.FirmwareState.DOWNLOADING, d.FirmwareState.DOWNLOADED, d.FirmwareState.DOWNLOAD_FAILED,
+                             d.FirmwareState.INSTALLING, d.FirmwareState.INSTALLED,
+                             d.FirmwareState.INSTALLATION_FAILED})
 
 
 #: Maximum number of queued MeterValues; the oldest is dropped first.
@@ -1185,6 +1186,9 @@ class Station16(VersionStation):
         await self.host.safe(aw, what)
 
     def _update_firmware(self, cmd: d.UpdateFirmware) -> None:
+        """Replace a running update (not one installing); the new one starts after the answer went out (its
+        first FirmwareStatusNotification must follow UpdateFirmware.conf). In between, a triggered
+        FirmwareStatusNotification answers Idle: the old update is gone and the new one has not begun."""
         if self.maint.installing:
             log.info("%s: UpdateFirmware ignored: a firmware update is installing", self.cfg.id)
             return
