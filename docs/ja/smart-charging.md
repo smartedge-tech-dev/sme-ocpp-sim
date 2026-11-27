@@ -74,7 +74,7 @@ GetCompositeSchedule、RemoteStartTransaction に含まれる充電プロファ�
 - 電力量は台形則で積算し、電力量レジスタは増える一方です。SoC は目標を最大 1 ステップ分超えることがあります。
 - ランプ（`ramp_up_w_per_s`、`ramp_down_w_per_s`）の単位は模擬時間 1 秒あたりの W で、既定はステップ変化です。
 
-## OCPP 2.0.1
+## OCPP 2.0.1 { #ocpp-201 }
 
 2.0.1 の充電器はこのルールの独立したコピー（`protocol/v201/profiles.py` / `composite.py`）を持ちます。電力モデルは
 共通なので同じ閉ループが成り立ちます: GetCompositeSchedule の値は、その後の TransactionEvent の
@@ -102,3 +102,9 @@ GetChargingProfiles はこれらを source `EMS`、CSMS のものを `CSO` と�
 
 仕様本文の記憶に基づく 2.0.1 のルール（TxProfile には `transactionId` が必要、stackLevel の衝突、CSMS は外部制約を
 設定できない）は仕様書で未検証です。各モジュールの docstring を参照してください。
+
+Web UI では、2.0.1 の充電器の Smart Charging パネルに **外部制限値（EMS）** の行があります。ステーション全体（0）
+または EVSE を選び、W 単位の制限値を入力して「設定」、または「解除」を押します。外部制約プロファイルはプロファイル
+一覧に表示され、グラフの合成制限値にも反映されます。
+
+![外部制限値を設定した OCPP 2.0.1 充電器の Smart Charging パネル](../assets/screenshots/ja/smart-charging.png)

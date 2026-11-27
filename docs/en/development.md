@@ -63,11 +63,12 @@ the `ocpp` library):
 .venv\Scripts\python scripts\screenshots.py
 ```
 
-The script works in a temporary directory: it starts the dev CSMS `tests/peers/ocpp16_peer.py` in-process, runs
-the simulator with `scripts/screenshots.yaml` (8 chargers, staggered `initial_soc`, `time_scale` 60) on a free
-port of `127.0.0.1`, starts a transaction on every charger and sends a TxDefaultProfile to `CP-0001`. It then
+The script works in a temporary directory: it starts the dev CSMS peers `tests/peers/ocpp16_peer.py` and
+`tests/peers/ocpp201_peer.py` in-process, runs the simulator with `scripts/screenshots.yaml` (8 chargers, three of
+them OCPP 2.0.1, staggered `initial_soc`, `time_scale` 60) on a free
+port of `127.0.0.1`, starts a transaction on every charger and sends a TxDefaultProfile and an external limit to the 2.0.1 station `CP-0001`. It then
 captures every language in the light theme plus a dark overview and writes `overview.png`, `charger.png`,
-`smart-charging.png`, `frames.png`, `settings.png`, `overview-dark.png` and `live.gif` to
+`smart-charging.png`, `frames.png`, `variables.png`, `settings.png`, `overview-dark.png` and `live.gif` to
 `docs/assets/screenshots/{en,ja,zh}/` (and the wide `ja/overview-wide.png`). Language and theme are set through the
 `localStorage` keys above.
 

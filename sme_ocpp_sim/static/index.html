@@ -63,7 +63,7 @@
         <div class="sc">
           <div class="panehead">
             <h3 data-i18n="sc.title">Smart Charging</h3>
-            <label class="inline"><span data-i18n="sc.connector">Connector</span> <select id="scConnector"></select></label>
+            <label class="inline"><span id="scConnectorLabel" data-i18n="sc.connector">Connector</span> <select id="scConnector"></select></label>
             <span class="spacer"></span>
             <button class="btn small" id="scProfiles" type="button" data-i18n="sc.profiles.open">Profiles</button>
           </div>
@@ -74,6 +74,15 @@
           </div>
           <div id="scChart" class="chart"></div>
           <ul id="scList" class="plist"></ul>
+          <!-- OCPP 2.0.1 only: the operator's external (EMS) limit, POST /api/chargers/{id}/external-limit. -->
+          <form class="extlimit" id="extForm" hidden>
+            <span data-i18n="sc.ext.title">External limit (EMS)</span>
+            <label class="inline"><span data-i18n="sc.ext.target">Target</span> <select id="extTarget"></select></label>
+            <label class="inline"><input id="extLimit" type="number" min="0" step="100" required> W</label>
+            <button class="btn small" id="extSet" type="submit" data-i18n="sc.ext.set">Set</button>
+            <button class="btn small" id="extClear" type="button" data-i18n="sc.ext.clear">Remove</button>
+          </form>
+          <p class="hint" id="extHint" data-i18n="sc.ext.hint" hidden>Installs a ChargingStationExternalConstraints profile and sends NotifyChargingLimit; Remove sends ClearedChargingLimit.</p>
         </div>
 
         <details class="keys" id="keysBox">
@@ -81,6 +90,17 @@
           <table class="tbl"><thead><tr><th data-i18n="common.col.name">Name</th><th data-i18n="common.col.value">Value</th><th data-i18n="keys.access">Access</th></tr></thead>
             <tbody id="keyRows"></tbody></table>
           <p class="hint" data-i18n="keys.hint">Run-time values, as the CSMS sees them with GetConfiguration (incl. changes made by ChangeConfiguration).</p>
+        </details>
+
+        <!-- OCPP 2.0.1 chargers: the Device Model instead of configuration keys (read-only here). -->
+        <details class="keys" id="varsBox" hidden>
+          <summary data-i18n="vars.title">Variables (Device Model)</summary>
+          <div class="tablewrap vars">
+            <table class="tbl"><thead><tr><th data-i18n="vars.component">Component</th><th data-i18n="vars.variable">Variable</th>
+              <th data-i18n="common.col.value">Value</th><th data-i18n="vars.type">Type</th><th data-i18n="keys.access">Access</th></tr></thead>
+              <tbody id="varRows"></tbody></table>
+          </div>
+          <p class="hint" data-i18n="vars.hint">Run-time values, as the CSMS sees them with GetVariables (incl. changes made by SetVariables). Read-only here: change them from the CSMS or with variables: in the YAML file.</p>
         </details>
       </div>
     </section>

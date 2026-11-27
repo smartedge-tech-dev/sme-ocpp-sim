@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   charger. OCPP 2.0.1 applies it as ChargingStationExternalConstraints and notifies the CSMS; OCPP 1.6 answers
   400 (not supported).
 
+- Web UI for OCPP 2.0.1: the version can be chosen in the settings dialog (2.1 stays greyed out); a 2.0.1
+  charger shows its Device Model in a read-only Variables table (from `GET /api/chargers/{id}/configuration`;
+  there is no Web API route to change a variable), labels its connectors as EVSEs and has an External limit (EMS)
+  control in the Smart Charging panel (`POST /api/chargers/{id}/external-limit`). The fault dialog preselects
+  `Other` for 2.0.1. New UI strings in English, Japanese and Chinese.
+- Documentation for OCPP 2.0.1 (en / ja / zh): the supported 2.0.1 messages (every other one marked Not
+  supported), a 2.0.1 quick-start example, `ocpp_version` / `variables` configuration, Smart Charging and HTTP API
+  notes; README features, the OCPP badge and the screenshots now show a 2.0.1 charger, incl. the Variables table.
+- `configs/mixed-site.yaml`: a sample site with OCPP 1.6J chargers and OCPP 2.0.1 stations.
+- `scripts/screenshots.py` runs a mixed 1.6 / 2.0.1 site against both dev CSMS peers and also captures
+  `variables.png`.
+
 ### Changed
 
 - Internal split for OCPP 2.0.1: the charger runtime is a version-neutral shell (connection, boot / heartbeat,

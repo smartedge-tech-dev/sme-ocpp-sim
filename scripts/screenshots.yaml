@@ -1,6 +1,8 @@
 # Screenshot demo site for scripts/screenshots.py (dev only).
 #
-# __CSMS_URL__ is replaced by the script with the URL of the in-process dev CSMS (tests/peers/ocpp16_peer.py).
+# A mixed site: CP-0001, CP-0002 and CP-0005 are OCPP 2.0.1 charging stations, the others OCPP 1.6J chargers.
+# __CSMS_URL__ / __CSMS201_URL__ are replaced by the script with the URLs of the in-process dev CSMS peers
+# (tests/peers/ocpp16_peer.py / tests/peers/ocpp201_peer.py).
 # time_scale 60 makes power, energy and SoC move visibly while the screenshots are taken.
 
 simulation:
@@ -34,14 +36,24 @@ chargers:
     model: "SIM-AC6"
     max_power_w: 6000
     id_tags: ["04A1B2C3"]
-    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    ocpp_version: "2.0.1"
+    csms_url: "__CSMS201_URL__"
+    meter_sample_interval_s: 5
+    variables:
+      - { component: OCPPCommCtrlr, variable: HeartbeatInterval, value: 10 }
+      - { component: VendorCtrlr, variable: ChargeMode, data_type: OptionList, values_list: [Eco, Fast], value: Eco }
     session: { ev_model: "compact-40kwh", initial_soc: 12, target_soc: 100 }
   - id: "CP-0002"
     model: "SIM-AC6"
     max_power_w: 6000
     connectors: 2
     id_tags: ["04A1B2C4"]
-    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    ocpp_version: "2.0.1"
+    csms_url: "__CSMS201_URL__"
+    meter_sample_interval_s: 5
+    variables:
+      - { component: OCPPCommCtrlr, variable: HeartbeatInterval, value: 10 }
+      - { component: VendorCtrlr, variable: ChargeMode, data_type: OptionList, values_list: [Eco, Fast], value: Eco }
     session: { ev_model: "compact-40kwh", initial_soc: 25, target_soc: 100 }
   - id: "CP-0003"
     model: "SIM-AC6"
@@ -62,7 +74,12 @@ chargers:
     phases: 3
     line_to_line: true
     id_tags: ["04A1B2C7"]
-    config_keys: { HeartbeatInterval: 10, MeterValueSampleInterval: 5 }
+    ocpp_version: "2.0.1"
+    csms_url: "__CSMS201_URL__"
+    meter_sample_interval_s: 5
+    variables:
+      - { component: OCPPCommCtrlr, variable: HeartbeatInterval, value: 10 }
+      - { component: VendorCtrlr, variable: ChargeMode, data_type: OptionList, values_list: [Eco, Fast], value: Eco }
     session: { ev_model: "suv-90kwh", initial_soc: 18, target_soc: 100 }
   - id: "CP-0006"
     model: "SIM-AC11"

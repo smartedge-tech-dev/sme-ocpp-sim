@@ -69,7 +69,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `url` | 无 | CSMS 的 WebSocket URL（`ws://` 或 `wss://`）；充电桩 ID 作为最后一段路径追加。除非每台充电桩都有 `csms_url`，否则必填 |
-| `ocpp_version` | `"1.6"` | v0.1 只支持 `"1.6"`；`"2.0.1"` / `"2.1"` 会报错，提示将在后续版本支持 |
+| `ocpp_version` | `"1.6"` | `"1.6"` 或 `"2.0.1"`；`"2.1"` 会报错，提示将在 v0.3 支持 |
 | `security_profile` | `0` | `0`、`1` 或 `2`；每台充电桩都按它检查，见 [安全配置文件](security-profiles.md) |
 | `reconnect.min_s` | `1.0` | 首次重连等待时间（秒） |
 | `reconnect.max_s` | `60.0` | 重连等待时间上限（≥ `min_s`）；等待时间按指数增长 |
@@ -99,17 +99,17 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 |---|---|---|
 | `id` | 必填 | 充电桩 ID（加引号的字符串）。用作 URL 的最后一段路径和 Basic 认证的用户 ID，因此不能包含 `:`；`bulk` 为保留字 |
 | `csms_url` | `csms_defaults.url` | 单台充电桩的 CSMS URL |
-| `ocpp_version` | `csms_defaults.ocpp_version` | 单台充电桩的 OCPP 版本 |
+| `ocpp_version` | `csms_defaults.ocpp_version` | 单台充电桩的 OCPP 版本（`"1.6"` 或 `"2.0.1"`）；同一站点可以混用 |
 | `password` | 无 | Basic 认证密码（Security Profile 1 / 2） |
 | `ca_file` | 系统信任库 | `wss://` 时用于校验 CSMS 证书的额外 CA 证书包（PEM） |
 | `verify_tls` | `true` | `false` 跳过证书校验（仅限测试；日志中会输出警告） |
-| `require_subprotocol` | `true` | `false` 时即使 CSMS 未回显 `ocpp1.6` 子协议也保持连接 |
+| `require_subprotocol` | `true` | `false` 时即使 CSMS 未回显 `ocpp1.6` / `ocpp2.0.1` 子协议也保持连接 |
 | `vendor` | `"SmartEdge"` | BootNotification 的 `chargePointVendor`（最多 20 个字符） |
 | `model` | `"SIM-AC6"` | `chargePointModel`（最多 20） |
 | `serial` | 无 | `chargePointSerialNumber`（最多 25） |
 | `firmware` | `"0.1.0"` | `firmwareVersion`（最多 50） |
-| `connectors` | `1` | connector 数量（1–32）；所有 connector 共用下面的供电设置和 `max_power_w` |
-| `config_keys` | `{}` | OCPP 配置键初始值，例如 `HeartbeatInterval: 300`；数字和布尔值可以不加引号 |
+| `connectors` | `1` | connector 数量（1–32）；所有 connector 共用下面的供电设置和 `max_power_w`。OCPP 2.0.1：EVSE 数量（每个一个 connector） |
+| `config_keys` | `{}` | OCPP 1.6：配置键初始值，例如 `HeartbeatInterval: 300`；数字和布尔值可以不加引号。2.0.1 充电桩不使用（见 `variables`） |
 | `auth_mode` | `local_then_csms` | `local_only`（仅 `id_tags`）、`csms_only`（始终 Authorize）、`local_then_csms`（先查 `id_tags`，再 Authorize）、`accept_all` |
 | `id_tags` | `[]` | 本地接受的 ID 标签（每个最多 20 个字符，不可重复） |
 | `boot_retry_s` | `60.0` | CSMS 以 interval 0 应答 Pending / Rejected 时的 Boot 重试间隔 |
@@ -122,7 +122,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `session.ev_model` | `compact-40kwh` | 插在 connector 上的 EV（预设或 `ev_models` 的 ID） |
 | `session.initial_soc` | `30.0` | 每次交易开始时的 SoC（%） |
 | `session.target_soc` | `90.0` | 达到后 EV 不再接受功率（SuspendedEV） |
-| `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值 |
+| `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值；2.0.1 为 `SampledDataCtrlr.TxUpdatedInterval` 的初始值 |
 | `variables` | `[]` | 仅 OCPP 2.0.1 充电桩：Device Model 的值覆盖与用户自定义变量（见下文） |
 
 ### variables（OCPP 2.0.1） { #variables }
@@ -167,4 +167,10 @@ chargers:
 
 加载配置时会校验值（类型、范围、`values_list`）；在 1.6 充电桩上写 `variables` 会报错。
 
-v0.1 不包含：充电桩模板、2.0.1 的 `evses` 树和 `behaviors`（计划在 v0.2 支持）。
+在 Web UI 中，2.0.1 充电桩的 **变量（Device Model）** 表只读显示这些值。
+
+![OCPP 2.0.1 充电桩的变量](../assets/screenshots/zh/variables.png)
+
+1.6 / 2.0.1 混合站点的示例见 [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml)。
+
+尚不支持：充电桩模板、2.0.1 的 `evses` 树（每个 EVSE 多个 connector）和 `behaviors`。

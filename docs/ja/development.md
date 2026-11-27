@@ -62,11 +62,11 @@ README とドキュメントの画像は `scripts/screenshots.py` で作成し�
 .venv\Scripts\python scripts\screenshots.py
 ```
 
-スクリプトは一時ディレクトリで動作します。開発用 CSMS `tests/peers/ocpp16_peer.py` を同じプロセスで起動し、
-`scripts/screenshots.yaml`（充電器 8 台、`initial_soc` をずらし、`time_scale` 60）でシミュレーターを `127.0.0.1`
-の空きポートに起動、全充電器でトランザクションを開始して `CP-0001` に TxDefaultProfile を送ります。そのうえで全言語の
+スクリプトは一時ディレクトリで動作します。開発用 CSMS `tests/peers/ocpp16_peer.py` と `tests/peers/ocpp201_peer.py` を同じプロセスで起動し、
+`scripts/screenshots.yaml`（充電器 8 台、うち 3 台が OCPP 2.0.1、`initial_soc` をずらし、`time_scale` 60）でシミュレーターを `127.0.0.1`
+の空きポートに起動、全充電器でトランザクションを開始して 2.0.1 の `CP-0001` に TxDefaultProfile と外部制限値を送ります。そのうえで全言語の
 ライトテーマと暗いテーマの概要を撮影し、`overview.png`、`charger.png`、`smart-charging.png`、`frames.png`、
-`settings.png`、`overview-dark.png`、`live.gif` を `docs/assets/screenshots/{en,ja,zh}/` に書き出します（日本語の横長画像
+`variables.png`、`settings.png`、`overview-dark.png`、`live.gif` を `docs/assets/screenshots/{en,ja,zh}/` に書き出します（日本語の横長画像
 `ja/overview-wide.png` も）。言語とテーマは上記の `localStorage` キーで設定します。
 
 ## ドキュメント

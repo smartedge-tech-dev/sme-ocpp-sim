@@ -2,11 +2,11 @@
 
 <h1 align="center">SME OCPPSim</h1>
 
-<p align="center"><strong>Simulate a car park full of EV chargers on your laptop.</strong> OCPP 1.6J charge points with Smart Charging,<br>for CSMS and EMS testing, with a live web UI.</p>
+<p align="center"><strong>Simulate a car park full of EV chargers on your laptop.</strong> OCPP 1.6J and 2.0.1 chargers with Smart Charging,<br>for CSMS and EMS testing, with a live web UI.</p>
 
 <p align="center"><a href="https://smartedge-tech.com/open-source/#ocpp-sim"><b>Website</b></a> · <a href="https://smartedge-tech-dev.github.io/sme-ocpp-sim/"><b>Docs</b></a> · <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><b>Download</b></a></p>
 
-<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J-2e8b57" alt="OCPP 1.6J"></p>
+<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J%20%7C%202.0.1-2e8b57" alt="OCPP 1.6J | 2.0.1"></p>
 
 <p align="center"><strong>English</strong> | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简体中文</a></p>
 
@@ -17,9 +17,12 @@ virtual EVs, start and stop transactions, and watch the charging power follow th
 CSMS (SteVe, your own CSMS, an EMS...) sends.
 
 - **OCPP 1.6J charge points.** Boot, heartbeat, status, authorize, transactions and meter values; remote
-  start / stop, configuration, reset, trigger message, availability, unlock and data transfer. OCPP 2.0.1 / 2.1
-  are planned for v0.2 / v0.3.
-- **Smart Charging with a closed power loop.** SetChargingProfile, ClearChargingProfile and
+  start / stop, configuration, reset, trigger message, availability, unlock and data transfer.
+- **OCPP 2.0.1 charging stations**, mixed freely with 1.6 chargers: TransactionEvent with offline queueing,
+  RequestStart / StopTransaction, Reset, ChangeAvailability, TriggerMessage, UnlockConnector, the Device Model
+  (GetVariables / SetVariables / GetBaseReport, shown read-only in the UI) and 2.0.1 Smart Charging with an
+  external (EMS) limit. OCPP 2.1 is planned for v0.3.
+- **Smart Charging with a closed power loop (1.6 and 2.0.1).** SetChargingProfile, ClearChargingProfile and
   GetCompositeSchedule. The power limit is computed by the same function that answers GetCompositeSchedule,
   so the schedule and the meter values cannot diverge. Every point the specification leaves open is documented.
 - **EV and power model.** Battery, SoC, charging curve, phases, ramps, Japanese 200 V single-phase and
@@ -38,15 +41,19 @@ custom development is available, see [Commercial support & custom development](#
 <table>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview.png" alt="Charger list: connection, OCPP version, connectors and total power"></a><br><sub>Charger list: connection, OCPP version, connectors and total power</sub></td>
-    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/charger.png" alt="Connector cards: plug, swipe, start, stop and fault"></a><br><sub>Connector cards: plug, swipe, start, stop and fault</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/charger.png" alt="An OCPP 2.0.1 charger: EVSE cards with plug, swipe, start, stop and fault"></a><br><sub>An OCPP 2.0.1 charger: EVSE cards with plug, swipe, start, stop and fault</sub></td>
   </tr>
   <tr>
-    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/smart-charging.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/smart-charging.png" alt="Smart Charging panel: limit, power and SoC on one time axis"></a><br><sub>Smart Charging panel: limit, power and SoC on one time axis</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/smart-charging.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/smart-charging.png" alt="Smart Charging panel: limit, power and SoC on one time axis, with the 2.0.1 external limit"></a><br><sub>Smart Charging panel: limit, power and SoC on one time axis, with the 2.0.1 external limit</sub></td>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/frames.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/frames.png" alt="OCPP frame log with filters and JSON detail"></a><br><sub>OCPP frame log with filters and JSON detail</sub></td>
   </tr>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/settings.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/settings.png" alt="Settings: CSMS URL, OCPP version and security profile"></a><br><sub>Settings: CSMS URL, OCPP version and security profile</sub></td>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview-dark.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/overview-dark.png" alt="Dark theme"></a><br><sub>Dark theme</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/variables.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/variables.png" alt="OCPP 2.0.1 Device Model variables (read-only)"></a><br><sub>OCPP 2.0.1 Device Model variables (read-only)</sub></td>
+    <td width="50%"><sub>Mixed 1.6 / 2.0.1 sites: see <code>configs/mixed-site.yaml</code></sub></td>
   </tr>
 </table>
 

@@ -3,10 +3,14 @@
 一个带实时 Web UI 的免费 OCPP 充电桩模拟器，用于测试 CSMS 或 EMS。可在一个进程中模拟几十到几百台 AC 充电桩，
 插入虚拟 EV、启动和停止交易，并观察充电功率如何跟随 CSMS 下发的 Smart Charging profile 变化。
 
-- **OCPP 1.6J 充电桩。** 每台模拟桩都是一个主动连接 CSMS 的 WebSocket 客户端（子协议 `ocpp1.6`），
-  发送 Boot、Heartbeat、StatusNotification、交易和 MeterValues，并应答 [OCPP 1.6J 消息](messages.md)
-  中列出的 CSMS 请求。OCPP 2.0.1 / 2.1 计划在 v0.2 / v0.3 支持，UI 中以灰色显示。
-- **功率闭环的 Smart Charging。** 支持 SetChargingProfile / ClearChargingProfile / GetCompositeSchedule；
+- **OCPP 1.6J 与 OCPP 2.0.1。** 每台模拟桩都是一个主动连接 CSMS 的 WebSocket 客户端（子协议 `ocpp1.6` 或
+  `ocpp2.0.1`，按充电桩选择，因此一个进程可以运行混合站点），发送 Boot、Heartbeat、StatusNotification、交易
+  （1.6 为 StartTransaction / StopTransaction，2.0.1 为 TransactionEvent）和 MeterValues，并应答
+  [OCPP 消息](messages.md) 中列出的 CSMS 请求。OCPP 2.1 计划在 v0.3 支持，UI 中以灰色显示。
+- **OCPP 2.0.1 Device Model 与外部限值。** 对最小标准变量集和用户自定义变量（YAML 中的 `variables:`）支持
+  GetVariables / SetVariables / GetBaseReport，Web UI 中只读显示；可按 EVSE 或整站设置外部（EMS）限值，
+  并发送 NotifyChargingLimit / ClearedChargingLimit。
+- **功率闭环的 Smart Charging（1.6 与 2.0.1）。** 支持 SetChargingProfile / ClearChargingProfile / GetCompositeSchedule；
   施加到模拟功率上的限值与应答 GetCompositeSchedule 的是同一个函数，因此报给 CSMS 的计划与 MeterValues 的数值不会不一致。
   详见 [Smart Charging](smart-charging.md)。
 - **EV 与功率模型。** 电池容量、SoC、充电曲线、相数、最小电流、功率爬坡，以及日本 200 V 单相和三相三角形接法供电；

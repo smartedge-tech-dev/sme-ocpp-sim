@@ -1,7 +1,8 @@
 # Smart Charging
 
 SME OCPPSim implements the OCPP 1.6 Smart Charging profile: SetChargingProfile, ClearChargingProfile,
-GetCompositeSchedule, and charging profiles carried by RemoteStartTransaction.
+GetCompositeSchedule, and charging profiles carried by RemoteStartTransaction. OCPP 2.0.1 chargers follow the
+same model with the 2.0.1 rules, see [OCPP 2.0.1](#ocpp-201) below.
 
 ## One evaluator for the schedule and the power
 
@@ -77,7 +78,7 @@ These are simulator conventions, not OCPP rules:
   by at most one step.
 - Ramps (`ramp_up_w_per_s`, `ramp_down_w_per_s`) are in W per simulated second; the default is a step change.
 
-## OCPP 2.0.1
+## OCPP 2.0.1 { #ocpp-201 }
 
 A 2.0.1 charger has its own copy of these rules (`protocol/v201/profiles.py` / `composite.py`); the power model
 is shared, so the same closed loop holds: GetCompositeSchedule equals the `Power.Active.Import` of the following
@@ -102,6 +103,12 @@ EVSE or the station and sends NotifyChargingLimit (`chargingLimitSource` `EMS`);
 ClearedChargingLimit. Both are sent only while the boot is accepted (a limit set offline applies but is not
 reported later). GetChargingProfiles reports these profiles with source `EMS`, the CSMS ones with `CSO`.
 OCPP 1.6 has no external limits and answers 400.
+
+In the web UI the Smart Charging panel of a 2.0.1 charger has an **External limit (EMS)** row: pick the whole
+station (0) or an EVSE, enter a limit in W and press Set, or press Remove. The external constraints profile then
+appears in the profile list, and the composite limit in the chart includes it.
+
+![Smart Charging panel of an OCPP 2.0.1 charger with an external limit](../assets/screenshots/en/smart-charging.png)
 
 The 2.0.1 rules recalled from the specification text (TxProfile needs a `transactionId`, the stack level
 conflict, external constraints not settable by the CSMS) were not verified against the spec document; see the

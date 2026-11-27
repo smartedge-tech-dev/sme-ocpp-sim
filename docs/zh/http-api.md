@@ -17,7 +17,7 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | POST | `/api/simulation` | 运行 / 暂停与时间倍率：`{"running": true, "time_scale": 10}`（均可省略；其他字段会被拒绝） |
 | GET / PUT | `/api/csms-defaults` | `csms_defaults` 块（PUT 整块替换并重新加载） |
 | GET / PATCH | `/api/chargers/{id}/settings` | 单台充电桩的连接 / 认证设置（见下文） |
-| GET | `/api/chargers/{id}/configuration` | GetConfiguration 所见的运行时配置键 |
+| GET | `/api/chargers/{id}/configuration` | GetConfiguration 所见的运行时配置键；OCPP 2.0.1 为 Device Model 变量（见下文） |
 | POST | `/api/devices` | 添加充电桩 |
 | GET / PUT | `/api/devices/{id}/config` | 单台充电桩的配置（PUT 整项替换） |
 | POST | `/api/devices/{id}/duplicate` | 复制充电桩（ID 递增） |
@@ -29,6 +29,13 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 `config_keys`，以及实际生效的 CSMS URL / OCPP 版本（`effective`）。PATCH 只修改请求中出现的字段；`null` 表示
 取消该设置（`id_tags` / `config_keys` 变为空；`verify_tls` 只能是 true 或 false）。密码掩码同上可原样发回。
 修改通过重新加载配置生效，只有 `POST /api/config/save` 才写入文件。
+
+对 OCPP 2.0.1 充电桩，`/api/chargers/{id}/configuration` 返回 `{"keys": [], "ocpp_version": "2.0.1",
+"variables": [...]}`：每个 Device Model 变量一项，含 `component`、`component_instance`、`evse_id`、`connector_id`、
+`variable`、`variable_instance`、`data_type`、`mutability`、`unit`、`min_limit`、`max_limit`、`values_list`、
+`reboot_required` 和 `attributes`（该变量具有的 `Actual` / `Target` / `MinSet` / `MaxSet` 值；WriteOnly 变量为
+`null`），并包含 CSMS 通过 SetVariables 修改的值。没有修改变量的路由：CSMS 使用 SetVariables，初始值由 YAML 文件
+（`variables:`）设置。
 
 ## 充电桩操作
 
@@ -42,7 +49,7 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` 必填 |
 | POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — 插枪并刷卡；`id_tag` 默认为第一个配置的 tag（没有则 `400`）；connector 已有 transaction 或处于故障时为 `400` |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——该桩 `fault_codes` 之一（1.6 为 `ChargePointErrorCode`，否则 `400`）；以原因 `Other` 结束进行中的交易并上报 `Faulted` |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——该桩 `fault_codes` 之一（1.6 为 `ChargePointErrorCode`，2.0.1 为 `ReasonEnumType` 中的故障值，否则 `400`）；结束进行中的交易（1.6 原因为 `Other`，2.0.1 的 `stoppedReason` 为该故障码）并上报 `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}`——恢复为 Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充电桩 → CSMS） |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` 或 `{"all": true}` |

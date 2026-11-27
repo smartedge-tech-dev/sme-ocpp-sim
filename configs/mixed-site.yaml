@@ -1,0 +1,67 @@
+# SME OCPPSim mixed site: OCPP 1.6J chargers and OCPP 2.0.1 charging stations in one process.
+#
+# The 1.6 chargers use csms_defaults (a local SteVe); the 2.0.1 stations set ocpp_version and their own
+# csms_url. Replace ws://localhost:9000/ocpp with the charging-station endpoint of your OCPP 2.0.1 CSMS; the
+# station id is appended as the last path segment.
+#
+# Always quote ids, id tags and passwords ("0123", "ON" and "1e5" are not strings in unquoted YAML).
+# Saving from the web UI rewrites whole top-level blocks: comments outside a changed block stay,
+# comments inside it (e.g. next to a single charger) are lost.
+
+simulation:
+  tick_seconds: 1
+  time_scale: 1          # speeds up the power model (ramp, energy, SoC) only
+  running: true
+
+frame_log:
+  size: 20000
+
+csms_defaults:
+  url: "ws://localhost:8180/steve/websocket/CentralSystemService"
+  ocpp_version: "1.6"
+  security_profile: 0
+  reconnect: { min_s: 1, max_s: 60, jitter: 0.2 }
+
+ev_models:
+  - id: "demo-60kwh"
+    capacity_kwh: 60
+    max_ac_kw: 11
+    max_current_a: 16
+    phases: 3
+
+# CP-* are OCPP 1.6J chargers, CS-* OCPP 2.0.1 stations. For a 2.0.1 station connectors = EVSEs (one connector
+# each); variables overrides Device Model values (here the heartbeat and the periodic TransactionEvent interval)
+# and adds a user-defined variable.
+chargers:
+  - id: "CP-0001"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    id_tags: ["04A1B2C3", "TAG-0002"]
+    config_keys:
+      HeartbeatInterval: 300
+      MeterValueSampleInterval: 60
+  - id: "CP-0002"
+    connectors: 2
+    max_power_w: 6000
+    auth_mode: accept_all
+  - id: "CS-2001"
+    ocpp_version: "2.0.1"
+    csms_url: "ws://localhost:9000/ocpp"
+    model: "SIM-AC7"
+    connectors: 2
+    max_power_w: 7400
+    id_tags: ["04A1B2C3", "TAG-0002"]
+    variables:
+      - { component: OCPPCommCtrlr, variable: HeartbeatInterval, value: 300 }
+      - { component: SampledDataCtrlr, variable: TxUpdatedInterval, value: 60 }
+      - { component: VendorCtrlr, variable: ChargeMode, data_type: OptionList, values_list: [Eco, Fast], value: Eco }
+  - id: "CS-2002"
+    ocpp_version: "2.0.1"
+    csms_url: "ws://localhost:9000/ocpp"
+    model: "SIM-AC11"
+    max_power_w: 11000
+    voltage_v: 200
+    phases: 3
+    line_to_line: true
+    auth_mode: accept_all
+    session: { ev_model: "demo-60kwh", initial_soc: 20, target_soc: 80 }

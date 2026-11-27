@@ -4,11 +4,15 @@ CSMS や EMS の試験に使える、ライブ Web UI 付きの無償 OCPP 充�
 AC 充電器を模擬し、仮想 EV の接続、トランザクションの開始・停止を行いながら、CSMS が送る Smart Charging
 プロファイルに充電電力が追従する様子を確認できます。
 
-- **OCPP 1.6J の Charge Point。** 各充電器は CSMS へ接続しに行く WebSocket クライアント（サブプロトコル
-  `ocpp1.6`）です。Boot、Heartbeat、StatusNotification、トランザクション、MeterValues を送信し、
-  [OCPP 1.6J メッセージ](messages.md) に挙げた CSMS からの要求に応答します。OCPP 2.0.1 / 2.1 は
-  v0.2 / v0.3 で対応予定で、UI ではグレー表示になっています。
-- **電力の閉ループを持つ Smart Charging。** SetChargingProfile / ClearChargingProfile / GetCompositeSchedule
+- **OCPP 1.6J と OCPP 2.0.1。** 各充電器は CSMS へ接続しに行く WebSocket クライアント（サブプロトコル
+  `ocpp1.6` または `ocpp2.0.1`。充電器ごとに選べるので 1 プロセスで混在サイトも構成できます）です。Boot、
+  Heartbeat、StatusNotification、トランザクション（1.6 は StartTransaction / StopTransaction、2.0.1 は
+  TransactionEvent）、MeterValues を送信し、[OCPP メッセージ](messages.md) に挙げた CSMS からの要求に応答します。
+  OCPP 2.1 は v0.3 で対応予定で、UI ではグレー表示になっています。
+- **OCPP 2.0.1 の Device Model と外部制限値。** 最小限の標準変数とユーザー定義変数（YAML の `variables:`）に対する
+  GetVariables / SetVariables / GetBaseReport。Web UI では参照のみで表示します。EVSE またはステーション単位の
+  外部（EMS）制限値を NotifyChargingLimit / ClearedChargingLimit 付きで設定できます。
+- **電力の閉ループを持つ Smart Charging（1.6 と 2.0.1）。** SetChargingProfile / ClearChargingProfile / GetCompositeSchedule
   に対応します。模擬電力に適用する制限値は GetCompositeSchedule に応答するのと同じ関数で計算されるため、
   CSMS に報告する計画と MeterValues の値が食い違うことはありません。[Smart Charging](smart-charging.md) をご覧ください。
 - **EV と電力のモデル。** 電池容量、SoC、充電カーブ、相数、最小電流、ランプ、日本の 200 V 単相・三相デルタ

@@ -17,7 +17,7 @@ CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答
 | POST | `/api/simulation` | 実行 / 一時停止と時間倍率: `{"running": true, "time_scale": 10}`（どちらも省略可。その他のフィールドは拒否） |
 | GET / PUT | `/api/csms-defaults` | `csms_defaults` ブロック（PUT で置き換えて再読み込み） |
 | GET / PATCH | `/api/chargers/{id}/settings` | 1 台の充電器の接続 / 認証設定（下記参照） |
-| GET | `/api/chargers/{id}/configuration` | GetConfiguration から見える実行時の設定キー |
+| GET | `/api/chargers/{id}/configuration` | GetConfiguration から見える実行時の設定キー。OCPP 2.0.1 は Device Model の変数（下記） |
 | POST | `/api/devices` | 充電器を追加 |
 | GET / PUT | `/api/devices/{id}/config` | 1 台の充電器の設定（PUT は項目全体を置き換え） |
 | POST | `/api/devices/{id}/duplicate` | 充電器を複製（ID は連番で増加） |
@@ -32,6 +32,13 @@ CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答
 は true か false のみ）。パスワードのマスクは上記と同じく送り返せます。変更は設定の再読み込みで反映され、
 ファイルへは `POST /api/config/save` のときだけ書き込まれます。
 
+OCPP 2.0.1 の充電器では `/api/chargers/{id}/configuration` は `{"keys": [], "ocpp_version": "2.0.1",
+"variables": [...]}` を返します。Device Model の変数ごとに `component`、`component_instance`、`evse_id`、
+`connector_id`、`variable`、`variable_instance`、`data_type`、`mutability`、`unit`、`min_limit`、`max_limit`、
+`values_list`、`reboot_required`、`attributes`（その変数が持つ `Actual` / `Target` / `MinSet` / `MaxSet` の値。
+WriteOnly の変数は `null`）を含み、CSMS が SetVariables で変更した値も反映されます。変数を変更するルートは
+ありません。CSMS は SetVariables を使い、初期値は YAML ファイル（`variables:`）で設定します。
+
 ## 充電器の操作
 
 | メソッド | パス | ボディ |
@@ -44,7 +51,7 @@ CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答
 | POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` は必須 |
 | POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — プラグを挿してスワイプ。`id_tag` の既定は最初に設定されたタグ（ない場合は `400`）。トランザクション中または故障中のコネクタは `400` |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — 充電器の `fault_codes` のいずれか（1.6 は `ChargePointErrorCode`。それ以外は `400`）。実行中のトランザクションを理由 `Other` で終了し、`Faulted` を報告します |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — 充電器の `fault_codes` のいずれか（1.6 は `ChargePointErrorCode`、2.0.1 は `ReasonEnumType` の故障値。それ以外は `400`）。実行中のトランザクションを終了し（1.6 は理由 `Other`、2.0.1 は `stoppedReason` = そのコード）、`Faulted` を報告します |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — Available / Preparing に戻します |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充電器 → CSMS） |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` または `{"all": true}` |

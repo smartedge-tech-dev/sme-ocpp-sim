@@ -70,3 +70,43 @@ docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway \
 6. 从 SteVe 向正在充电的 connector 下发 SetChargingProfile，在 Smart Charging 面板中观察功率跟随限值变化。
 
 要改用其它 CSMS，请在 YAML 文件或 UI 的设置对话框中修改 `csms_defaults.url`。充电桩 ID 会作为最后一段路径追加到 URL 上。
+
+## OCPP 2.0.1 充电桩 { #ocpp-201 }
+
+2.0.1 充电站需要支持 OCPP 2.0.1（子协议 `ocpp2.0.1`）的 CSMS。`ocpp_version` 按充电桩设置（或在 `csms_defaults`
+中为全部设置），因此 1.6 与 2.0.1 充电桩可以各自使用自己的 `csms_url` 同时运行：
+
+```yaml
+csms_defaults:
+  url: "ws://localhost:8180/steve/websocket/CentralSystemService"   # OCPP 1.6 CSMS
+  ocpp_version: "1.6"
+
+chargers:
+  - id: "CP-0001"                     # OCPP 1.6J
+    max_power_w: 6000
+    id_tags: ["04A1B2C3"]
+  - id: "CS-2001"                     # OCPP 2.0.1, two EVSEs
+    ocpp_version: "2.0.1"
+    csms_url: "ws://localhost:9000/ocpp"
+    connectors: 2
+    max_power_w: 7400
+    id_tags: ["04A1B2C3"]
+    variables:
+      - { component: OCPPCommCtrlr, variable: HeartbeatInterval, value: 120 }
+```
+
+完整示例见 [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml)。请把 2.0.1 的 URL 换成你的 CSMS 的充电站端点；与 1.6 一样，
+充电站 ID 会作为最后一段路径追加到 URL 上。版本也可以在 UI 的设置对话框中修改（充电桩会重新连接）。
+
+对 2.0.1 充电桩，Web UI 显示：
+
+- 充电桩列表和详情标题中的 OCPP 版本；
+- 用 EVSE 代替 connector（`connectors: N` = N 个 EVSE，每个一个 connector）；
+- 用 **变量（Device Model）** 代替配置键：CSMS 通过 GetVariables 读取的运行时值（含 SetVariables 的修改）。
+  该表只读（HTTP API 没有修改变量的路由）：请从 CSMS 修改，或在 YAML 文件的 `variables:` 中设置；
+- Smart Charging 面板中的 **外部限值（EMS）** 控件，见 [Smart Charging](smart-charging.md#ocpp-201)。
+
+故障对话框列出该充电桩版本的故障码。2.0.1 的 StatusNotification 没有错误码，因此 2.0.1 故障会把 EVSE 报告为
+Faulted，故障码只作为被中断交易的 `stoppedReason` 发送。
+
+![OCPP 2.0.1 充电桩的变量](../assets/screenshots/zh/variables.png)

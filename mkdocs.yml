@@ -1,6 +1,6 @@
 site_name: SME OCPPSim
 site_url: https://smartedge-tech-dev.github.io/sme-ocpp-sim/
-site_description: Free OCPP charging station simulator (OCPP 1.6J; 2.0.1 / 2.1 planned) for CSMS and EMS testing, including Smart Charging.
+site_description: Free OCPP charging station simulator (OCPP 1.6J and 2.0.1; 2.1 planned) for CSMS and EMS testing, including Smart Charging.
 repo_url: https://github.com/smartedge-tech-dev/sme-ocpp-sim
 repo_name: smartedge-tech-dev/sme-ocpp-sim
 docs_dir: docs

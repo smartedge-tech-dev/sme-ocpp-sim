@@ -95,6 +95,13 @@ select option:disabled { color: var(--muted); }
 .plist li { padding: 3px 0; border-top: 1px solid var(--line); }
 .keys { margin-top: 14px; font-size: 12px; }
 .keys summary { cursor: pointer; font-weight: 600; }
+.vars { max-height: 360px; }
+.vars td.attr { color: var(--muted); font-size: 11px; }
+.extlimit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; padding-top: 6px;
+  border-top: 1px solid var(--line); font-size: 12px; }
+.extlimit > span:first-child { font-weight: 600; }
+.extlimit input { width: 90px; }
+.extlimit[hidden] { display: none; }
 
 .flog td.payload { max-width: 0; width: 50%; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); color: var(--muted); }
 .flog tbody tr { cursor: pointer; }
