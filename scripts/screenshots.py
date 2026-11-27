@@ -44,6 +44,7 @@ STORAGE = "sme-ocpp-sim"           # data-storage prefix of the shell script tag
 VIEWPORT = {"width": 1440, "height": 1000}
 WIDE = {"width": 1600, "height": 1100}  # Japanese wide image (plan §9)
 FOCUS = "CP-0001"                  # the OCPP 2.0.1 station with the Smart Charging profile
+CARDS = "CP-0002"                  # the two-connector OCPP 2.0.1 station shown in charger.png
 EXTERNAL_LIMIT_W = 5000            # external (EMS) limit of the whole FOCUS station
 WARMUP_S = 15                      # let power ramp and frames accumulate before the first page
 HISTORY_S = 25                     # time on the page before capturing, so the charts have a history
@@ -115,19 +116,85 @@ async def page_for(browser, lang: str, theme: str, viewport: dict, base: str):
     return ctx, page
 
 
+# Element captures run with the page in document flow: the tool layout (100vh body, footer at the bottom of the
+# viewport) would otherwise put the footer over any element that reaches below the viewport.
+FLOW_CSS = ("body.sh-tool { height: auto !important; overflow: visible !important; }"
+            " body.sh-tool > .sh-body { overflow: visible !important; } .sh-footer { display: none !important; }")
+
+
+async def flow_layout(page, on: bool) -> None:
+    if on:
+        await page.add_style_tag(content=FLOW_CSS)
+        await page.evaluate("document.head.lastElementChild.id = 'shotFlow'")
+    else:
+        await page.evaluate("document.getElementById('shotFlow')?.remove()")
+    await page.wait_for_timeout(200)
+
+
+async def inner_rect(page, selector: str) -> dict:
+    """The element's box rounded inwards to whole pixels, so no sliver of the page behind it is captured."""
+    return await page.evaluate("""(sel) => {
+      const r = document.querySelector(sel).getBoundingClientRect();
+      const x = Math.ceil(r.left), y = Math.ceil(r.top);
+      return { x, y, width: Math.floor(r.right) - x, height: Math.floor(r.bottom) - y };
+    }""", selector)
+
+
+# Expand the JSON of a short frame (StatusNotification, else Heartbeat, else the newest) and scroll it to the top.
+OPEN_FRAME_JS = """() => {
+  document.getElementById('fFollow').checked = false;
+  const rows = [...document.querySelectorAll('#frameRows tr:not(.xrow)')];
+  const pick = (a) => rows.filter((tr) => tr.cells[5] && tr.cells[5].textContent === a).pop();
+  const tr = pick('StatusNotification') || pick('Heartbeat') || rows[rows.length - 1];
+  tr.click();
+  const wrap = document.getElementById('frameWrap');
+  wrap.scrollTop = tr.offsetTop - wrap.querySelector('thead').offsetHeight;
+}"""
+
+# Crop the variables table (a 360 px scroll box) at the last row boundary that fits.
+CROP_VARS_JS = """() => {
+  const wrap = document.querySelector('.tablewrap.vars');
+  wrap.scrollTop = 0;
+  const limit = parseFloat(getComputedStyle(wrap).maxHeight);
+  let h = wrap.querySelector('thead').offsetHeight;
+  for (const tr of wrap.querySelectorAll('tbody tr')) {
+    if (tr.offsetTop + tr.offsetHeight > limit) break;
+    h = tr.offsetTop + tr.offsetHeight;
+  }
+  wrap.style.maxHeight = h + 'px';
+}"""
+
+# The detail pane from its top edge down to the bottom of the EVSE cards.
+CARDS_CLIP_JS = """() => {
+  const pane = document.getElementById('detail').getBoundingClientRect();
+  const cards = document.getElementById('connectors').getBoundingClientRect();
+  const x = Math.ceil(pane.left), y = Math.ceil(pane.top);
+  return { x, y, width: Math.floor(pane.right) - x, height: Math.ceil(cards.bottom) + 12 - y };
+}"""
+
+
 async def capture_lang(browser, lang: str, base: str) -> None:
     out = OUT / lang
     out.mkdir(parents=True, exist_ok=True)
     ctx, page = await page_for(browser, lang, "light", VIEWPORT, base)
     await page.screenshot(path=out / "overview.png")
-    await page.locator("#detail").screenshot(path=out / "charger.png")
+
+    await flow_layout(page, True)
     sc = page.locator("#scChart").locator("xpath=ancestor::*[.//h3[@data-i18n='sc.title']][1]")
     await sc.screenshot(path=out / "smart-charging.png")
+    # Frame log with one frame's JSON detail expanded (the row toggle), the row scrolled to the top of the log.
+    await page.evaluate(OPEN_FRAME_JS)
+    await page.wait_for_timeout(300)
     await page.locator("section.pane.frames").screenshot(path=out / "frames.png")
+    await page.evaluate("document.querySelector('#frameRows tr.xrow')?.previousElementSibling.click();"
+                        " document.getElementById('fFollow').checked = true")
     await page.evaluate("document.getElementById('varsBox').open = true")  # the toggle loads the variables
     await page.wait_for_function("document.querySelectorAll('#varRows tr').length > 5")
+    await page.evaluate(CROP_VARS_JS)
     await page.locator("#varsBox").screenshot(path=out / "variables.png")
-    await page.evaluate("document.getElementById('varsBox').open = false")
+    await page.evaluate("document.getElementById('varsBox').open = false;"
+                        " document.querySelector('.tablewrap.vars').style.maxHeight = ''")
+    await flow_layout(page, False)
 
     frames = []
     for _ in range(GIF_FRAMES):
@@ -140,7 +207,13 @@ async def capture_lang(browser, lang: str, base: str) -> None:
 
     await page.evaluate(f"openSettingsDialog({FOCUS!r})")
     await page.wait_for_timeout(800)
-    await page.locator("#dlgSettings").screenshot(path=out / "settings.png")
+    await page.screenshot(path=out / "settings.png", clip=await inner_rect(page, "#dlgSettings"))
+    await page.keyboard.press("Escape")
+
+    # EVSE cards of the two-connector 2.0.1 station: the detail header and the cards only.
+    await page.evaluate(f"openChargerDialog({CARDS!r})")
+    await page.wait_for_timeout(1500)
+    await page.screenshot(path=out / "charger.png", clip=await page.evaluate(CARDS_CLIP_JS))
     await ctx.close()
 
     ctx, page = await page_for(browser, lang, "dark", VIEWPORT, base)

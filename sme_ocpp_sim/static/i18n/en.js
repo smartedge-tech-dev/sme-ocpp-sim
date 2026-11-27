@@ -71,7 +71,7 @@ Shell.addStrings("en", {
   "sc.legend.soc": "SoC (right axis)",
   "sc.chart.aria": "Composite limit, actual power and SoC over time",
   "sc.no_profiles": "No charging profiles installed.",
-  "sc.profile.line": "#{id} {purpose} / {kind}, stack {stack}, connector {conn}, {unit}, {n} periods",
+  "sc.profile.line": "#{id} {purpose} / {kind}, stack {stack}, connector {conn}, {unit}, periods: {n}",
   "profiles.title": "Charging profiles - {id}",
   "keys.title": "Configuration keys",
   "keys.none": "This charger has no configuration keys.",
