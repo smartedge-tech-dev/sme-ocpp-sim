@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sme-ocpp-sim"
 dynamic = ["version"]
-description = "SME OCPPSim: Free OCPP charging station simulator (OCPP 1.6J; 2.0.1 / 2.1 planned) for CSMS and EMS testing, including Smart Charging."
+description = "Free, open-source OCPP charging station (charge point) simulator for OCPP 1.6J and 2.0.1 with a live web UI, for Windows, Linux and Docker. Test a CSMS or EMS, including Smart Charging, without real EV chargers."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
-keywords = ["simulator", "ocpp", "ocpp16", "ev-charging", "charge-point", "csms", "smart-charging"]
+keywords = ["simulator", "ocpp", "ocpp16", "ev-charging", "charge-point", "csms", "smart-charging", "ocpp201", "ocpp-simulator", "charging-station", "emulator"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
@@ -37,6 +37,7 @@ dev = ["pytest", "httpx", "ocpp==2.1.0", "jsonschema", "cryptography", "playwrig
 [project.urls]
 Homepage = "https://github.com/smartedge-tech-dev/sme-ocpp-sim"
 Documentation = "https://smartedge-tech-dev.github.io/sme-ocpp-sim/"
+Changelog = "https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/CHANGELOG.md"
 Issues = "https://github.com/smartedge-tech-dev/sme-ocpp-sim/issues"
 
 [project.scripts]

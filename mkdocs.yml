@@ -1,6 +1,6 @@
 site_name: SME OCPPSim
 site_url: https://smartedge-tech-dev.github.io/sme-ocpp-sim/
-site_description: Free OCPP charging station simulator (OCPP 1.6J and 2.0.1; 2.1 planned) for CSMS and EMS testing, including Smart Charging.
+site_description: Free, open-source OCPP charging station (charge point) simulator for OCPP 1.6J and 2.0.1 with a live web UI, for Windows, Linux and Docker. Test a CSMS or EMS, including Smart Charging, without real EV chargers.
 repo_url: https://github.com/smartedge-tech-dev/sme-ocpp-sim
 repo_name: smartedge-tech-dev/sme-ocpp-sim
 docs_dir: docs
@@ -40,7 +40,9 @@ plugins:
         - locale: ja
           name: 日本語
           build: true
+          site_description: 無料・オープンソースの OCPP 充電器（チャージポイント）シミュレーター。OCPP 1.6J / 2.0.1 に対応し、Windows / Linux / Docker で動作します。実機の充電器なしで、Smart Charging を含む CSMS・EMS の試験ができます。
           nav_translations:
+            Home: ホーム
             Getting started: はじめに
             Configuration: 設定
             Reference: リファレンス
@@ -48,7 +50,9 @@ plugins:
         - locale: zh
           name: 简体中文
           build: true
+          site_description: 免费开源的 OCPP 充电桩模拟器（仿真软件），支持 OCPP 1.6J / 2.0.1，带实时 Web UI，支持 Windows、Linux 和 Docker。无需真实充电桩即可测试 CSMS 或 EMS（含 Smart Charging）。
           nav_translations:
+            Home: 首页
             Getting started: 快速入门
             Configuration: 配置
             Reference: 参考
@@ -68,7 +72,7 @@ markdown_extensions:
       check_paths: true
 
 nav:
-  - index.md
+  - Home: index.md
   - Getting started:
       - quick-start.md
   - Configuration:

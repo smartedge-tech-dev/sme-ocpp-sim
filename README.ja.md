@@ -12,7 +12,8 @@
 
 <p align="center"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/live.gif" alt="Smart Charging プロファイルに追従する充電電力のライブ表示" width="100%"></p>
 
-ライブ Web UI を備えた OCPP 充電器シミュレーターです。数十〜数百台の AC 充電器を模擬し、仮想 EV の接続や
+ライブ Web UI を備えた、無料・オープンソースの OCPP 充電器（チャージポイント）シミュレーターです。
+Windows / Linux / Docker で動作します。数十〜数百台の AC 充電器を模擬し、仮想 EV の接続や
 トランザクションの開始・停止を行いながら、CSMS（SteVe、自社の CSMS、EMS など）が送る Smart Charging プロファイルに
 充電電力が追従する様子をブラウザ上で確認できます。
 
@@ -90,6 +91,19 @@ SteVe の準備とすべてのオプションは [クイックスタート](http
 
 SME OCPPSim は Open Charge Alliance が公開している OCPP 仕様に基づいて実装しています。OCA の認証は受けておらず、
 OCTT による試験も行っていません。
+
+## smart-edge のシミュレータシリーズ
+
+SME OCPPSim は、smart-edge が公開している無料・MIT ライセンスのプロトコルシミュレータシリーズの 1 つです。
+Web UI と操作体系は共通なので、1 つ覚えれば他のシミュレータも同じ感覚で使えます。
+
+| シミュレータ | 対象 | ドキュメント |
+|---|---|---|
+| [SME BACnetSim](https://github.com/smartedge-tech-dev/sme-bacnet-sim) | BACnet/IP デバイスシミュレータ | [ドキュメント](https://smartedge-tech-dev.github.io/sme-bacnet-sim/ja/) |
+| [SME ModbusSim](https://github.com/smartedge-tech-dev/sme-modbus-sim) | Modbus TCP / RTU / UDP / TLS スレーブ（サーバー）シミュレーター | [ドキュメント](https://smartedge-tech-dev.github.io/sme-modbus-sim/ja/) |
+| **SME OCPPSim**（本プロジェクト） | OCPP 1.6J / 2.0.1 充電器シミュレーター | [ドキュメント](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/) |
+
+smart-edge のオープンソースツール一覧: <https://smartedge-tech.com/open-source/>
 
 ## 商用サポートとカスタム開発
 

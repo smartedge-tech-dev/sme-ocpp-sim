@@ -1,6 +1,11 @@
+---
+title: 無料の OCPP 充電器シミュレーター（OCPP 1.6J / 2.0.1、Web UI 付き）
+description: 無料・オープンソースの OCPP 充電器（チャージポイント）シミュレーター。OCPP 1.6J / 2.0.1 に対応し、Windows / Linux / Docker で動作します。実機の充電器なしで、Smart Charging を含む CSMS・EMS の試験ができます。
+---
+
 # SME OCPPSim
 
-CSMS や EMS の試験に使える、ライブ Web UI 付きの無償 OCPP 充電器シミュレーターです。1 プロセスで数十〜数百台の
+CSMS や EMS の試験に使える、ライブ Web UI 付きの無料・オープンソースの OCPP 充電器（チャージポイント）シミュレーターです。Windows / Linux / Docker で動作します。1 プロセスで数十〜数百台の
 AC 充電器を模擬し、仮想 EV の接続、トランザクションの開始・停止を行いながら、CSMS が送る Smart Charging
 プロファイルに充電電力が追従する様子を確認できます。
 
@@ -36,3 +41,25 @@ SME OCPPSim は無償の MIT ライセンスで、[smart-edge (智届科技)](ht
 - [クイックスタート](quick-start.md): Windows exe、pip、Docker と、SteVe への初回接続
 - [設定](configuration.md): YAML の全フィールド
 - [HTTP API](http-api.md): テストスクリプトからシミュレーターを操作する
+
+## 主な用途
+
+- **実機の充電器なしで CSMS・EMS を試験。** ハードウェアの代わりに、数十台の模擬充電器へ CSMS を接続できます。
+  [クイックスタート](quick-start.md) と [OCPP メッセージ](messages.md) をご覧ください。
+- **Smart Charging の電力閉ループを検証。** 充電プロファイルを送信し、MeterValues が制限値に追従することを確認します。
+  [Smart Charging](smart-charging.md) をご覧ください。
+- **台数規模と再接続の試験。** 1 プロセスで 200 台以上を動かし、切断・再接続のシナリオを試せます。
+  [設定](configuration.md) と [HTTP API](http-api.md) をご覧ください。
+
+## smart-edge のシミュレータシリーズ
+
+SME OCPPSim は、smart-edge が公開している無料・MIT ライセンスのプロトコルシミュレータシリーズの 1 つです。
+Web UI と操作体系は共通なので、1 つ覚えれば他のシミュレータも同じ感覚で使えます。
+
+| シミュレータ | 対象 | ドキュメント |
+|---|---|---|
+| [SME BACnetSim](https://github.com/smartedge-tech-dev/sme-bacnet-sim) | BACnet/IP デバイスシミュレータ | [ドキュメント](https://smartedge-tech-dev.github.io/sme-bacnet-sim/ja/) |
+| [SME ModbusSim](https://github.com/smartedge-tech-dev/sme-modbus-sim) | Modbus TCP / RTU / UDP / TLS スレーブ（サーバー）シミュレーター | [ドキュメント](https://smartedge-tech-dev.github.io/sme-modbus-sim/ja/) |
+| **SME OCPPSim**（本プロジェクト） | OCPP 1.6J / 2.0.1 充電器シミュレーター | [ドキュメント](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/) |
+
+smart-edge のオープンソースツール一覧: <https://smartedge-tech.com/open-source/>
