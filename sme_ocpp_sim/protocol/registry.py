@@ -30,7 +30,8 @@ class VersionInfo:
 VERSIONS: Dict[str, VersionInfo] = {
     "1.6": VersionInfo("1.6", True, adapter="sme_ocpp_sim.protocol.v16.adapter:Adapter16",
                          station="sme_ocpp_sim.protocol.v16.station:Station16"),
-    "2.0.1": VersionInfo("2.0.1", False, note="coming in v0.2"),
+    "2.0.1": VersionInfo("2.0.1", True, adapter="sme_ocpp_sim.protocol.v201.adapter:Adapter201",
+                         station="sme_ocpp_sim.protocol.v201.station:Station201"),
     "2.1": VersionInfo("2.1", False, note="coming in v0.3"),
 }
 
