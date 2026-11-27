@@ -105,13 +105,19 @@ Interpretations (not defined by the spec)
   TxCtrlr.TxStartPoint / TxStopPoint            MemberList ReadOnly    ``PowerPathClosed`` (M2 behaviour)
   TxCtrlr.StopTxOnInvalidId                     boolean    ReadWrite   end a transaction whose token the
                                                                        CSMS refuses (default true)
-  SecurityCtrlr.SecurityProfile (2.2.5)         integer    ReadOnly    1 / 2 from password and ws(s)://;
-                                                                       0 (no password) is a simulator-only
+  SecurityCtrlr.SecurityProfile (2.2.5)         integer    ReadOnly    1 / 2 from password and ws(s)://, 3
+                                                                       with a client certificate (M8); 0
+                                                                       (no password) is a simulator-only
                                                                        value, the spec defines 1 / 2 / 3
   SecurityCtrlr.Identity (2.2.2)                string     ReadOnly    the charger id; maxLimit 48
-  SecurityCtrlr.CertificateEntries (2.2.4)      integer    ReadOnly    fixed: 0, maxLimit 0 (no
-                                                                       certificate management)
-  SecurityCtrlr.OrganizationName                string     ReadWrite   ``vendor`` (not used)
+  SecurityCtrlr.CertificateEntries (2.2.4)      integer    ReadOnly    installed CA certificates + the
+                                                                       client certificate (M8); maxLimit
+                                                                       ``runtime.security.CERT_MAX`` (CA
+                                                                       certificates, M05.FR.06)
+  SecurityCtrlr.OrganizationName (2.2.3)        string     ReadWrite   ``vendor``; the O RDN of a CSR
+                                                                       (A00.FR.509, M8)
+  SecurityCtrlr                                 boolean    ReadOnly    fixed: false (required unless only
+  .AdditionalRootCertificateCheck (2.2.6)                              profile 1; the feature is optional)
   SecurityCtrlr.BasicAuthPassword (2.2.1)       string     WriteOnly   ``password``; 16..64 characters
                                                                        (maxLimit: spec "at least 40, at
                                                                        most 64"). A new value is
@@ -194,6 +200,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from ...rpc.transport import derived_security_profile
 from . import models as m
 from .enums import (AttributeEnumType, DataEnumType, GetVariableStatusEnumType, MutabilityEnumType,
                     ReportBaseEnumType, SetVariableStatusEnumType)
@@ -267,6 +274,10 @@ LOCAL_LIST_DISABLE_POST_AUTHORIZE = (LOCAL_AUTH_LIST, "DisablePostAuthorize")
 RESERVATION_ENABLED = (RESERVATION, "Enabled")
 RESERVATION_NON_EVSE_SPECIFIC = (RESERVATION, "NonEvseSpecific")
 BASIC_AUTH_PASSWORD = (SECURITY, "BasicAuthPassword")
+CERTIFICATE_ENTRIES = (SECURITY, "CertificateEntries")
+ORGANIZATION_NAME = (SECURITY, "OrganizationName")
+#: CertificateEntries maxLimit: the CA certificate store capacity (``runtime.security.CERT_MAX``).
+CERTIFICATE_ENTRIES_MAX = 20
 INSTANCE_CHARGING_PROFILES = "ChargingProfiles"
 INSTANCE_TX_EVENT = "TransactionEvent"
 INSTANCE_GET_REPORT = "GetReport"
@@ -634,12 +645,8 @@ def _b(flag: bool) -> str:
     return "true" if flag else "false"
 
 
-def security_profile(password: Optional[str], url: str) -> int:
-    """1 / 2 as the shell connects (password: Basic Auth; wss://: TLS); 0 without a password is a
-    simulator-only value (Part 2 §2.2.5 / A00 define profiles 1 / 2 / 3)."""
-    if password is None:
-        return 0
-    return 2 if url.startswith("wss://") else 1
+#: 1 / 2 / 3 as the shell connects; 0 without credentials is a simulator-only value (Part 2 §2.2.5 / A00).
+security_profile = derived_security_profile
 
 
 def _decimal(x: float) -> str:
@@ -657,7 +664,8 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
                        availability: Optional[Callable[[int], str]] = None,
                        power_w: Optional[Callable[[int], float]] = None,
                        profile_count: Optional[Callable[[], int]] = None,
-                       list_entries: Optional[Callable[[], int]] = None) -> List[Variable]:
+                       list_entries: Optional[Callable[[], int]] = None,
+                       certificate_entries: Optional[Callable[[], int]] = None) -> List[Variable]:
     """The default set (module docstring table) for the charger config ``cfg`` (``ChargerConfig``):
     ``message_timeout_s`` is the CALL timeout, ``url`` the CSMS url, ``availability(evse_id)`` the live
     connectorStatus of an EVSE, ``power_w(evse_id)`` its live power, ``profile_count()`` the number of
@@ -713,10 +721,13 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         ro((TX, "TxStartPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
         ro((TX, "TxStopPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
         var(STOP_TX_ON_INVALID_ID, DT.boolean, "true"),
-        ro(SECURITY_PROFILE, DT.integer, str(security_profile(cfg.password, url))),
+        ro(SECURITY_PROFILE, DT.integer,
+           str(security_profile(cfg.password, url, getattr(cfg, "client_cert_file", None) is not None))),
         ro((SECURITY, "Identity"), DT.string, cfg.id, max_limit=IDENTITY_MAX),
-        ro((SECURITY, "CertificateEntries"), DT.integer, "0", max_limit=0),
-        var((SECURITY, "OrganizationName"), DT.string, cfg.vendor, max_limit=50),
+        ro(CERTIFICATE_ENTRIES, DT.integer, "0", max_limit=CERTIFICATE_ENTRIES_MAX,
+           getter=(lambda: str(certificate_entries())) if certificate_entries is not None else None),
+        var(ORGANIZATION_NAME, DT.string, cfg.vendor, max_limit=50),
+        ro((SECURITY, "AdditionalRootCertificateCheck"), DT.boolean, "false"),
         var(BASIC_AUTH_PASSWORD, DT.string, cfg.password or "", mutability=MU.write_only,
             min_limit=PASSWORD_MIN, max_limit=PASSWORD_MAX),
     ]
@@ -836,11 +847,13 @@ def apply_config(model: DeviceModel, entries: Iterable[Any], evse_count: int) ->
 def build(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S, url: str = "",
           availability: Optional[Callable[[int], str]] = None, power_w: Optional[Callable[[int], float]] = None,
           profile_count: Optional[Callable[[], int]] = None,
-          list_entries: Optional[Callable[[], int]] = None) -> DeviceModel:
+          list_entries: Optional[Callable[[], int]] = None,
+          certificate_entries: Optional[Callable[[], int]] = None) -> DeviceModel:
     """The Device Model of the charger config ``cfg``: the standard set plus its ``variables``."""
     model = DeviceModel(standard_variables(cfg, message_timeout_s=message_timeout_s, url=url,
                                            availability=availability, power_w=power_w,
-                                           profile_count=profile_count, list_entries=list_entries))
+                                           profile_count=profile_count, list_entries=list_entries,
+                                           certificate_entries=certificate_entries))
     apply_config(model, cfg.variables, cfg.connectors)
     return model
 

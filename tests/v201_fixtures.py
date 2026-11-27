@@ -10,6 +10,7 @@ T2 = "2026-11-27T00:00:00.000Z"
 
 CUSTOM = {"vendorId": "com.example", "anything": {"nested": [1, None, "x"]}}
 STATUS_INFO_FULL = {"customData": CUSTOM, "reasonCode": "R1", "additionalInfo": "more"}
+HASH_DATA = {"hashAlgorithm": "SHA256", "issuerNameHash": "a" * 64, "issuerKeyHash": "b" * 64, "serialNumber": "1f"}
 
 ID_TOKEN_MIN = {"idToken": "00123", "type": "ISO14443"}
 ID_TOKEN_FULL = {
@@ -490,4 +491,55 @@ FIXTURES: dict = {
         "full": {"customData": CUSTOM, "status": "AcceptedCanceled", "statusInfo": STATUS_INFO_FULL,
                  "filename": "CS1_DiagnosticsLog_20261127T000000Z.log"},
     },
+    # --- M8 security / certificate management
+    ("SignCertificate", "request"): {
+        "min": {"csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n"},
+        "full": {"customData": CUSTOM, "csr": "x" * 5500, "certificateType": "ChargingStationCertificate"},
+    },
+    ("SignCertificate", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Rejected", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("CertificateSigned", "request"): {
+        "min": {"certificateChain": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"},
+        "full": {"customData": CUSTOM, "certificateChain": "x" * 10000, "certificateType": "V2GCertificate"},
+    },
+    ("CertificateSigned", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Rejected", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("InstallCertificate", "request"): {
+        "min": {"certificateType": "CSMSRootCertificate", "certificate": "PEM"},
+        "full": {"customData": CUSTOM, "certificateType": "MORootCertificate", "certificate": "x" * 5500},
+    },
+    ("InstallCertificate", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Failed", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("DeleteCertificate", "request"): {
+        "min": {"certificateHashData": HASH_DATA},
+        "full": {"customData": CUSTOM, "certificateHashData": {**HASH_DATA, "customData": CUSTOM,
+                                                               "hashAlgorithm": "SHA384"}},
+    },
+    ("DeleteCertificate", "response"): {
+        "min": {"status": "NotFound"},
+        "full": {"customData": CUSTOM, "status": "Failed", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("GetInstalledCertificateIds", "request"): {
+        "min": {},
+        "full": {"customData": CUSTOM, "certificateType": ["CSMSRootCertificate", "V2GCertificateChain"]},
+    },
+    ("GetInstalledCertificateIds", "response"): {
+        "min": {"status": "NotFound"},
+        "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL,
+                 "certificateHashDataChain": [
+                     {"customData": CUSTOM, "certificateHashData": HASH_DATA, "certificateType": "V2GCertificateChain",
+                      "childCertificateHashData": [HASH_DATA] * 4},
+                     {"certificateHashData": HASH_DATA, "certificateType": "ManufacturerRootCertificate"}]},
+    },
+    ("SecurityEventNotification", "request"): {
+        "min": {"type": "StartupOfTheDevice", "timestamp": T1},
+        "full": {"customData": CUSTOM, "type": "InvalidCsmsCertificate", "timestamp": T1, "techInfo": "x" * 255},
+    },
+    ("SecurityEventNotification", "response"): {"min": {}, "full": {"customData": CUSTOM}},
 }

@@ -10,7 +10,11 @@ ClearChargingProfile, GetCompositeSchedule, GetChargingProfiles; ReportChargingP
 ClearedChargingLimit go out with the ``send_*`` methods below) and the M6 actions (SendLocalList,
 GetLocalListVersion, ClearCache, ReserveNow, CancelReservation; ReservationStatusUpdate goes out with
 :meth:`Adapter201.send_reservation_status_update`) and the M7 actions (UpdateFirmware, GetLog;
-FirmwareStatusNotification / LogStatusNotification go out with the ``send_*`` methods below). DataTransfer goes to the
+FirmwareStatusNotification / LogStatusNotification go out with the ``send_*`` methods below) and the M8 actions
+(CertificateSigned, InstallCertificate, DeleteCertificate, GetInstalledCertificateIds; SignCertificate and
+SecurityEventNotification go out with :meth:`Adapter201.send_sign_certificate` /
+:meth:`Adapter201.send_security_event`; the event ``type`` is the ``SecurityEventKind`` value, which is the 2.0.1
+name). DataTransfer goes to the
 station as the version-neutral domain command; a remote-control request is handed to the station as its parsed
 2.0.1 request model and the station answers with the 2.0.1 response model (the semantics are 2.0.1-specific,
 plan §11.2, so there is no domain command in between). Every other action has no handler and is answered
@@ -81,7 +85,9 @@ REMOTE_ACTIONS = ("RequestStartTransaction", "RequestStopTransaction", "UnlockCo
                   # M6 local authorization list, authorization cache, reservations, answered the same way
                   "SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation",
                   # M7 firmware management, diagnostics, answered the same way
-                  "UpdateFirmware", "GetLog")
+                  "UpdateFirmware", "GetLog",
+                  # M8 certificate management, answered the same way
+                  "CertificateSigned", "InstallCertificate", "DeleteCertificate", "GetInstalledCertificateIds")
 
 _DOMAIN_AUTH = {a.value for a in (d.AuthResult.ACCEPTED, d.AuthResult.BLOCKED, d.AuthResult.EXPIRED,
                                   d.AuthResult.INVALID, d.AuthResult.CONCURRENT_TX)}
@@ -272,6 +278,13 @@ class Adapter201(d.VersionAdapter):
     async def send_firmware_status_notification(
             self, req: m.FirmwareStatusNotificationRequest) -> m.FirmwareStatusNotificationResponse:
         return await self._send("FirmwareStatusNotification", req)
+
+    async def send_sign_certificate(self, req: m.SignCertificateRequest) -> m.SignCertificateResponse:
+        return await self._send("SignCertificate", req)
+
+    async def send_security_event(self, ev: d.SecurityEvent) -> None:
+        await self._send("SecurityEventNotification", m.SecurityEventNotificationRequest(
+            type=ev.kind.value, timestamp=ev.timestamp, tech_info=ev.tech_info))
 
     async def send_reservation_status_update(
             self, req: m.ReservationStatusUpdateRequest) -> m.ReservationStatusUpdateResponse:

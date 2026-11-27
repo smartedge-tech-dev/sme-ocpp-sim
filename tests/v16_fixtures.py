@@ -8,6 +8,8 @@ the OCA schema conformance test.
 T1 = "2026-11-26T09:35:32.123Z"
 T2 = "2026-11-27T00:00:00.000Z"
 
+HASH_DATA = {"hashAlgorithm": "SHA256", "issuerNameHash": "a" * 64, "issuerKeyHash": "b" * 64, "serialNumber": "1f"}
+
 ID_TAG_INFO_FULL = {"status": "Accepted", "expiryDate": T2, "parentIdTag": "PARENT01"}
 
 SAMPLED_VALUE_FULL = {
@@ -325,4 +327,43 @@ FIXTURES: dict[tuple[str, str], dict[str, dict]] = {
         "full": {"status": "UploadFailed"},
     },
     ("DiagnosticsStatusNotification", "response"): {"minimal": {}, "full": {}},
+    # --- Security Whitepaper (M8; schemas from the ``ocpp`` library's 1.6 set)
+    ("SignCertificate", "request"): {
+        "minimal": {"csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n"},
+        "full": {"csr": "x" * 5500},
+    },
+    ("SignCertificate", "response"): {"minimal": {"status": "Accepted"}, "full": {"status": "Rejected"}},
+    ("CertificateSigned", "request"): {
+        "minimal": {"certificateChain": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"},
+        "full": {"certificateChain": "x" * 10000},
+    },
+    ("CertificateSigned", "response"): {"minimal": {"status": "Accepted"}, "full": {"status": "Rejected"}},
+    ("InstallCertificate", "request"): {
+        "minimal": {"certificateType": "CentralSystemRootCertificate", "certificate": "PEM"},
+        "full": {"certificateType": "ManufacturerRootCertificate", "certificate": "x" * 5500},
+    },
+    ("InstallCertificate", "response"): {"minimal": {"status": "Accepted"}, "full": {"status": "Failed"}},
+    ("DeleteCertificate", "request"): {
+        "minimal": {"certificateHashData": HASH_DATA},
+        "full": {"certificateHashData": {**HASH_DATA, "hashAlgorithm": "SHA512", "serialNumber": "f" * 40}},
+    },
+    ("DeleteCertificate", "response"): {"minimal": {"status": "Accepted"}, "full": {"status": "NotFound"}},
+    ("GetInstalledCertificateIds", "request"): {
+        "minimal": {"certificateType": "CentralSystemRootCertificate"},
+        "full": {"certificateType": "ManufacturerRootCertificate"},
+    },
+    ("GetInstalledCertificateIds", "response"): {
+        "minimal": {"status": "NotFound"},
+        "full": {"certificateHashData": [HASH_DATA, {**HASH_DATA, "serialNumber": "2"}], "status": "Accepted"},
+    },
+    ("SecurityEventNotification", "request"): {
+        "minimal": {"type": "StartupOfTheDevice", "timestamp": T1},
+        "full": {"type": "InvalidCentralSystemCertificate", "timestamp": T1, "techInfo": "x" * 255},
+    },
+    ("SecurityEventNotification", "response"): {"minimal": {}, "full": {}},
+    ("ExtendedTriggerMessage", "request"): {
+        "minimal": {"requestedMessage": "SignChargePointCertificate"},
+        "full": {"requestedMessage": "LogStatusNotification", "connectorId": 1},
+    },
+    ("ExtendedTriggerMessage", "response"): {"minimal": {"status": "Accepted"}, "full": {"status": "NotImplemented"}},
 }

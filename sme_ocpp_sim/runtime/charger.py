@@ -110,7 +110,8 @@ class ChargerRuntime:
         self.adapter: d.VersionAdapter = self.station.adapter
         self.transport = TransportConfig(
             csms_url, cfg.id, subprotocol=self.adapter.subprotocol, password=cfg.password, ca_file=cfg.ca_file,
-            verify_tls=cfg.verify_tls, require_subprotocol=cfg.require_subprotocol)
+            verify_tls=cfg.verify_tls, require_subprotocol=cfg.require_subprotocol,
+            client_cert_file=cfg.client_cert_file, client_key_file=cfg.client_key_file)
         rc = reconnect or ReconnectConfig()
         self._backoff = backoff or Backoff(rc.min_s, BACKOFF_FACTOR, rc.max_s, rc.jitter)
         self._frame_cb = frame_log.callback(cfg.id) if frame_log is not None else None
@@ -149,6 +150,10 @@ class ChargerRuntime:
             except HandshakeError as e:
                 self.last_error = {"kind": e.kind, "message": str(e)}
                 log.warning("%s: connect failed (%s)", self.cfg.id, e.kind)
+                try:
+                    self.station.on_connect_failed(e.kind, str(e))
+                except Exception:  # noqa: BLE001 - a station bug must not stop the reconnect loop
+                    log.exception("%s: on_connect_failed failed", self.cfg.id)
                 if await wait_or_stop(stop, self._backoff.next()):
                     break
                 continue
@@ -294,6 +299,14 @@ class ChargerRuntime:
         # session closes after the SetVariables answer: a deliberate close, no back-off, no "disconnected" error.
         self.transport = dataclasses.replace(self.transport, password=password)
         self._after_reply(self._reset_done.set)
+
+    def use_client_certificate(self, cert_file: str, key_file: str, *, reconnect: bool) -> None:
+        self.transport = dataclasses.replace(self.transport, client_cert_file=cert_file, client_key_file=key_file)
+        if reconnect:
+            self._after_reply(self._reset_done.set)
+
+    def set_trusted_roots(self, pem: Optional[str]) -> None:
+        self.transport = dataclasses.replace(self.transport, ca_data=pem)
 
     def kick_boot(self) -> None:
         self._boot_kick.set()
@@ -470,5 +483,6 @@ class ChargerRuntime:
             "boots": self.boots,
             "clock_offset_s": self.clock_offset_s,
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
+            "security_profile": self.transport.security_profile,
             **self.station.snapshot(),
         }

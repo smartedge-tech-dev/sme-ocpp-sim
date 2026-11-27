@@ -22,6 +22,8 @@ Subprotocol `ocpp1.6`.
 | DataTransfer | Sent manually from the UI or the HTTP API |
 | FirmwareStatusNotification | Downloading → Downloaded → Installing → (reboot, BootNotification) → Installed; DownloadFailed / InstallationFailed by failure injection |
 | DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
+| SecurityEventNotification | Security Whitepaper; the same events as 2.0.1, with the 1.6 names InvalidCentralSystemCertificate / FailedToAuthenticateAtCentralSystem / InvalidChargePointCertificate (critical ones queued while offline) |
+| SignCertificate | Security Whitepaper; after ExtendedTriggerMessage `SignChargePointCertificate`: a new key and CSR (CN = `serial` or the charger id, O = `CpoName`, default `vendor`) |
 
 Transaction-related messages (StartTransaction, StopTransaction, periodic MeterValues) and state-change
 StatusNotifications go through one ordered queue. A message whose answer was lost in a disconnect is resent
@@ -51,6 +53,9 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 | CancelReservation | `Accepted` for a known reservation, else `Rejected` |
 | UpdateFirmware | Simulated, nothing is downloaded: waits for `retrieveDate`, `retries` / `retryInterval` on a download failure; connectors without a transaction are `Unavailable` until no transaction is left, then it installs and reboots (as a Hard Reset). Step durations and failure injection: `maintenance` per charger (`download_s`, `install_s`, `upload_s`, `retry_interval_s`, `fail_download`, `fail_install`, `fail_upload`). A new request replaces one that is not installing yet; one received while installing is ignored |
 | GetDiagnostics | Answers `fileName` `<id>-diagnostics-<time>.log` and simulates the upload (nothing is uploaded); a new request replaces a running upload |
+| ExtendedTriggerMessage | Security Whitepaper: the TriggerMessage messages plus `SignChargePointCertificate`; `LogStatusNotification` is `NotImplemented` |
+| CertificateSigned | Security Whitepaper; as 2.0.1: `Accepted` for a chain matching the outstanding CSR, then (profile 3) reconnect with it |
+| InstallCertificate / DeleteCertificate / GetInstalledCertificateIds | Security Whitepaper; CentralSystemRootCertificate / ManufacturerRootCertificate, as 2.0.1 |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -84,8 +89,8 @@ specification leaves a point open, the notes below give the simulator's interpre
 | PublishFirmwareStatusNotification | Not supported |  |
 | ReportChargingProfiles | Supported | Answers GetChargingProfiles: one part per EVSE and `chargingLimitSource`, `tbc` on all but the last |
 | ReservationStatusUpdate | Supported | `Expired` at `expiryDateTime`, `Removed` when the reserved EVSE (no `evseId`: the station) becomes Faulted / Unavailable |
-| SecurityEventNotification | Not supported |  |
-| SignCertificate | Not supported |  |
+| SecurityEventNotification | Supported | StartupOfTheDevice, ResetOrReboot, FirmwareUpdated, InvalidCsmsCertificate, InvalidTLSVersion, FailedToAuthenticateAtCsms, InvalidChargingStationCertificate, DiscardedRenewedClientCertificate, ReconfigurationOfSecurityParameters. Critical events are queued while offline and sent after the next accepted boot; non-critical ones only when they happen while connected |
+| SignCertificate | Supported | After TriggerMessage `SignChargingStationCertificate`: a new EC P-256 key and a CSR (CN = `serial`, or the charger id without one; O = `SecurityCtrlr.OrganizationName`), `certificateType` `ChargingStationCertificate`. An unanswered CSR is not resent (CertSigningWaitMinimum is not modelled) |
 | StatusNotification | Supported | One per EVSE (connector 1), none for EVSE 0. `connectorStatus` Available / Occupied / Reserved / Unavailable / Faulted; the finer state (charging, suspended) is the `chargingState` of TransactionEvent |
 | TransactionEvent | Supported | `Started` → `Updated` → `Ended`. The station generates the `transactionId` (a UUID); `seqNo` counts from 0 per transaction; periodic `Updated` every `SampledDataCtrlr.TxUpdatedInterval`; `offline: true` for events raised while disconnected |
 
@@ -105,7 +110,7 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | Message | Support | Notes |
 |---|---|---|
 | CancelReservation | Supported | `Accepted` for a known reservation (no ReservationStatusUpdate), else `Rejected` |
-| CertificateSigned | Not supported |  |
+| CertificateSigned | Supported | `Accepted` for a chain whose certificate matches the outstanding CSR and is valid now (the CA hierarchy is not checked; the CSMS checks it in the next TLS handshake), else `Rejected` with InvalidChargingStationCertificate. With profile 3 the station reconnects with the new certificate; if that connection fails it falls back to the old one (DiscardedRenewedClientCertificate). `V2GCertificate` is `Rejected` |
 | ChangeAvailability | Supported | No `evse` or EVSE 0 sets the station's own availability, kept apart from the EVSEs' (an EVSE `Operative` does not undo a station `Inoperative`). Going Inoperative while a transaction runs (on the EVSE, or on any EVSE for the station) is `Scheduled` until it ends; idle EVSEs follow a station Inoperative at once |
 | ClearCache | Supported | Clears the Authorization Cache; `Rejected` while `AuthCacheCtrlr.Enabled` is false |
 | ClearChargingProfile | Supported | `chargingProfileId` wins over the criteria, the criteria are ANDed; external constraints are never cleared by the CSMS |
@@ -114,19 +119,19 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | CostUpdated | Not supported |  |
 | CustomerInformation | Not supported |  |
 | DataTransfer | Supported | Default answer `UnknownVendorId` |
-| DeleteCertificate | Not supported |  |
+| DeleteCertificate | Supported | `Accepted` / `NotFound` by the hash data (any of SHA256 / SHA384 / SHA512); the client certificate cannot be deleted (`Failed`) |
 | GetBaseReport | Supported | ConfigurationInventory (every variable that is not ReadOnly), FullInventory, SummaryInventory; the NotifyReport parts follow the answer |
 | GetChargingProfiles | Supported | `Accepted` when a profile matches, else `NoProfiles`; the ReportChargingProfiles parts follow the answer |
 | GetCompositeSchedule | Supported | Same evaluator as the live power limit; periods are capped at the hardware maximum, which also stands for "no limit". Unknown EVSE or duration < 1 → `Rejected`; a `chargingRateUnit` not in `SmartChargingCtrlr.RateUnit` → `Rejected` (`UnsupportedRateUnit`) |
 | GetDisplayMessages | Not supported |  |
-| GetInstalledCertificateIds | Not supported |  |
+| GetInstalledCertificateIds | Supported | SHA256 hash data of the installed CA certificates; `NotFound` when none matches (V2GCertificateChain never does) |
 | GetLocalListVersion | Supported | The stored version; 0 before the first list or while `LocalAuthListCtrlr.Enabled` is false |
 | GetLog | Supported | `Accepted` with `filename` `<id>_<logType>_<time>.log`, or `AcceptedCanceled` when it cancels a running upload; the upload is simulated (`maintenance` settings) |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | Use GetBaseReport |
 | GetTransactionStatus | Not supported |  |
 | GetVariables | Supported | Attribute types Actual / Target / MinSet / MaxSet; `UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`; a WriteOnly variable is `Rejected`. More items than `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurrenceConstraintViolation` |
-| InstallCertificate | Not supported |  |
+| InstallCertificate | Supported | One PEM certificate, valid now; `Rejected` for anything else or when 20 CA certificates are installed. Installed CSMS root certificates are trusted for the next TLS connection. Kept in memory only |
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | Supported | `remoteStartId` and an optional `chargingProfile` (a TxProfile without `transactionId`, installed bound to the new transaction). Without `evseId` the first startable EVSE with a plugged cable is used. With `AuthCtrlr.AuthorizeRemoteStart` true the token is authorized like a presented one. A token of type `Central` or `NoAuthorization` is never authorized. A transaction started by it has `triggerReason` `RemoteStart`, also when the cable comes later. A token still waiting for the cable after `TxCtrlr.EVConnectionTimeOut` is dropped |
 | RequestStopTransaction | Supported | `Accepted` for a running transaction of this station (it ends with `RemoteStop`), else `Rejected` |
@@ -150,5 +155,5 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | Feature | Status |
 |---|---|
 | OCPP 2.1 | Planned for v0.3 (greyed out in the UI) |
-| Security profile 3 (TLS client certificates), certificate management, Security Whitepaper messages (SecurityEventNotification, ...) | Planned |
+| 1.6 Security Whitepaper SignedUpdateFirmware, GetLog, LogStatusNotification, SignedFirmwareStatusNotification | Not supported (CALLERROR `NotImplemented`) |
 | ISO 15118 / Plug & Charge | Not supported (paid standard) |

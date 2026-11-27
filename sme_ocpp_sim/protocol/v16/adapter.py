@@ -22,6 +22,13 @@ the same name; the station runs the update / upload (``runtime.maintenance``) an
 DiagnosticsStatusNotification with :meth:`Adapter16.send_firmware_status` / :meth:`Adapter16.send_diagnostics_status`.
 TriggerMessage for both is handed to the station like the other triggers.
 
+Security (M8, OCPP 1.6 Security Whitepaper; message shapes of the ``ocpp`` library's 1.6 security schemas):
+CertificateSigned / InstallCertificate / DeleteCertificate / GetInstalledCertificateIds become the domain commands
+of the same name, ExtendedTriggerMessage a :class:`~..base.Trigger` with ``extended``; SignCertificate and
+SecurityEventNotification go out with :meth:`Adapter16.send_sign_certificate` / :meth:`Adapter16.send_security_event`.
+SignedUpdateFirmware / GetLog (with Signed-FirmwareStatusNotification / LogStatusNotification) have no handler
+and are answered CALLERROR NotImplemented.
+
 Interpretations (not defined by the spec)
 -----------------------------------------
 - SendLocalList ``listVersion`` < 1 is CALLERROR PropertyConstraintViolation (errata 3.52: it "SHALL NOT be -1 or
@@ -137,6 +144,23 @@ def _schedule(res: d.GetCompositeResult) -> m.ChargingSchedule:
                               duration=sched.duration, start_schedule=res.schedule_start)
 
 
+#: 1.6 Security ``CertificateUseEnumType`` -> domain certificate kind.
+_USE = {"CentralSystemRootCertificate": d.CertUse.CSMS_ROOT, "ManufacturerRootCertificate": d.CertUse.MANUFACTURER_ROOT}
+
+#: Domain security event -> 1.6 Security Whitepaper event name (UNVERIFIED: the whitepaper's event table is not
+#: in the local spec folder; it renames the 2.0.1 "Csms" / "ChargingStation" events to "CentralSystem" /
+#: "ChargePoint"). Events not listed keep the 2.0.1 name.
+SECURITY_EVENT_NAMES: Dict[d.SecurityEventKind, str] = {
+    d.SecurityEventKind.FAILED_TO_AUTHENTICATE_AT_CSMS: "FailedToAuthenticateAtCentralSystem",
+    d.SecurityEventKind.INVALID_CSMS_CERTIFICATE: "InvalidCentralSystemCertificate",
+    d.SecurityEventKind.INVALID_CHARGING_STATION_CERTIFICATE: "InvalidChargePointCertificate",
+}
+
+
+def _accepted_cert(status: d.CertStatus) -> str:
+    return "Accepted" if status is d.CertStatus.ACCEPTED else "Rejected"
+
+
 def _accepted(status: d.CommandStatus) -> str:
     return "Accepted" if status is d.CommandStatus.ACCEPTED else "Rejected"
 
@@ -183,6 +207,11 @@ class Adapter16(d.VersionAdapter):
             "CancelReservation": self._cancel_reservation,
             "UpdateFirmware": self._update_firmware,
             "GetDiagnostics": self._get_diagnostics,
+            "ExtendedTriggerMessage": self._extended_trigger,
+            "CertificateSigned": self._certificate_signed,
+            "InstallCertificate": self._install_certificate,
+            "DeleteCertificate": self._delete_certificate,
+            "GetInstalledCertificateIds": self._get_installed_certificate_ids,
         }
         return {a: functools.partial(h, runtime) for a, h in table.items()}
 
@@ -325,6 +354,42 @@ class Adapter16(d.VersionAdapter):
             req.location, req.retries, req.retry_interval, _utc(req.start_time), _utc(req.stop_time)))
         return dump(m.GetDiagnosticsResponse(file_name=name))
 
+    async def _extended_trigger(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("ExtendedTriggerMessage", payload)
+        if req.connector_id is not None:
+            _check_connector(req.connector_id, runtime, allow_zero=True)
+        st = await runtime.handle(d.Trigger(d.TriggerWhat(req.requested_message.value), req.connector_id,
+                                            extended=True))
+        status = {d.CommandStatus.ACCEPTED: "Accepted", d.CommandStatus.REJECTED: "Rejected"}.get(
+            st, "NotImplemented")
+        return dump(m.ExtendedTriggerMessageResponse(status=status))
+
+    async def _certificate_signed(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("CertificateSigned", payload)
+        st: d.CertStatus = await runtime.handle(d.CertificateSigned(req.certificate_chain))
+        return dump(m.CertificateSignedResponse(status=_accepted_cert(st)))
+
+    async def _install_certificate(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("InstallCertificate", payload)
+        st: d.CertStatus = await runtime.handle(d.InstallCertificate(_USE[req.certificate_type.value],
+                                                                     req.certificate))
+        return dump(m.InstallCertificateResponse(status=st.value))
+
+    async def _delete_certificate(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("DeleteCertificate", payload)
+        h = req.certificate_hash_data
+        st: d.CertStatus = await runtime.handle(d.DeleteCertificate(d.CertificateHashData(
+            h.hash_algorithm.value, h.issuer_name_hash, h.issuer_key_hash, h.serial_number)))
+        return dump(m.DeleteCertificateResponse(status=st.value))
+
+    async def _get_installed_certificate_ids(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("GetInstalledCertificateIds", payload)
+        st, found = await runtime.handle(d.GetInstalledCertificateIds((_USE[req.certificate_type.value],)))
+        data = [m.CertificateHashDataType(hash_algorithm=h.hash_algorithm, issuer_name_hash=h.issuer_name_hash,
+                                          issuer_key_hash=h.issuer_key_hash, serial_number=h.serial_number)
+                for _, h in found]
+        return dump(m.GetInstalledCertificateIdsResponse(status=st.value, certificate_hash_data=data or None))
+
     # ------------------------------------------------------------------ outbound
 
     async def _send(self, action: str, request: m.OcppModel) -> Any:
@@ -389,3 +454,12 @@ class Adapter16(d.VersionAdapter):
     async def send_diagnostics_status(self, ev: d.LogStatus) -> None:
         await self._send("DiagnosticsStatusNotification", m.DiagnosticsStatusNotificationRequest(
             status=ev.status.value))
+
+    async def send_sign_certificate(self, csr: str) -> bool:
+        """SignCertificate; ``True`` when the CSMS answered Accepted."""
+        resp = await self._send("SignCertificate", m.SignCertificateRequest(csr=csr))
+        return resp.status.value == "Accepted"
+
+    async def send_security_event(self, ev: d.SecurityEvent) -> None:
+        await self._send("SecurityEventNotification", m.SecurityEventNotificationRequest(
+            type=SECURITY_EVENT_NAMES.get(ev.kind, ev.kind.value), timestamp=ev.timestamp, tech_info=ev.tech_info))

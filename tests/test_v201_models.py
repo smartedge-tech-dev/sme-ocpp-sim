@@ -30,7 +30,9 @@ def test_registry_holds_the_core_messages():
                          "GetChargingProfiles", "ReportChargingProfiles", "NotifyChargingLimit",
                          "ClearedChargingLimit", "LogStatusNotification", "FirmwareStatusNotification",
                          "SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation",
-                         "ReservationStatusUpdate", "UpdateFirmware", "GetLog")
+                         "ReservationStatusUpdate", "UpdateFirmware", "GetLog", "SignCertificate",
+                         "CertificateSigned", "InstallCertificate", "DeleteCertificate", "GetInstalledCertificateIds",
+                         "SecurityEventNotification")
     assert set(FIXTURES) == {(a, k) for a in m.ACTIONS for k in ("request", "response")}
 
 

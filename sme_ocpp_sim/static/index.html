@@ -165,6 +165,7 @@
             <option value="0" data-i18n="settings.profile.0">0 - ws://, no password</option>
             <option value="1" data-i18n="settings.profile.1">1 - ws:// + Basic auth</option>
             <option value="2" data-i18n="settings.profile.2">2 - wss:// (TLS) + Basic auth</option>
+            <option value="3" data-i18n="settings.profile.3">3 - wss:// (TLS) + client certificate</option>
           </select></label>
       </div>
     </fieldset>
@@ -176,6 +177,10 @@
         <label><span data-i18n="settings.password">Password (Basic auth)</span> <input id="setPassword" type="password" autocomplete="new-password"></label>
       </div>
       <label><span data-i18n="settings.ca_file">CA file (wss://, PEM)</span> <input id="setCa" data-i18n-placeholder="settings.ca_file.ph"></label>
+      <div class="row2">
+        <label><span data-i18n="settings.client_cert">Client certificate (profile 3, PEM)</span> <input id="setCert"></label>
+        <label><span data-i18n="settings.client_key">Client key (profile 3, PEM)</span> <input id="setKey"></label>
+      </div>
     </fieldset>
     <p class="hint" data-i18n="settings.hint">Applied immediately; use File &gt; Save configuration to write it to the YAML file.</p>
     <div class="err" id="setErr"></div>

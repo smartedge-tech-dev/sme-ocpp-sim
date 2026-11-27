@@ -307,7 +307,8 @@ def test_trigger_message_rejected_and_not_implemented():
             (call.TriggerMessage(requested_message="MeterValues", evse={"id": 3}), "Rejected", "UnknownEvse"),
             (call.TriggerMessage(requested_message="StatusNotification", evse={"id": 1, "connector_id": 2}),
              "Rejected", "UnknownEvse"),
-            (call.TriggerMessage(requested_message="SignChargingStationCertificate"), "NotImplemented", None),
+            (call.TriggerMessage(requested_message="SignV2GCertificate"), "NotImplemented", None),
+            (call.TriggerMessage(requested_message="SignCombinedCertificate"), "NotImplemented", None),
         ]
         for req, status, code in cases:
             r = await peer.request(CP, req)

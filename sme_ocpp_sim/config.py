@@ -149,8 +149,9 @@ class CsmsDefaults(StrictModel):
     url: Optional[WsUrl] = None
     ocpp_version: OcppVersion = "1.6"
     #: OCPP security profile every charger must match (checked per charger): 0 = no password + ws://,
-    #: 1 = password + ws://, 2 = password + wss://. 3 (client certificates) is out of v0.1 scope.
-    security_profile: int = Field(0, ge=0, le=2)
+    #: 1 = password + ws://, 2 = password + wss://, 3 = wss:// + TLS client certificate (``client_cert_file`` /
+    #: ``client_key_file``) and no password (Basic Auth is not part of profile 3, OCPP 2.0.1 A00.FR.401).
+    security_profile: int = Field(0, ge=0, le=3)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 
@@ -233,6 +234,10 @@ class ChargerConfig(StrictModel):
     ocpp_version: Optional[OcppVersion] = None
     password: Optional[QuotedStr] = Field(None, repr=False)  # security profile 1/2 basic auth
     ca_file: Optional[QuotedStr] = None
+    #: Security profile 3: the Charging Station certificate (PEM, chain allowed) and its private key (PEM, not
+    #: encrypted). A certificate signed later through SignCertificate / CertificateSigned replaces them in memory.
+    client_cert_file: Optional[QuotedStr] = None
+    client_key_file: Optional[QuotedStr] = None
     verify_tls: bool = True
     require_subprotocol: bool = True
     # BootNotification identity; lengths are the 1.6 CiString limits (chargePointVendor/Model 20,
@@ -322,12 +327,17 @@ class SimConfig(StrictModel):
     def _check_profile(self, c: ChargerConfig) -> None:
         profile = self.csms_defaults.security_profile
         url = c.csms_url or self.csms_defaults.url or ""
-        want_password, want_tls = profile >= 1, profile == 2
+        want_password, want_tls, want_cert = profile in (1, 2), profile >= 2, profile == 3
         problems = []
         if want_password != (c.password is not None):
             problems.append("a password" if want_password else "no password")
         if want_tls != url.startswith("wss://"):
             problems.append("a wss:// url" if want_tls else "a ws:// url")
+        has_cert = (c.client_cert_file is not None, c.client_key_file is not None)
+        if want_cert and has_cert != (True, True):
+            problems.append("client_cert_file and client_key_file")
+        if not want_cert and any(has_cert):
+            problems.append("no client_cert_file / client_key_file")
         if problems:
             raise ValueError(f"charger {c.id!r}: security_profile {profile} needs {' and '.join(problems)}")
 

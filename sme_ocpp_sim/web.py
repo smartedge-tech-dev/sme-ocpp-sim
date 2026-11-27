@@ -106,7 +106,8 @@ NDJSON = "application/x-ndjson"
 JSONL_CHUNK = 500  # frame log entries per streamed chunk
 #: What :func:`mask_text` returns for text that is not valid YAML (it cannot be masked reliably).
 #: Charger config fields of ``/api/chargers/{id}/settings``.
-SETTINGS_FIELDS = ("csms_url", "ocpp_version", "password", "ca_file", "verify_tls", "id_tags", "config_keys")
+SETTINGS_FIELDS = ("csms_url", "ocpp_version", "password", "ca_file", "client_cert_file", "client_key_file",
+                   "verify_tls", "id_tags", "config_keys")
 UNPARSABLE_PLACEHOLDER = "# configuration not shown: it is not valid YAML, so its passwords cannot be masked\n"
 
 
@@ -142,6 +143,8 @@ class ChargerSettingsBody(BaseModel):
     ocpp_version: Optional[str] = None
     password: Optional[str] = None
     ca_file: Optional[str] = None
+    client_cert_file: Optional[str] = None
+    client_key_file: Optional[str] = None
     verify_tls: Optional[bool] = None
     id_tags: Optional[List[str]] = None
     config_keys: Optional[Dict[str, Union[str, int, float, bool]]] = None

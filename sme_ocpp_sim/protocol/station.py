@@ -79,6 +79,15 @@ class StationHost(Protocol):
         kept in memory only (not written to the YAML). There is no rollback: a CSMS that did not adopt the
         password refuses every later connection, as it would refuse a real station."""
 
+    def use_client_certificate(self, cert_file: str, key_file: str, *, reconnect: bool) -> None:
+        """Use this TLS client certificate / key (PEM files, security profile 3) from the next connection on;
+        ``reconnect``: close the session after the answer to the current CSMS CALL went out and reconnect without
+        back-off (2.0.1 A02.FR.08). Kept in memory only."""
+
+    def set_trusted_roots(self, pem: Optional[str]) -> None:
+        """Extra trusted CA certificates (PEM) for the TLS server check of the next connection (installed CSMS
+        root certificates); ``None`` = none."""
+
     def kick_boot(self) -> None:
         """Wake the boot loop (send the next BootNotification now)."""
 
@@ -128,6 +137,10 @@ class VersionStation(ABC):
     @abstractmethod
     def on_session_ended(self) -> None:
         """The session tasks are cancelled and the connection is closing: drop per-session state."""
+
+    def on_connect_failed(self, kind: str, message: str) -> None:
+        """A connection attempt failed (``kind``: ``rpc.transport.HandshakeError.kind``), e.g. to raise a security
+        event. Default: nothing."""
 
     def close(self) -> None:
         """The shell's run loop has ended (the charger is stopped): cancel the station's own timers. The station

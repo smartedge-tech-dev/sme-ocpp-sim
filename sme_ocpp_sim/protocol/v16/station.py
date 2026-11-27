@@ -109,6 +109,26 @@ The update survives reconnects but not a stop of the charger. A Reset during an 
 While an update waits for its retrieveDate nothing has been reported yet (1.6 has no DownloadScheduled), so a
 triggered FirmwareStatusNotification sends Idle.
 
+Security (M8, OCPP 1.6 Security Whitepaper; ``runtime.security`` has the shared interpretations; the whitepaper is
+not in the local spec folder, so the 1.6 rules below follow OCPP 2.0.1 A02 / A04 / M03 - M05, UNVERIFIED):
+ExtendedTriggerMessage serves BootNotification / Heartbeat / MeterValues / StatusNotification /
+FirmwareStatusNotification like TriggerMessage (FirmwareStatusNotification is the core message: SignedUpdateFirmware
+is not implemented) and SignChargePointCertificate: Accepted, then a new key pair and a SignCertificate with its
+CSR (CN = ``serial`` or the charger id, O = CpoName, default ``vendor``); LogStatusNotification is NotImplemented
+(GetLog is not implemented). CertificateSigned is Accepted for a chain matching the outstanding CSR (else Rejected
+with an InvalidChargePointCertificate event); with security profile 3 the charger then reconnects with the new
+certificate, with profile 0 - 2 it is only stored (those profiles send no client certificate).
+InstallCertificate / DeleteCertificate / GetInstalledCertificateIds manage CentralSystemRootCertificate /
+ManufacturerRootCertificate entries; installed central system roots are trusted for the next TLS connection.
+SecurityEventNotification: StartupOfTheDevice (the station is created), ResetOrReboot (a Reset or the firmware
+reboot), FirmwareUpdated (Installed), InvalidCentralSystemCertificate (TLS server check failed),
+FailedToAuthenticateAtCentralSystem (HTTP 401 / client certificate refused), InvalidChargePointCertificate,
+ReconfigurationOfSecurityParameters (a new client certificate), DiscardedRenewedClientCertificate. The
+security keys (SecurityProfile R, derived; CpoName RW; CertificateStoreMaxLength R;
+AdditionalRootCertificateCheck R false) are in ``config_keys``. SignedUpdateFirmware, GetLog,
+LogStatusNotification and SignedFirmwareStatusNotification are not implemented (CALLERROR NotImplemented): they
+need a per-request message set in ``runtime.maintenance`` and the whitepaper's status tables, left for later.
+
 Concurrency invariant: there is no lock around connector state. Every state check and the mutation that depends
 on it run without an ``await`` in between (single-threaded asyncio), so they are atomic.
 """
@@ -127,8 +147,10 @@ from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Option
 from ...charging import power
 from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
+from ...rpc.transport import derived_security_profile
 from ...runtime.local_auth import AuthCache, LocalAuthList, Reservation
 from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
+from ...runtime.security import Security
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
@@ -182,6 +204,10 @@ LIST_ENABLED_KEY = "LocalAuthListEnabled"
 LIST_MAX_KEY = "LocalAuthListMaxLength"
 SEND_LIST_MAX_KEY = "SendLocalListMaxLength"
 RESERVE_ZERO_KEY = "ReserveConnectorZeroSupported"
+SECURITY_PROFILE_KEY = "SecurityProfile"
+CPO_NAME_KEY = "CpoName"
+CERT_STORE_MAX_KEY = "CertificateStoreMaxLength"
+SE = d.SecurityEventKind
 
 
 def _reservation_view(r: Reservation) -> Dict[str, Any]:
@@ -273,7 +299,9 @@ class Station16(VersionStation):
         self.profiles = ProfileStore(cfg.connectors)
         self._adapter = Adapter16(strict=strict)
         names = {k.name for k in self._adapter.config_keys}
-        derived = {CONNECTORS_KEY: str(cfg.connectors)}
+        url = getattr(host, "csms_url", "") or ""
+        profile = derived_security_profile(cfg.password, url, cfg.client_cert_file is not None)
+        derived = {CONNECTORS_KEY: str(cfg.connectors), SECURITY_PROFILE_KEY: str(profile), CPO_NAME_KEY: cfg.vendor}
         if cfg.meter_sample_interval_s is not None:
             derived[SAMPLE_KEY] = str(cfg.meter_sample_interval_s)
         overrides = {k: v for k, v in derived.items() if k in names}
@@ -293,12 +321,16 @@ class Station16(VersionStation):
         #: Firmware update / diagnostics upload (M7).
         self.maint = Maintenance(
             cfg.maintenance, clock=lambda: self.host.clock(), firmware_states=FIRMWARE_STATES,
-            send_firmware=lambda ev: self._maint_send(self._adapter.send_firmware_status(ev),
-                                                      "FirmwareStatusNotification"),
+            send_firmware=self._send_firmware,
             send_log=lambda ev: self._maint_send(self._adapter.send_diagnostics_status(ev),
                                                  "DiagnosticsStatusNotification"),
             busy=lambda: any(c.tx is not None for c in self.conns.values()),
             hold_changed=self._refresh_all, reboot=functools.partial(self._do_reset, d.ResetKind.HARD))
+        #: Security log / events, CA certificates, client certificate (M8).
+        self.security = Security(clock=lambda: self.host.clock(), client_cert_file=cfg.client_cert_file,
+                                 client_key_file=cfg.client_key_file,
+                                 max_certificates=self.store.get_int(CERT_STORE_MAX_KEY))
+        self.security.record(SE.STARTUP_OF_THE_DEVICE, connected=False)
 
         self._outq: Deque[_OutMsg] = deque()
         self._outq_wake = asyncio.Event()
@@ -331,6 +363,10 @@ class Station16(VersionStation):
             d.CancelReservation: self._cancel_reservation,
             d.UpdateFirmware: self._update_firmware,
             d.GetDiagnostics: self._get_diagnostics,
+            d.CertificateSigned: self._certificate_signed,
+            d.InstallCertificate: self._install_certificate,
+            d.DeleteCertificate: self._delete_certificate,
+            d.GetInstalledCertificateIds: self._installed_certificates,
         }
 
     # ================================================================== session (called by the shell)
@@ -360,11 +396,18 @@ class Station16(VersionStation):
             if r.timer is None:  # cancelled by close(): the charger was stopped and started again
                 self._arm(r)
         self.maint.on_online()
+        self.security.confirm()
+        self.host.spawn(self.security.deliver(self._adapter.send_security_event))
 
     def on_session_ended(self) -> None:
         for c in self.conns.values():
             c.meter_task = None  # cancelled with the other session tasks
         self._outq_session_ended()
+
+    def on_connect_failed(self, kind: str, message: str) -> None:
+        files = self.security.connect_failed(kind, message)
+        if files is not None:
+            self.host.use_client_certificate(*files, reconnect=False)
 
     async def wait_heartbeat(self) -> bool:
         return await self._wait_interval(HEARTBEAT_KEY, self.store.get_int(HEARTBEAT_KEY))
@@ -393,6 +436,7 @@ class Station16(VersionStation):
             "station": {"status": self.cp_state.status.value, "operative": self._station_operative},
             "connectors": [conn(c) for c in self.conns.values()],
             **self.maint.snapshot(),
+            "security": self.security.snapshot(),
         }
 
     # ================================================================== configuration changes
@@ -728,6 +772,9 @@ class Station16(VersionStation):
         for r in self.reservations.values():
             r.cancel_timer()
         self.maint.close()
+        files = self.security.close()  # renewed certificates do not outlive the run (runtime.security)
+        if files is not None and self.cfg.client_cert_file is not None:
+            self.host.use_client_certificate(*files, reconnect=False)
 
     def _drop_reservation(self, r: Reservation, why: str) -> None:
         if self.reservations.get(r.id) is not r:
@@ -1123,6 +1170,7 @@ class Station16(VersionStation):
     async def _do_reset(self, kind: d.ResetKind) -> None:
         # TODO(spec): both Soft and Hard reset stop running transactions before closing (reason SoftReset /
         # HardReset); a real Hard reset may send StopTransaction only after the reboot.
+        self.security.record(SE.RESET_OR_REBOOT, f"{kind.value} reset", connected=False)
         try:
             reason = R.SOFT_RESET if kind is d.ResetKind.SOFT else R.HARD_RESET
             for c in self.conns.values():
@@ -1171,11 +1219,55 @@ class Station16(VersionStation):
             ev_log = d.LogStatus(st_log or d.LogState.IDLE)
             self.host.after_reply(functools.partial(self._maint_send, self._adapter.send_diagnostics_status(ev_log),
                                                     "DiagnosticsStatusNotification", triggered=True))
+        elif what is d.TriggerWhat.SIGN_CERTIFICATE and cmd.extended:
+            self.host.after_reply(self._sign_certificate)
         else:
             return d.CommandStatus.NOT_IMPLEMENTED
         return d.CommandStatus.ACCEPTED
 
+    # ------------------------------------------------------------------ security (M8)
+
+    async def _sign_certificate(self) -> None:
+        """A new key pair and its CSR in a SignCertificate; a Rejected answer drops the key (a timeout or
+        CALLERROR keeps it: the CSMS may still send the CertificateSigned)."""
+        csr = self.security.new_csr(self.cfg.serial or self.cfg.id, self.store.value(CPO_NAME_KEY) or None)
+        if await self.host.safe(self._adapter.send_sign_certificate(csr), "SignCertificate") is False:
+            self.security.drop_csr(csr)
+
+    def _certificate_signed(self, cmd: d.CertificateSigned) -> d.CertStatus:
+        st, why = self.security.accept_signed(cmd.chain)
+        if st is not d.CertStatus.ACCEPTED:
+            self.security.record(SE.INVALID_CHARGING_STATION_CERTIFICATE, why, connected=self.host.connected)
+            return st
+        self.security.record(SE.RECONFIGURATION_OF_SECURITY_PARAMETERS, "new client certificate",
+                             connected=self.host.connected)
+        if self.cfg.client_cert_file is not None:  # profile 3: switch by reconnecting (A02.FR.08)
+            self.host.use_client_certificate(self.security.client_cert_file, self.security.client_key_file,
+                                             reconnect=True)
+        return st
+
+    def _install_certificate(self, cmd: d.InstallCertificate) -> d.CertStatus:
+        st = self.security.install(cmd.use, cmd.certificate)
+        if st is d.CertStatus.ACCEPTED:
+            self.host.set_trusted_roots(self.security.trusted_pem())
+        return st
+
+    def _delete_certificate(self, cmd: d.DeleteCertificate) -> d.CertStatus:
+        st = self.security.delete(cmd.hash_data)
+        if st is d.CertStatus.ACCEPTED:
+            self.host.set_trusted_roots(self.security.trusted_pem())
+        return st
+
+    def _installed_certificates(self, cmd: d.GetInstalledCertificateIds) -> Tuple[d.CertStatus, tuple]:
+        found = tuple(self.security.installed(cmd.uses))
+        return (d.CertStatus.ACCEPTED if found else d.CertStatus.NOT_FOUND), found
+
     # ------------------------------------------------------------------ firmware / diagnostics (M7)
+
+    async def _send_firmware(self, ev: d.FirmwareStatus) -> None:
+        if ev.status is d.FirmwareState.INSTALLED:
+            self.security.record(SE.FIRMWARE_UPDATED, connected=self.host.connected)
+        await self._maint_send(self._adapter.send_firmware_status(ev), "FirmwareStatusNotification")
 
     async def _maint_send(self, aw: Awaitable[Any], what: str, *, triggered: bool = False) -> None:
         """Progress needs an accepted boot; a triggered status only a connection."""

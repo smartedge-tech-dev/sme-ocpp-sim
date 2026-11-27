@@ -39,9 +39,16 @@ KNOWN_STRICTER_MIN_ITEMS = {
 }
 
 
+def _security_schema_dir():
+    """The Security Whitepaper schemas are not in the OCA 1.6 JSON set: use the copy of the dev dependency ``ocpp``."""
+    ocpp = pytest.importorskip("ocpp")
+    return Path(ocpp.__file__).parent / "v16" / "schemas"
+
+
 def _schema(action, kind):
     name = action + ("Response" if kind == "response" else "")
-    return json.loads((SCHEMA_DIR / f"{name}.json").read_text(encoding="utf-8"))
+    base = _security_schema_dir() if action in m.SECURITY_ACTIONS else SCHEMA_DIR
+    return json.loads((base / f"{name}.json").read_text(encoding="utf-8"))
 
 
 def _model(action, kind):
@@ -96,11 +103,23 @@ def _compare(oca, mine, defs, key, path, problems):
 KEYS = sorted(FIXTURES)
 
 
+def _inline(node, defs):
+    """Replace ``#/definitions/...`` references (the Security schemas use them, the OCA set does not)."""
+    if isinstance(node, dict):
+        if "$ref" in node:
+            return _inline(defs[node["$ref"].rsplit("/", 1)[-1]], defs)
+        return {k: _inline(v, defs) for k, v in node.items() if k != "definitions"}
+    if isinstance(node, list):
+        return [_inline(v, defs) for v in node]
+    return node
+
+
 @pytest.mark.parametrize("action,kind", KEYS, ids=[f"{a}-{k}" for a, k in KEYS])
 def test_model_schema_matches_oca(action, kind):
     mine = _model(action, kind).model_json_schema(by_alias=True)
     problems: list[str] = []
-    _compare(_schema(action, kind), mine, mine.get("$defs", {}), (action, kind), "", problems)
+    oca = _schema(action, kind)
+    _compare(_inline(oca, oca.get("definitions", {})), mine, mine.get("$defs", {}), (action, kind), "", problems)
     assert problems == []
 
 

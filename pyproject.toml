@@ -25,6 +25,8 @@ dependencies = [
   "pyyaml",
   # OCPP-J transport (WebSocket client); the RPC layer and message models are written in-house.
   "websockets>=17,<18",
+  # Security profile 3 / certificate management (CSR generation, PEM parsing; plan §11.1 Q12). 42+: *_utc.
+  "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +34,7 @@ dependencies = [
 # schema: optional runtime check of 2.0.1 payloads against user-supplied JSON schemas (protocol/v201/schema.py).
 # A dateTime "format" is only checked when rfc3339-validator is installed as well.
 schema = ["jsonschema"]
-dev = ["pytest", "httpx", "ocpp==2.1.0", "jsonschema", "cryptography", "playwright", "pillow"]
+dev = ["pytest", "httpx", "ocpp==2.1.0", "jsonschema", "playwright", "pillow"]
 
 [project.urls]
 Homepage = "https://github.com/smartedge-tech-dev/sme-ocpp-sim"

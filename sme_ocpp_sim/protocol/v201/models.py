@@ -96,6 +96,15 @@ from .enums import (
     SendLocalListStatusEnumType,
     UpdateEnumType,
 )
+from .enums import (
+    CertificateSignedStatusEnumType,
+    CertificateSigningUseEnumType,
+    DeleteCertificateStatusEnumType,
+    GetCertificateIdUseEnumType,
+    GetInstalledCertificateStatusEnumType,
+    InstallCertificateStatusEnumType,
+    InstallCertificateUseEnumType,
+)
 
 
 def format_datetime(value: datetime) -> str:
@@ -124,6 +133,7 @@ String1000 = Annotated[str, StringConstraints(max_length=1000)]
 String16 = Annotated[str, StringConstraints(max_length=16)]
 String2500 = Annotated[str, StringConstraints(max_length=2500)]
 String5500 = Annotated[str, StringConstraints(max_length=5500)]
+String10000 = Annotated[str, StringConstraints(max_length=10000)]
 
 
 class OcppModel(BaseModel):
@@ -893,6 +903,95 @@ class GetLogResponse(OcppModel):
     filename: Optional[String255] = None
 
 
+# --- M8 security / certificate management (A02 / A04, M03 - M05) ---------------------------
+
+
+class CertificateHashDataType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    hash_algorithm: HashAlgorithmEnumType
+    issuer_name_hash: String128
+    issuer_key_hash: String128
+    serial_number: String40
+
+
+class CertificateHashDataChainType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    certificate_hash_data: CertificateHashDataType
+    certificate_type: GetCertificateIdUseEnumType
+    child_certificate_hash_data: Optional[
+        Annotated[list[CertificateHashDataType], Field(min_length=1, max_length=4)]] = None
+
+
+class SignCertificateRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    csr: String5500
+    certificate_type: Optional[CertificateSigningUseEnumType] = None
+
+
+class SignCertificateResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: GenericStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class CertificateSignedRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    certificate_chain: String10000
+    certificate_type: Optional[CertificateSigningUseEnumType] = None
+
+
+class CertificateSignedResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: CertificateSignedStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class InstallCertificateRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    certificate_type: InstallCertificateUseEnumType
+    certificate: String5500
+
+
+class InstallCertificateResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: InstallCertificateStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class DeleteCertificateRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    certificate_hash_data: CertificateHashDataType
+
+
+class DeleteCertificateResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: DeleteCertificateStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class GetInstalledCertificateIdsRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    certificate_type: Optional[Annotated[list[GetCertificateIdUseEnumType], Field(min_length=1)]] = None
+
+
+class GetInstalledCertificateIdsResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: GetInstalledCertificateStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+    certificate_hash_data_chain: Optional[Annotated[list[CertificateHashDataChainType], Field(min_length=1)]] = None
+
+
+class SecurityEventNotificationRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    type: String50
+    timestamp: DateTime
+    tech_info: Optional[String255] = None
+
+
+class SecurityEventNotificationResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -936,6 +1035,13 @@ ACTIONS = (
     # M7 firmware management, diagnostics
     "UpdateFirmware",
     "GetLog",
+    # M8 security / certificate management
+    "SignCertificate",
+    "CertificateSigned",
+    "InstallCertificate",
+    "DeleteCertificate",
+    "GetInstalledCertificateIds",
+    "SecurityEventNotification",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}
