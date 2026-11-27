@@ -416,4 +416,56 @@ FIXTURES: dict = {
         "min": {},
         "full": {"customData": CUSTOM},
     },
+    ("SendLocalList", "request"): {
+        "min": {"versionNumber": 1, "updateType": "Full"},
+        "full": {"customData": CUSTOM, "versionNumber": 7, "updateType": "Differential",
+                 "localAuthorizationList": [{"idToken": ID_TOKEN_MIN},
+                                            {"customData": CUSTOM, "idToken": ID_TOKEN_FULL,
+                                             "idTokenInfo": ID_TOKEN_INFO_FULL}]},
+    },
+    ("SendLocalList", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "VersionMismatch", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("GetLocalListVersion", "request"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
+    ("GetLocalListVersion", "response"): {
+        "min": {"versionNumber": 0},
+        "full": {"customData": CUSTOM, "versionNumber": 12},
+    },
+    ("ClearCache", "request"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
+    ("ClearCache", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Rejected", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("ReserveNow", "request"): {
+        "min": {"id": 1, "expiryDateTime": T1, "idToken": ID_TOKEN_MIN},
+        "full": {"customData": CUSTOM, "id": 2, "expiryDateTime": T1, "connectorType": "cType2",
+                 "idToken": ID_TOKEN_FULL, "evseId": 1, "groupIdToken": ID_TOKEN_MIN},
+    },
+    ("ReserveNow", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Occupied", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("CancelReservation", "request"): {
+        "min": {"reservationId": 1},
+        "full": {"customData": CUSTOM, "reservationId": 2},
+    },
+    ("CancelReservation", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Rejected", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("ReservationStatusUpdate", "request"): {
+        "min": {"reservationId": 1, "reservationUpdateStatus": "Expired"},
+        "full": {"customData": CUSTOM, "reservationId": 2, "reservationUpdateStatus": "Removed"},
+    },
+    ("ReservationStatusUpdate", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
 }

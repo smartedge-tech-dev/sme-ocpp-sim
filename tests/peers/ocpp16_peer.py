@@ -108,7 +108,10 @@ class PeerCP(OcppCP16):
     @on("Authorize")
     async def on_authorize(self, id_tag):
         self.session.authorizes.append(id_tag)
-        return call_result.Authorize(id_tag_info={"status": self.peer.tag_status(id_tag)})
+        info = {"status": self.peer.tag_status(id_tag)}
+        if id_tag in self.peer.tag_parents:
+            info["parent_id_tag"] = self.peer.tag_parents[id_tag]
+        return call_result.Authorize(id_tag_info=info)
 
     @on("StartTransaction")
     async def on_start(self, connector_id, id_tag, meter_start, timestamp, **kw):
@@ -145,11 +148,12 @@ class CsmsPeer:
                  registered: Optional[set] = None, passwords: Optional[dict] = None,
                  ssl_context: Optional[ssl.SSLContext] = None,
                  boot_statuses: Optional[list] = None, retry_interval: int = 1,
-                 tag_statuses: Optional[dict] = None) -> None:
+                 tag_statuses: Optional[dict] = None, tag_parents: Optional[dict] = None) -> None:
         self.hb_interval = hb_interval
         self.boot_statuses = list(boot_statuses or [])  # consumed one per BootNotification, then Accepted
         self.retry_interval = retry_interval             # interval answered with Pending / Rejected
         self.tag_statuses = dict(tag_statuses or {})     # id tag -> status (default Accepted)
+        self.tag_parents = dict(tag_parents or {})       # id tag -> parentIdTag of the Authorize answer
         self.next_tx = 0
         self.gates: dict[str, asyncio.Event] = {}        # action -> answer only once the event is set
         self.delays: dict[str, float] = {}               # action -> answer delay in seconds

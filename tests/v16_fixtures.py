@@ -260,4 +260,45 @@ FIXTURES: dict[tuple[str, str], dict[str, dict]] = {
             "chargingSchedule": SCHEDULE_FULL,
         },
     },
+    ("SendLocalList", "request"): {
+        "minimal": {"listVersion": 1, "updateType": "Full"},
+        "full": {
+            "listVersion": 7,
+            "updateType": "Differential",
+            "localAuthorizationList": [
+                {"idTag": "00TAG1"},
+                {"idTag": "TAG2", "idTagInfo": {"status": "Blocked", "expiryDate": T1, "parentIdTag": "P1"}},
+            ],
+        },
+    },
+    ("SendLocalList", "response"): {
+        "minimal": {"status": "Accepted"},
+        "full": {"status": "VersionMismatch"},
+    },
+    ("GetLocalListVersion", "request"): {"minimal": {}, "full": {}},
+    ("GetLocalListVersion", "response"): {
+        "minimal": {"listVersion": 0},
+        "full": {"listVersion": -1},
+    },
+    ("ClearCache", "request"): {"minimal": {}, "full": {}},
+    ("ClearCache", "response"): {
+        "minimal": {"status": "Accepted"},
+        "full": {"status": "Rejected"},
+    },
+    ("ReserveNow", "request"): {
+        "minimal": {"connectorId": 0, "expiryDate": T1, "idTag": "TAG1", "reservationId": 1},
+        "full": {"connectorId": 2, "expiryDate": T1, "idTag": "TAG1", "parentIdTag": "P1", "reservationId": 9},
+    },
+    ("ReserveNow", "response"): {
+        "minimal": {"status": "Accepted"},
+        "full": {"status": "Occupied"},
+    },
+    ("CancelReservation", "request"): {
+        "minimal": {"reservationId": 1},
+        "full": {"reservationId": 2147483647},
+    },
+    ("CancelReservation", "response"): {
+        "minimal": {"status": "Accepted"},
+        "full": {"status": "Rejected"},
+    },
 }

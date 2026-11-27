@@ -10,6 +10,9 @@ Facts from §9 that shape this table:
   Energy.Active.Import.Register", §9.1.17 p.101). All other defaults are simulator choices.
   MeterValuesSampledData deliberately also samples Power.Active.Import (the runtime's
   periodic MeterValues rely on it).
+* LocalAuthListMaxLength / SendLocalListMaxLength (R) bound the Local Authorization List and one
+  SendLocalList; ReserveConnectorZeroSupported (R, optional) decides whether ReserveNow on connector 0 is
+  served. Their defaults are simulator choices; the charger YAML ``config_keys`` may override R keys too.
 * §9 has no "reboot required" note for any key; whether ChangeConfiguration answers
   RebootRequired is up to the Charge Point. So no row sets ``reboot_required``.
 * "R or RW, choice is up to Charge Point implementation": AuthorizeRemoteTxRequests
@@ -40,8 +43,9 @@ _MEASURANDS = frozenset(m.value for m in Measurand)
 _PROFILES = frozenset({"Core", "FirmwareManagement", "LocalAuthListManagement", "Reservation",
                        "SmartCharging", "RemoteTrigger"})
 
-# v0.1 implements Core (incl. Reset / Unlock / ChangeAvailability), SmartCharging and TriggerMessage.
-SUPPORTED_FEATURE_PROFILES = "Core,SmartCharging,RemoteTrigger"
+# Core (incl. Reset / Unlock / ChangeAvailability), SmartCharging and TriggerMessage since v0.1; Local Auth List
+# Management (SendLocalList / GetLocalListVersion) and Reservation (ReserveNow / CancelReservation) since v0.2 M6.
+SUPPORTED_FEATURE_PROFILES = "Core,LocalAuthListManagement,Reservation,SmartCharging,RemoteTrigger"
 
 
 def _k(name: str, type_: KeyType, readonly: bool, default: str, **kw) -> ConfigKeyDef:
@@ -86,6 +90,12 @@ KEYS: Tuple[ConfigKeyDef, ...] = (
     _k("TransactionMessageRetryInterval", _INT, False, "60"),  # §9.1.32 p.105, s
     _k("UnlockConnectorOnEVSideDisconnect", _BOOL, False, "true"),  # §9.1.33 p.105, errata 3.84: R or RW
     _k("WebSocketPingInterval", _INT, False, "0"),  # §9.1.34 p.105, s, >= 0
+    # ---- 9.2 Local Auth List Management Profile (all required by the profile)
+    _k("LocalAuthListEnabled", _BOOL, False, "true"),  # §9.2.1 p.106
+    _k("LocalAuthListMaxLength", _INT, True, "1000"),  # §9.2.2 p.106
+    _k("SendLocalListMaxLength", _INT, True, "100"),  # §9.2.3 p.106
+    # ---- 9.3 Reservation Profile
+    _k("ReserveConnectorZeroSupported", _BOOL, True, "true"),  # §9.3.1 p.106, optional
     # ---- 9.4 Smart Charging Profile
     _k("ChargeProfileMaxStackLevel", _INT, True, "10"),  # §9.4.1 p.107
     _k("ChargingScheduleAllowedChargingRateUnit", _CSL, True, "Current,Power",

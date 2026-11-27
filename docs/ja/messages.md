@@ -42,6 +42,11 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 | SetChargingProfile | ChargePointMaxProfile（コネクター 0 のみ）/ TxDefaultProfile / TxProfile（実行中のトランザクションが必要） |
 | ClearChargingProfile | `id` / `connectorId` / `chargingProfilePurpose` / `stackLevel` で絞り込み |
 | GetCompositeSchedule | `chargingRateUnit` は任意。実際の電力制限と同じ評価関数を使います |
+| SendLocalList | Full / Differential。`listVersion` は 1 以上（0 以下は CALLERROR `PropertyConstraintViolation`）。Differential はバージョンを上げる必要があります（`VersionMismatch`）。`SendLocalListMaxLength` を超える件数、重複タグ、`idTagInfo` のない Full のエントリ、`LocalAuthListMaxLength` を超えるタグ数は `Failed`（リストは変わりません）。`LocalAuthListEnabled` が false の間は `NotSupported` |
+| GetLocalListVersion | 保持しているバージョン。最初のリストを受け取るまでは 0 |
+| ClearCache | 認証キャッシュを消去します。`AuthorizationCacheEnabled` が false の間は `Rejected` |
+| ReserveNow | コネクターの状態に応じて Faulted / Unavailable / Occupied、それ以外は Accepted。同じ `reservationId` は予約を置き換えます。コネクター 0 の予約ではコネクターを 1 つ空けておきます（`ReserveConnectorZeroSupported` が false の間は `Rejected`）。予約されたコネクターは `Reserved` を報告し、予約した `idTag` かその親タグを持つタグでのみ開始します。`reservationId` は StartTransaction で送ります。期限切れ、取り消し、コネクターの Faulted / Unavailable で終了します |
+| CancelReservation | 既知の予約なら `Accepted`、それ以外は `Rejected` |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -74,10 +79,10 @@ Web UI や HTTP API が「コネクター」と言う場合は EVSE id を指し
 | NotifyReport | 対応 | GetBaseReport への応答を分割して送信します（各 `DeviceDataCtrlr.ItemsPerMessage[GetReport]` 件、`seqNo` は 0 から、最後以外は `tbc`） |
 | PublishFirmwareStatusNotification | Not supported |  |
 | ReportChargingProfiles | 対応 | GetChargingProfiles への応答: EVSE と `chargingLimitSource` ごとに 1 通、最後以外は `tbc` |
-| ReservationStatusUpdate | Not supported |  |
+| ReservationStatusUpdate | 対応 | `expiryDateTime` で `Expired`、予約した EVSE（`evseId` なしの場合はステーション）が Faulted / Unavailable になると `Removed` |
 | SecurityEventNotification | Not supported |  |
 | SignCertificate | Not supported |  |
-| StatusNotification | 対応 | EVSE ごと（コネクター 1）に送信し、EVSE 0 の分はありません。`connectorStatus` は Available / Occupied / Unavailable / Faulted。より細かい状態（充電中、一時停止）は TransactionEvent の `chargingState` で表します |
+| StatusNotification | 対応 | EVSE ごと（コネクター 1）に送信し、EVSE 0 の分はありません。`connectorStatus` は Available / Occupied / Reserved / Unavailable / Faulted。より細かい状態（充電中、一時停止）は TransactionEvent の `chargingState` で表します |
 | TransactionEvent | 対応 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）はステーションが生成します。`seqNo` はトランザクションごとに 0 から。定期 `Updated` は `SampledDataCtrlr.TxUpdatedInterval` ごと。切断中に発生したイベントは `offline: true` |
 
 TransactionEvent と状態変化による StatusNotification は、1.6 と同様に 1 本の順序付きキューで送信されます。
@@ -95,10 +100,10 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 
 | メッセージ | 対応 | 備考 |
 |---|---|---|
-| CancelReservation | Not supported |  |
+| CancelReservation | 対応 | 既知の予約なら `Accepted`（ReservationStatusUpdate は送りません）、それ以外は `Rejected` |
 | CertificateSigned | Not supported |  |
 | ChangeAvailability | 対応 | `evse` なし、または EVSE 0 はステーション自体の可用性で、EVSE の可用性とは別に保持します（EVSE の `Operative` はステーションの `Inoperative` を解除しません）。トランザクション中（その EVSE、ステーションならいずれかの EVSE）に Inoperative にする場合は `Scheduled` で、終了時に反映します。ステーションの Inoperative では空いている EVSE はすぐに Unavailable になります |
-| ClearCache | Not supported |  |
+| ClearCache | 対応 | 認証キャッシュを消去します。`AuthCacheCtrlr.Enabled` が false の間は `Rejected` |
 | ClearChargingProfile | 対応 | `chargingProfileId` が条件より優先し、条件は AND。外部制約は CSMS からは削除されません |
 | ClearDisplayMessage | Not supported |  |
 | ClearVariableMonitoring | Not supported |  |
@@ -111,7 +116,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | GetCompositeSchedule | 対応 | 実際の電力制限と同じ評価関数。期間の値はハードウェア最大値で頭打ちになり、最大値は「制限なし」も表します。未知の EVSE または duration < 1 は `Rejected`。`SmartChargingCtrlr.RateUnit` にない `chargingRateUnit` は `Rejected`（`UnsupportedRateUnit`） |
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
-| GetLocalListVersion | Not supported |  |
+| GetLocalListVersion | 対応 | 保持しているバージョン。最初のリストを受け取るまで、または `LocalAuthListCtrlr.Enabled` が false の間は 0 |
 | GetLog | Not supported |  |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | GetBaseReport を使用してください |
@@ -121,9 +126,9 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | 対応 | `remoteStartId` と任意の `chargingProfile`（`transactionId` なしの TxProfile。新しいトランザクションに紐付けて設定）。`evseId` がなければケーブル接続済みで開始可能な最初の EVSE を使います。`AuthCtrlr.AuthorizeRemoteStart` が true ならトークンを提示時と同様に認証します。type が `Central` / `NoAuthorization` のトークンは認証しません。これで開始したトランザクションの `triggerReason` は、ケーブルが後から接続された場合も `RemoteStart` です。`TxCtrlr.EVConnectionTimeOut` を過ぎてもケーブルを待っているトークンは破棄します |
 | RequestStopTransaction | 対応 | このステーションで実行中のトランザクションなら `Accepted`（`RemoteStop` で終了）、それ以外は `Rejected` |
-| ReserveNow | Not supported |  |
+| ReserveNow | 対応 | EVSE の状態に応じて Faulted / Unavailable / Occupied、それ以外は Accepted。同じ `id` は予約を置き換えます。`evseId` なしの予約では EVSE を 1 つ空けておきます（`ReservationCtrlr.NonEvseSpecific` が false の間は `Rejected`）。`connectorType` は模擬しません。`ReservationCtrlr.Enabled` が false の間は `Rejected`。予約された EVSE は `Reserved` を報告し、予約した `idToken` かその `groupIdToken` のトークンでのみ開始します。`reservationId` は `Started` イベントで送ります |
 | Reset | 対応 | `Immediate` / `OnIdle`（トランザクション中は `Scheduled`）。次の BootNotification の reason は `RemoteReset`。EVSE 単位のリセットは `Rejected` |
-| SendLocalList | Not supported |  |
+| SendLocalList | 対応 | Full / Differential。`versionNumber` は 1 以上（0 以下は CALLERROR `PropertyConstraintViolation`）。Differential はバージョンを上げる必要があります（`VersionMismatch`）。`LocalAuthListCtrlr.ItemsPerMessage` を超える件数、重複トークン、`idTokenInfo` のない Full のエントリは `Failed`。`LocalAuthListCtrlr.Enabled` が false の間も `Failed` |
 | SetChargingProfile | 対応 | ChargingStationMaxProfile（EVSE 0 のみ）、TxDefaultProfile、TxProfile。CSMS からの ChargingStationExternalConstraints は `Rejected`（`UnsupportedPurpose`）。`chargingSchedule` は 1 つのみ。[Smart Charging](smart-charging.md#ocpp-201) を参照 |
 | SetDisplayMessage | Not supported |  |
 | SetMonitoringBase | Not supported |  |
@@ -142,7 +147,5 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 |---|---|
 | OCPP 2.1 | v0.3 で対応予定（UI ではグレー表示） |
 | セキュリティプロファイル 3（TLS クライアント証明書）、証明書管理、Security Whitepaper のメッセージ（SecurityEventNotification など） | 対応予定 |
-| ローカル認証リスト（SendLocalList / GetLocalListVersion）、認証キャッシュ | 対応予定（現在は `id_tags` リストと CSMS への照会） |
-| 予約（ReserveNow / CancelReservation） | 対応予定 |
 | ファームウェア更新、診断 / ログのアップロードとその通知 | 対応予定（現在は CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 非対応（有償規格のため） |

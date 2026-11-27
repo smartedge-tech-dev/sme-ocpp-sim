@@ -2,7 +2,9 @@
 CSMS remote control (M3: RequestStartTransaction / RequestStopTransaction / UnlockConnector / Reset /
 ChangeAvailability / TriggerMessage), the Device Model (M4: GetVariables / SetVariables / GetBaseReport) and smart
 charging (M5: SetChargingProfile / ClearChargingProfile / GetCompositeSchedule / GetChargingProfiles, the
-operator's external limit with NotifyChargingLimit / ClearedChargingLimit).
+operator's external limit with NotifyChargingLimit / ClearedChargingLimit), the Local Authorization List, the
+Authorization Cache and reservations (M6: SendLocalList / GetLocalListVersion / ClearCache / ReserveNow /
+CancelReservation, ReservationStatusUpdate).
 
 One :class:`Station201` per 2.0.1 charging station, hosted by the shared shell ``runtime.charger.ChargerRuntime``
 through :class:`~sme_ocpp_sim.protocol.station.StationHost`. It is a separate stack from ``protocol/v16``: it uses
@@ -175,6 +177,50 @@ Interpretations (not defined by the spec)
   is modelled, F06.FR.14 / FR.16). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
   ``requestedMessage`` values (the certificate messages, PublishFirmwareStatusNotification) answer
   ``NotImplemented``.
+- Local Authorization List / Authorization Cache (M6, C10 - C14, D01, D02; ``runtime.local_auth``, in memory, kept
+  across reconnects and Resets): with the list (LocalAuthListCtrlr.Enabled) or the cache
+  (AuthCacheCtrlr.Enabled) a token is looked up there too, the list first (C13.FR.01 / C14.FR.01; a token in the
+  list is never cached). In the AuthCtrlr order above: DisableRemoteAuthorization -> the entry's status, else
+  ``Invalid``; offline with LocalAuthorizeOffline -> the entry's status (C13), OfflineTxForUnknownIdEnabled only
+  for a token in neither (C13.FR.04); online with LocalPreAuthorize -> an Accepted entry without Authorize (C12 /
+  C14.FR.02), an entry that is not Accepted is authorized again (C10.FR.03, C12.FR.05, C14.FR.03) unless the
+  store's DisablePostAuthorize is true. Every AuthorizeResponse and TransactionEventResponse ``idTokenInfo``
+  updates the cache (C10.FR.04 / FR.05). LocalAuthListCtrlr.SupportsExpiryDateTime is not served, so the list
+  ignores ``cacheExpiryDateTime`` (C13.FR.02 / C14.FR.02); in the cache an expired entry, or one older than
+  AuthCacheCtrlr.LifeTime, is ``Expired`` (C10.FR.10 / FR.13). SendLocalList: ``versionNumber`` < 1 is CALLERROR
+  PropertyConstraintViolation (D01.FR.18, like the other range checks); while LocalAuthListCtrlr.Enabled is
+  false, with more entries than LocalAuthListCtrlr.ItemsPerMessage, duplicate tokens (D01.FR.06), a Full entry
+  without ``idTokenInfo`` or more than LocalAuthListCtrlr.Entries maxLimit tokens it is ``Failed`` and the list
+  is unchanged; a Differential update must raise the version (D01.FR.19). The list is keyed by ``idToken``
+  (the ``type`` is not compared). GetLocalListVersion is 0 while the list is disabled (D02.FR.03), else the stored
+  version (0 = none received yet, D02.FR.02). ClearCache is ``Rejected`` while AuthCacheCtrlr.Enabled is false
+  (C11.FR.04).
+- Reservations (M6, H01 - H04): ReserveNow is ``Rejected`` while ReservationCtrlr.Enabled is false (H01.FR.01),
+  without ``evseId`` while ReservationCtrlr.NonEvseSpecific is false (H01.FR.19), for an unknown EVSE
+  (``UnknownEvse``) or an ``expiryDateTime`` that is not in the future; else ``Faulted`` / ``Unavailable`` /
+  ``Occupied`` (a transaction, a cable, a waiting token or a reservation on it) for the EVSE, or for every EVSE
+  without ``evseId`` (H01.FR.11 - FR.14), else ``Accepted``. The same ``id`` replaces a reservation (H01.FR.02;
+  checked as if the old one did not exist, kept when the new one is refused). ``connectorType`` is not modelled:
+  such a request is handled as one without ``evseId`` (TODO(spec): H01.FR.06 / FR.09 / FR.24). A reserved EVSE
+  reports ``Reserved`` (H01.FR.23) and starts only for the reserved ``idToken`` or a token whose group matches
+  the reservation's ``idToken`` / ``groupIdToken`` (H03; the group comes from the authorization, the list or the
+  cache, else an AuthorizeRequest, H03.FR.07 / FR.08); any other token is refused (``Reserved``), also a
+  RequestStartTransaction (``Rejected``, reasonCode ``Reserved``; its ``groupIdToken`` is compared). Matching is
+  pairwise (token = reserved token, or group = reservation group; see ``runtime.local_auth``). Without ``evseId``
+  one EVSE is kept free (H01.FR.07): while the free EVSEs are no more than those reservations they report
+  ``Reserved`` (H01.FR.20), and a non-matching token is refused when its start would leave fewer free EVSEs than
+  those reservations. "Free" = no fault, operative, no transaction, no waiting token, not reserved; a plugged
+  cable does not make an EVSE unavailable for the reservation (it authorizes nothing), but ReserveNow for a
+  plugged EVSE is ``Occupied``. A matching token that waits (for the cable, or an AuthorizeRemoteStart
+  authorization) claims the reservation (H03.FR.09; the EVSE goes ``Available`` / ``Occupied``, H03.FR.10): it
+  stays stored but holds no EVSE, ends when the transaction starts (``reservationId`` in the ``Started`` event,
+  H01.FR.15) and holds its EVSE again when the token is dropped (failed authorization, EVConnectionTimeOut,
+  unplug, Reset, availability change; no ReservationStatusUpdate, the reservation did not end). Stopping the
+  charger cancels the expiry timers; the next accepted boot re-arms them. It ends at ``expiryDateTime`` (ReservationStatusUpdate ``Expired``, H04), by
+  CancelReservation (H02, no ReservationStatusUpdate) or when its EVSE (no ``evseId``: the station) becomes
+  Faulted / Unavailable (``Removed``, H01.FR.16 / FR.17). A ReservationStatusUpdate goes through the outbox like
+  a StatusNotification (dropped at the end of a session, never resent). The expiry timer runs on the wall clock.
+  While ReservationCtrlr.Enabled is false the reservations are kept but not used.
 - A ``Rejected`` (or ``UnknownConnector``) answer carries ``statusInfo.reasonCode`` with a short simulator code
   (:data:`REASON_UNKNOWN_EVSE` ...); the codes are informative only.
 """
@@ -197,10 +243,11 @@ from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
 from ..station import StationHost, VersionStation
+from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
 from . import device_model as dm
 from . import models as m
 from .adapter import (LOCAL_TOKEN_TYPE, Adapter201, charging_profile, charging_profile_type, charging_schedule_type,
-                      composite_schedule_type, connector_status, id_token, meter_value)
+                      composite_schedule_type, connector_status, id_token, id_token_info, meter_value)
 from .composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
 from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingLimitSourceEnumType,
                     ChargingProfileKindEnumType, ChargingProfilePurposeEnumType, ChargingProfileStatusEnumType,
@@ -210,6 +257,8 @@ from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, Chargi
                     OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
                     TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
 from .enums import FirmwareStatusEnumType, UploadLogStatusEnumType
+from .enums import (CancelReservationStatusEnumType, ClearCacheStatusEnumType, ReservationUpdateStatusEnumType,
+                    ReserveNowStatusEnumType, SendLocalListStatusEnumType, UpdateEnumType)
 from .profiles import (REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT, ChargingProfile, ChargingSchedule, ClearStatus,
                        InstalledProfile, Limits, ProfileStatus, ProfileStore, SchedulePeriod)
 
@@ -241,6 +290,11 @@ REASON_NOT_REGISTERED = "NotRegistered"
 REASON_REGISTERED = "AlreadyRegistered"
 REASON_NO_TX = "NoTransaction"
 REASON_INVALID_DURATION = "InvalidDuration"
+REASON_RESERVED = "Reserved"
+REASON_DISABLED = "Disabled"
+REASON_INVALID_EXPIRY = "ExpiryNotInFuture"
+REASON_TOO_MANY_ITEMS = "TooManyItems"
+REASON_INVALID_LIST = "InvalidList"
 
 PURPOSE = ChargingProfilePurposeEnumType
 W = ChargingRateUnitEnumType.w
@@ -262,6 +316,11 @@ TRIGGERABLE = frozenset({MT.boot_notification, MT.heartbeat, MT.status_notificat
 #: idToken types a RequestStartTransaction never authorizes, also with AuthorizeRemoteStart (F01.FR.02).
 NOT_AUTHORIZED_TYPES = frozenset({IdTokenEnumType.central, IdTokenEnumType.no_authorization})
 _ACCEPTED, _PENDING = d.BootStatus.ACCEPTED.value, d.BootStatus.PENDING.value
+def _reservation_view(r: Reservation) -> Dict[str, Any]:
+    return {"id": r.id, "connector": r.connector, "id_tag": r.id_token, "parent_id_token": r.parent_id_token,
+            "expiry": r.expiry.isoformat()}
+
+
 _SUSPENSION = {"SuspendedEV": ChargingStateEnumType.suspended_ev, "SuspendedEVSE": ChargingStateEnumType.suspended_evse}
 #: Fault-type values of ReasonEnumType an operator may set (see the module docstring).
 FAULT_CODES: Tuple[str, ...] = tuple(r.value for r in (
@@ -281,6 +340,7 @@ class _Tx:
     charging_state: Optional[ChargingStateEnumType] = None  # last one reported
     evse_sent: bool = False  # ``evse`` went out in the first event (E01.FR.16)
     deauthorized: bool = False  # the CSMS refused the token, StopTxOnInvalidId false: no energy (E05.FR.02)
+    reservation_id: Optional[int] = None  # the reservation this transaction used (H01.FR.15)
 
     def seq(self) -> int:
         n, self.next_seq = self.next_seq, self.next_seq + 1
@@ -305,6 +365,7 @@ class _Evse:
     pending_timer: Optional[asyncio.TimerHandle] = None  # EVConnectionTimeOut of ``pending_tag``
     #: RequestStartTransaction TxProfile of ``pending_tag``: (domain profile, wire model).
     pending_profile: Optional[Tuple[ChargingProfile, m.ChargingProfileType]] = None
+    pending_reservation: Optional[int] = None  # the reservation ``pending_tag`` used (H03.FR.09)
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0
     pw: Optional[PowerState] = None
@@ -339,14 +400,20 @@ class Station201(VersionStation):
         self.ev, self.supply = host.ev, host.supply
         self._adapter = Adapter201(strict=strict)
         self.evses: Dict[int, _Evse] = {i: _Evse(i) for i in range(1, cfg.connectors + 1)}
+        #: Local Authorization List / Authorization Cache / reservations by id (M6).
+        self.local_list = LocalAuthList(dm.LOCAL_LIST_MAX)
+        self.cache = AuthCache(dm.AUTH_CACHE_MAX)
+        self.reservations: Dict[int, Reservation] = {}
         #: The Device Model (M4); ``ValueError`` when the charger's ``variables`` do not apply.
         self.dm = dm.build(cfg, message_timeout_s=host.call_timeout, url=getattr(host, "csms_url", "") or "",
                            availability=lambda i: connector_status(self.evses[i].status).value,
-                           power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()))
+                           power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()),
+                           list_entries=lambda: len(self.local_list))
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
         self.dm.on_change(dm.TX_UPDATED_INTERVAL, lambda v: self._restart_meters())
         self.dm.on_change(dm.BASIC_AUTH_PASSWORD, self._password_changed)
+        self.dm.on_change(dm.RESERVATION_ENABLED, lambda v: self.host.after_reply(self._refresh_all))
         #: Charging profiles (M5), keyed by EVSE id (0 = the station).
         self.profiles = ProfileStore(cfg.connectors)
         #: (vendorId, messageId or None) -> answer for inbound DataTransfer; default UnknownVendorId.
@@ -376,6 +443,11 @@ class Station201(VersionStation):
             m.ClearChargingProfileRequest: self._clear_charging_profile,
             m.GetCompositeScheduleRequest: self._get_composite_schedule,
             m.GetChargingProfilesRequest: self._get_charging_profiles,
+            m.SendLocalListRequest: self._send_local_list,
+            m.GetLocalListVersionRequest: self._get_local_list_version,
+            m.ClearCacheRequest: self._clear_cache,
+            m.ReserveNowRequest: self._reserve_now,
+            m.CancelReservationRequest: self._cancel_reservation,
         }
 
     # ================================================================== session (called by the shell)
@@ -403,6 +475,9 @@ class Station201(VersionStation):
             if e.tx is not None:
                 self._start_meter(e)
         self._maybe_idle_reset()  # an OnIdle Reset whose last transaction ended while offline
+        for r in list(self.reservations.values()):
+            if r.timer is None:  # cancelled by close(): the charger was stopped and started again
+                self._arm(r)
 
     def on_session_ended(self) -> None:
         for e in self.evses.values():
@@ -440,16 +515,19 @@ class Station201(VersionStation):
                 tx = {"tx_id": e.tx.tx_id, "id_tag": e.tx.id_token, "meter_start_wh": e.tx.meter_start_wh,
                       "started_at": e.tx.started_at.isoformat(), "seq_no": e.tx.next_seq,
                       "charging_state": e.tx.charging_state.value if e.tx.charging_state else None}
+            r = self._specific(e)
             return {"id": e.id, "evse_id": e.id, "connector_id": CONNECTOR_ID, "status": e.status.value,
                     "connector_status": connector_status(e.status).value, "error_code": e.fault,
                     "plugged": e.plugged, "operative": self._operative(e), "pending_operative": e.pending_operative,
                     "pending_tag": e.pending_tag, "meter_wh": round(e.meter_wh, 3),
                     "power_w": round(e.pw.power_w, POWER_DECIMALS) if e.pw is not None else 0.0,
                     "soc_pct": round(e.pw.soc_pct, SOC_DECIMALS) if e.pw is not None else None,
-                    "transaction": tx}
+                    "transaction": tx, "reservation": _reservation_view(r) if r is not None else None}
 
         return {
             "tx_queue": sum(1 for x in self._outq if x.transactional),
+            "local_list_version": self.local_list.version,
+            "reservations": [_reservation_view(r) for r in self.reservations.values()],
             # 2.0.1 has no station-level status; the 1.6-shaped key keeps the Web UI working.
             "station": {"status": S.AVAILABLE.value if self.station_operative else S.UNAVAILABLE.value,
                         "operative": self.station_operative},
@@ -537,6 +615,8 @@ class Station201(VersionStation):
     def _on_tx_answer(self, item: _Out, res: m.TransactionEventResponse) -> None:
         """A CSMS that does not accept the token of a running transaction ends it (TxCtrlr.StopTxOnInvalidId)."""
         e, tx, req = item.evse, item.tx, item.req
+        if res.id_token_info is not None and req is not None and req.id_token is not None:
+            self._remember(req.id_token.id_token, id_token_info(res.id_token_info))  # C10.FR.05
         if res.id_token_info is None or e is None or tx is None or req is None or req.id_token is None:
             return
         status = res.id_token_info.status.value
@@ -571,6 +651,8 @@ class Station201(VersionStation):
             return S(e.pw.suspension) if e.pw is not None and e.pw.suspension else S.CHARGING
         if e.plugged:
             return S.FINISHING if e.finishing else S.PREPARING
+        if self._specific(e) is not None or self._held_for_zero(e):
+            return S.RESERVED
         return S.AVAILABLE
 
     def _status_event(self, e: _Evse) -> d.ConnectorStatus:
@@ -578,7 +660,17 @@ class Station201(VersionStation):
 
     def _refresh(self, e: _Evse) -> None:
         """Move ``e`` to its target state; when online and the connectorStatus changed, queue the
-        StatusNotification (never waits)."""
+        StatusNotification (never waits). With reservations without ``evseId`` the other EVSEs may change too."""
+        self._refresh_one(e)
+        if self._general():
+            self._refresh_all(skip=e)
+
+    def _refresh_all(self, skip: Optional[_Evse] = None) -> None:
+        for e in self.evses.values():
+            if e is not skip:
+                self._refresh_one(e)
+
+    def _refresh_one(self, e: _Evse) -> None:
         e.status = self._target(e)
         wire = connector_status(e.status)
         if self.host.online and wire != e.reported:
@@ -668,13 +760,14 @@ class Station201(VersionStation):
     def _queue_event(self, e: _Evse, tx: _Tx, event: TransactionEventEnumType, trigger: TriggerReasonEnumType,
                      info: m.TransactionType, *, samples: Sequence[d.Sample] = (),
                      context: Optional[ReadingContextEnumType] = None, token: Optional[str] = None,
-                     token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, droppable: bool = False) -> None:
+                     token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, droppable: bool = False,
+                     reservation_id: Optional[int] = None) -> None:
         now = self.host.clock()
         req = m.TransactionEventRequest(
             event_type=event, timestamp=now, trigger_reason=trigger, seq_no=tx.seq(),
             offline=True if not self.host.connected else None, transaction_info=info,
             evse=None if tx.evse_sent else m.EVSEType(id=e.id, connector_id=CONNECTOR_ID),
-            id_token=id_token(token, token_type) if token is not None else None,
+            id_token=id_token(token, token_type) if token is not None else None, reservation_id=reservation_id,
             meter_value=[meter_value(now, samples, context.value)] if samples and context else None)
         tx.evse_sent = True
         self._push(_Out(f"TransactionEvent {event.value}", lambda: self._adapter.send_transaction_event(req),
@@ -682,13 +775,17 @@ class Station201(VersionStation):
 
     def _start_tx(self, e: _Evse, tag: str, trigger: TriggerReasonEnumType, *,
                   token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, remote_start_id: Optional[int] = None,
-                  profile: Optional[Tuple[ChargingProfile, m.ChargingProfileType]] = None) -> None:
+                  profile: Optional[Tuple[ChargingProfile, m.ChargingProfileType]] = None,
+                  reservation: Optional[Reservation] = None) -> None:
         """Start a transaction on a plugged, operative EVSE for an authorized ``tag`` (synchronous); ``profile``
-        is the RequestStartTransaction TxProfile, installed bound to the new transaction."""
+        is the RequestStartTransaction TxProfile, installed bound to the new transaction; ``reservation`` the one
+        the token uses now (a waiting token brings its ``pending_reservation``)."""
+        self._claim(e, reservation)
+        reservation_id = self._consume(e)
         self._clear_pending(e)
         e.finishing = False
         tx = e.tx = _Tx(str(uuid.uuid4()), tag, int(round(e.meter_wh)), self.host.clock(), token_type=token_type,
-                        remote_start_id=remote_start_id)
+                        remote_start_id=remote_start_id, reservation_id=reservation_id)
         e.pw = PowerState(soc_pct=self.cfg.session.initial_soc, energy_wh=e.meter_wh)  # a fresh EV session
         e.last_mono = None
         if profile is not None:
@@ -700,7 +797,7 @@ class Station201(VersionStation):
                                             remote_start_id=remote_start_id),
                           samples=self._samples(e, self.dm.list_value(dm.TX_STARTED_MEASURANDS)),
                           context=ReadingContextEnumType.transaction_begin,
-                          token=tag, token_type=token_type)
+                          token=tag, token_type=token_type, reservation_id=reservation_id)
         self._refresh(e)
         if self.host.online:
             self._start_meter(e)
@@ -758,23 +855,274 @@ class Station201(VersionStation):
     # ================================================================== authorization
 
     async def _authorize(self, tag: str) -> A:
-        """Authorize a token by the AuthCtrlr variables (module docstring); ``id_tags`` is the local list."""
+        return (await self._authorize_info(tag))[0].status
+
+    def _known(self, tag: str) -> Tuple[Optional[d.IdTokenInfo], Optional[d.IdTokenInfo]]:
+        """``(list entry, cache entry)`` of ``tag``: the Local Authorization List entry (when enabled) has
+        priority, the cache (when enabled) is looked up only without one (C13.FR.01)."""
+        if self.dm.bool_value(dm.LOCAL_LIST_ENABLED):
+            entry = self.local_list.get(tag)
+            if entry is not None:
+                return entry, None
+        if self.dm.bool_value(dm.AUTH_CACHE_ENABLED):
+            return None, self.cache.get(tag, self.host.clock(), self.dm.int_value(dm.AUTH_CACHE_LIFETIME))
+        return None, None
+
+    def _remember(self, tag: str, info: Optional[d.IdTokenInfo]) -> None:
+        """C10.FR.04 / FR.05: a received IdTokenInfo updates the cache; a token in the Local Authorization List is
+        not cached."""
+        if info is not None and self.dm.bool_value(dm.AUTH_CACHE_ENABLED) and self.local_list.get(tag) is None:
+            self.cache.update(tag, info, self.host.clock())
+
+    async def _authorize_info(self, tag: str) -> Tuple[d.IdTokenInfo, bool]:
+        """Authorize a token by the AuthCtrlr variables, the Local Authorization List and the cache (module
+        docstring; ``id_tags`` are accepted as before): ``(info, asked)``, ``asked`` = a CSMS answer."""
+        accepted = d.IdTokenInfo(A.ACCEPTED)
         if not self.dm.bool_value(dm.AUTH_ENABLED):
-            return A.ACCEPTED
+            return accepted, False
         local = tag in self.cfg.id_tags
+        listed, cached = self._known(tag)
+        known = listed or cached
         if self.dm.bool_value(dm.DISABLE_REMOTE_AUTHORIZATION):
-            return A.ACCEPTED if local else A.INVALID
+            if local:
+                return accepted, False
+            return (known if known is not None else d.IdTokenInfo(A.INVALID)), False
         if not self.host.online:
-            # TODO(spec): the Authorization Cache / Local Authorization List (AuthCacheCtrlr / LocalAuthListCtrlr)
-            # are not modelled; id_tags stands for the local list.
-            if local and self.dm.bool_value(dm.LOCAL_AUTHORIZE_OFFLINE):
-                return A.ACCEPTED
-            return A.ACCEPTED if self.dm.bool_value(dm.OFFLINE_TX_FOR_UNKNOWN_ID) else A.OFFLINE
-        if local and self.dm.bool_value(dm.LOCAL_PRE_AUTHORIZE):
-            return A.ACCEPTED
+            if self.dm.bool_value(dm.LOCAL_AUTHORIZE_OFFLINE):
+                if local:
+                    return accepted, False
+                if known is not None:
+                    return known, False  # C13.FR.02: only an Accepted entry authorizes
+            if known is None and self.dm.bool_value(dm.OFFLINE_TX_FOR_UNKNOWN_ID):  # C13.FR.04
+                return accepted, False
+            return d.IdTokenInfo(A.OFFLINE), False
+        pre = self.dm.bool_value(dm.LOCAL_PRE_AUTHORIZE)
+        if local and pre:
+            return accepted, False
+        if known is not None:
+            no_post = self.dm.bool_value(dm.LOCAL_LIST_DISABLE_POST_AUTHORIZE if listed is not None
+                                         else dm.AUTH_CACHE_DISABLE_POST_AUTHORIZE)
+            if (known.accepted and pre) or (not known.accepted and no_post):
+                return known, False  # C12 / C14.FR.02; DisablePostAuthorize (Part 2 2.4.6 / 2.5.7)
         info: Optional[d.IdTokenInfo] = await self.host.safe(
             self._adapter.send_authorize(d.AuthorizeRequest(tag)), "Authorize")
-        return info.status if info is not None else A.ERROR
+        self._remember(tag, info)
+        return (info if info is not None else d.IdTokenInfo(A.ERROR)), True
+
+    # ================================================================== reservations (M6)
+
+    def _active(self) -> List[Reservation]:
+        """The reservations in use (none while ReservationCtrlr.Enabled is false, Part 2 Controller note)."""
+        if not self.dm.bool_value(dm.RESERVATION_ENABLED):
+            return []
+        return [r for r in self.reservations.values() if r.claimed_by is None]  # a claimed one holds no EVSE
+
+    def _specific(self, e: _Evse) -> Optional[Reservation]:
+        return next((r for r in self._active() if r.connector == e.id), None)
+
+    def _general(self) -> List[Reservation]:
+        """Reservations without ``evseId``."""
+        return [r for r in self._active() if r.connector == 0]
+
+    def _free(self, e: _Evse) -> bool:
+        """``e`` could serve a reservation without ``evseId`` now: no fault, operative, no transaction, no waiting
+        token, not reserved itself. A plugged cable does not count (module docstring)."""
+        return (not e.fault and self._operative(e) and e.tx is None and e.pending_tag is None
+                and self._specific(e) is None)
+
+    def _held_for_zero(self, e: _Evse) -> bool:
+        """``e`` is free and the free EVSEs are no more than the reservations without ``evseId`` (H01.FR.20)."""
+        n = len(self._general())
+        return n > 0 and self._free(e) and sum(1 for x in self.evses.values() if self._free(x)) <= n
+
+    def _reservation_for(self, e: _Evse, tag: str, group: Optional[str]) -> Tuple[bool, Optional[Reservation]]:
+        """May ``tag`` (of ``group``) start on ``e``; the reservation it uses, if any (H03)."""
+        r = self._specific(e)
+        if r is not None:
+            return (True, r) if r.matches(tag, group) else (False, None)
+        general = self._general()
+        mine = next((x for x in general if x.matches(tag, group)), None)
+        if mine is not None:
+            return True, mine
+        # H01.FR.07 "one EVSE remains available": refused only when this start takes the last free EVSE(s).
+        left = sum(1 for x in self.evses.values() if self._free(x)) - (1 if self._free(e) else 0)
+        return left >= len(general), None
+
+    def _group_may_help(self, e: _Evse) -> bool:
+        r = self._specific(e)
+        return any(x.parent_id_token for x in ([r] if r is not None else self._general()))
+
+    async def _group_of(self, tag: str, info: d.IdTokenInfo, asked: bool) -> Optional[str]:
+        """The token's groupIdToken: from its authorization, the list or the cache, else an AuthorizeRequest
+        (H03.FR.07 / FR.08) unless the CSMS was asked already or may not be asked."""
+        if info.parent_id_token:
+            return info.parent_id_token
+        listed, cached = self._known(tag)
+        known = listed or cached
+        if known is not None and known.parent_id_token:
+            return known.parent_id_token
+        if (asked or not self.host.online or not self.dm.bool_value(dm.AUTH_ENABLED)
+                or self.dm.bool_value(dm.DISABLE_REMOTE_AUTHORIZATION)):
+            return None
+        res: Optional[d.IdTokenInfo] = await self.host.safe(
+            self._adapter.send_authorize(d.AuthorizeRequest(tag)), "Authorize")
+        self._remember(tag, res)
+        return res.parent_id_token if res is not None else None
+
+    def _claim(self, e: _Evse, r: Optional[Reservation]) -> None:
+        """The token waiting on ``e`` claims ``r`` (H03.FR.09 / FR.10); consumed when the transaction starts
+        (:meth:`_consume`), released when the token is dropped (:meth:`_release`)."""
+        if r is None or self.reservations.get(r.id) is not r:
+            return
+        r.claimed_by, e.pending_reservation = e.id, r.id
+        self._refresh_all(skip=e)  # ``e`` itself is refreshed by the caller
+
+    def _release(self, e: _Evse) -> None:
+        """The waiting token of ``e`` is dropped: its reservation (if still there) holds its EVSE again."""
+        rid, e.pending_reservation = e.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is not None and r.claimed_by == e.id:
+            r.claimed_by = None
+
+    def _consume(self, e: _Evse) -> Optional[int]:
+        """The transaction on ``e`` starts: its claimed reservation ends; its id for the Started event."""
+        rid, e.pending_reservation = e.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is None or r.claimed_by != e.id:
+            return None  # expired / cancelled / removed meanwhile
+        del self.reservations[r.id]
+        r.cancel_timer()
+        return rid
+
+    def _arm(self, r: Reservation) -> None:
+        r.cancel_timer()
+        delay = (r.expiry - self.host.clock()).total_seconds()
+        r.timer = asyncio.get_running_loop().call_later(max(0.0, delay), self._reservation_expired, r)
+
+    def close(self) -> None:
+        """The charger stops: cancel the reservation expiry and EVConnectionTimeOut timers (the reservation
+        timers are re-armed by :meth:`on_online`)."""
+        for r in self.reservations.values():
+            r.cancel_timer()
+        for e in self.evses.values():
+            if e.pending_timer is not None:
+                e.pending_timer.cancel()
+                e.pending_timer = None
+
+    def _drop_reservation(self, r: Reservation, update: Optional[ReservationUpdateStatusEnumType]) -> None:
+        """End ``r``; ``update`` = the ReservationStatusUpdate to send (before the StatusNotifications)."""
+        if self.reservations.get(r.id) is not r:
+            return
+        del self.reservations[r.id]
+        r.cancel_timer()
+        log.info("%s: reservation %d ended (%s)", self.cfg.id, r.id, update.value if update else "cancelled")
+        if update is not None and self.host.online:
+            req = m.ReservationStatusUpdateRequest(reservation_id=r.id, reservation_update_status=update)
+            self._push(_Out("ReservationStatusUpdate", lambda: self._adapter.send_reservation_status_update(req)))
+        self._refresh_all()
+
+    def _drop_reservations_of(self, evses: Sequence[_Evse], *, station: bool = False) -> None:
+        """H01.FR.16 / FR.17: the EVSE (no ``evseId``: the station) became Faulted or Unavailable."""
+        ids = {e.id for e in evses} | ({0} if station else set())
+        for r in [r for r in self.reservations.values() if r.connector in ids]:
+            self._drop_reservation(r, ReservationUpdateStatusEnumType.removed)
+
+    def _reservation_expired(self, r: Reservation) -> None:
+        r.timer = None
+        self._drop_reservation(r, ReservationUpdateStatusEnumType.expired)  # H04.FR.01
+
+    def _reserve_now(self, req: m.ReserveNowRequest) -> m.ReserveNowResponse:
+        RS = ReserveNowStatusEnumType
+
+        def answer(status: ReserveNowStatusEnumType, code: Optional[str] = None) -> m.ReserveNowResponse:
+            return m.ReserveNowResponse(status=status, status_info=self._info(code))
+
+        if not self.dm.bool_value(dm.RESERVATION_ENABLED):
+            return answer(RS.rejected, REASON_DISABLED)  # H01.FR.01
+        if req.expiry_date_time <= self.host.clock():
+            return answer(RS.rejected, REASON_INVALID_EXPIRY)
+        if req.evse_id is None:
+            if not self.dm.bool_value(dm.RESERVATION_NON_EVSE_SPECIFIC):
+                return answer(RS.rejected, REASON_NOT_SUPPORTED)  # H01.FR.19
+            connector = 0
+        elif req.evse_id in self.evses:
+            connector = req.evse_id
+        else:
+            return answer(RS.rejected, REASON_UNKNOWN_EVSE)
+        old = self.reservations.pop(req.id, None)  # checked as if it did not exist (H01.FR.02)
+        status = self._reservation_status(connector)
+        if status is not RS.accepted:
+            if old is not None:
+                self.reservations[old.id] = old
+            return answer(status)
+        if old is not None:
+            old.cancel_timer()
+        group = req.group_id_token.id_token if req.group_id_token is not None else None
+        r = Reservation(req.id, connector, req.id_token.id_token, req.expiry_date_time, group)
+        self._arm(r)
+        self.reservations[r.id] = r
+        self.host.after_reply(self._refresh_all)  # Reserved after the answer (H01.FR.20 / FR.23)
+        return answer(RS.accepted)
+
+    def _reservation_status(self, connector: int) -> ReserveNowStatusEnumType:
+        RS = ReserveNowStatusEnumType
+        if connector == 0:
+            evses = list(self.evses.values())
+            if sum(1 for e in evses if self._free(e)) > len(self._general()):
+                return RS.accepted
+            if all(e.fault for e in evses):
+                return RS.faulted  # H01.FR.12
+            if all(not self._operative(e) for e in evses):
+                return RS.unavailable  # H01.FR.14
+            return RS.occupied  # H01.FR.11
+        e = self.evses[connector]
+        if e.fault:
+            return RS.faulted
+        if not self._operative(e):
+            return RS.unavailable
+        if e.plugged or not self._free(e) or self._held_for_zero(e):
+            return RS.occupied
+        return RS.accepted
+
+    def _cancel_reservation(self, req: m.CancelReservationRequest) -> m.CancelReservationResponse:
+        r = self.reservations.pop(req.reservation_id, None)
+        if r is None:
+            return m.CancelReservationResponse(status=CancelReservationStatusEnumType.rejected)  # H02.FR.01
+        r.cancel_timer()
+        self.host.after_reply(self._refresh_all)  # H02.FR.04: Available after the answer
+        return m.CancelReservationResponse(status=CancelReservationStatusEnumType.accepted)
+
+    # ================================================================== local authorization list / cache (M6)
+
+    def _send_local_list(self, req: m.SendLocalListRequest) -> m.SendLocalListResponse:
+        def failed(code: str) -> m.SendLocalListResponse:
+            return m.SendLocalListResponse(status=SendLocalListStatusEnumType.failed, status_info=self._info(code))
+
+        if req.version_number < 1:  # D01.FR.18
+            raise CallError(self._adapter.error_codes.property_constraint_violation,
+                            f"versionNumber: {req.version_number} must be > 0", {"field": "versionNumber"})
+        if not self.dm.bool_value(dm.LOCAL_LIST_ENABLED):
+            return failed(REASON_DISABLED)
+        items = req.local_authorization_list or []
+        if len(items) > self.dm.int_value(dm.LOCAL_LIST_ITEMS_PER_MESSAGE):
+            return failed(REASON_TOO_MANY_ITEMS)
+        entries = [(x.id_token.id_token, id_token_info(x.id_token_info) if x.id_token_info is not None else None)
+                   for x in items]
+        res = self.local_list.update(req.version_number, req.update_type is UpdateEnumType.full, entries)
+        if res is ListUpdate.FAILED:
+            return failed(REASON_INVALID_LIST)
+        return m.SendLocalListResponse(status=SendLocalListStatusEnumType(res.value))
+
+    def _get_local_list_version(self, req: m.GetLocalListVersionRequest) -> m.GetLocalListVersionResponse:
+        enabled = self.dm.bool_value(dm.LOCAL_LIST_ENABLED)
+        return m.GetLocalListVersionResponse(version_number=self.local_list.version if enabled else 0)  # D02
+
+    def _clear_cache(self, req: m.ClearCacheRequest) -> m.ClearCacheResponse:
+        if not self.dm.bool_value(dm.AUTH_CACHE_ENABLED):
+            return m.ClearCacheResponse(status=ClearCacheStatusEnumType.rejected,
+                                        status_info=self._info(REASON_DISABLED))  # C11.FR.04
+        self.cache.clear()
+        return m.ClearCacheResponse(status=ClearCacheStatusEnumType.accepted)  # C11.FR.03
 
     # ================================================================== CSMS commands
 
@@ -812,18 +1160,21 @@ class Station201(VersionStation):
             return None
         return [e]
 
-    def _start_blocker(self, e: _Evse) -> Optional[str]:
-        """Why a RequestStartTransaction cannot use ``e`` now (``None`` = it can)."""
+    def _start_blocker(self, e: _Evse, token: Optional[str] = None, group: Optional[str] = None) -> Optional[str]:
+        """Why a RequestStartTransaction (of ``token`` / ``group``) cannot use ``e`` now (``None`` = it can)."""
         if e.fault:
             return REASON_FAULTED
         if not self._operative(e) or self._resetting:
             return REASON_UNAVAILABLE
         if e.tx is not None or e.pending_tag is not None:  # a waiting token keeps the EVSE
             return REASON_OCCUPIED
+        if token is not None and not self._reservation_for(e, token, group)[0]:
+            return REASON_RESERVED
         return None
 
-    @staticmethod
-    def _clear_pending(e: _Evse) -> None:
+    def _clear_pending(self, e: _Evse) -> None:
+        """Drop the waiting token; a reservation it claimed holds its EVSE again (the caller refreshes)."""
+        self._release(e)
         e.pending_tag, e.pending_type, e.pending_remote_id = None, LOCAL_TOKEN_TYPE, None
         e.pending_authorizing, e.pending_profile = False, None
         if e.pending_timer is not None:
@@ -868,15 +1219,17 @@ class Station201(VersionStation):
                                                  limits=self._limits())
             if reason is not None:
                 return rejected(reason)
+        token = req.id_token.id_token
+        group = req.group_id_token.id_token if req.group_id_token is not None else None
         if req.evse_id is not None:
             e = self.evses.get(req.evse_id)
             if e is None:
                 return rejected(REASON_UNKNOWN_EVSE)
-            blocker = self._start_blocker(e)
+            blocker = self._start_blocker(e, token, group)
             if blocker:
                 return rejected(blocker)
         else:
-            free = [x for x in self.evses.values() if self._start_blocker(x) is None]
+            free = [x for x in self.evses.values() if self._start_blocker(x, token, group) is None]
             if not free:
                 return rejected(REASON_OCCUPIED)
             e = next((x for x in free if x.plugged), free[0])
@@ -884,6 +1237,7 @@ class Station201(VersionStation):
         e.pending_tag, e.pending_type = req.id_token.id_token, req.id_token.type
         e.pending_remote_id = req.remote_start_id
         e.pending_profile = (profile, wire) if profile is not None and wire is not None else None
+        self._claim(e, self._reservation_for(e, token, group)[1])  # H03.FR.09, consumed by the start
         # AuthorizeRemoteStart: from now on a plug waits for the authorization (see _remote_authorize); a Central /
         # NoAuthorization token is never authorized (F01.FR.02).
         e.pending_authorizing = (self.dm.bool_value(dm.AUTHORIZE_REMOTE_START)
@@ -897,10 +1251,12 @@ class Station201(VersionStation):
             return  # replaced, started or dropped meanwhile
         if e.fault or not self._operative(e) or self._resetting:
             self._clear_pending(e)
+            self._refresh(e)
             return
         if e.pending_authorizing:
             if self.host.spawn(self._remote_authorize(e, remote_start_id)) is None:
                 self._clear_pending(e)  # the session ended meanwhile
+                self._refresh(e)
             return
         self._remote_start_now(e)
 
@@ -921,6 +1277,7 @@ class Station201(VersionStation):
         if status is not A.ACCEPTED or e.fault or not self._operative(e) or self._resetting:
             log.info("%s: EVSE %d remote start token %s not started (%s)", self.cfg.id, e.id, tag, status.value)
             self._clear_pending(e)
+            self._refresh(e)  # a claimed reservation holds its EVSE again
             return
         e.pending_authorizing = False
         self._remote_start_now(e)
@@ -1019,11 +1376,15 @@ class Station201(VersionStation):
                     e.pending_operative, scheduled = False, True  # G03.FR.05
                 else:
                     self._set_operative(e, operative)
-        self.host.after_reply(functools.partial(self._refresh_all, targets))
+        if not operative:  # H01.FR.17: after the answer, before the StatusNotifications
+            self.host.after_reply(functools.partial(
+                self._drop_reservations_of, [e for e in targets if not self._operative(e)],
+                station=req.evse is None or req.evse.id == 0))
+        self.host.after_reply(functools.partial(self._refresh_targets, targets))
         return m.ChangeAvailabilityResponse(status=ChangeAvailabilityStatusEnumType.scheduled if scheduled
                                             else ChangeAvailabilityStatusEnumType.accepted)
 
-    def _refresh_all(self, targets: Sequence[_Evse]) -> None:
+    def _refresh_targets(self, targets: Sequence[_Evse]) -> None:
         for e in targets:
             self._refresh(e)
 
@@ -1317,21 +1678,30 @@ class Station201(VersionStation):
             return A.BUSY
         if e.fault or not self._operative(e) or self._resetting:
             return A.UNAVAILABLE
-        status = await self._authorize(id_tag)
-        if status is not A.ACCEPTED:
-            return status
-        # Re-check: the await may have let another start / a fault in.
+        if not self._reservation_for(e, id_tag, None)[0] and not self._group_may_help(e):
+            return A.RESERVED  # reserved for another token: refused without asking the CSMS
+        info, asked = await self._authorize_info(id_tag)
+        if info.status is not A.ACCEPTED:
+            return info.status
+        group = None
+        if not self._reservation_for(e, id_tag, None)[0]:
+            group = await self._group_of(id_tag, info, asked)
+        # Re-check: the await may have let another start / a fault / a reservation change in.
         if e.tx is not None:
             return A.BUSY
         if e.fault or not self._operative(e) or self._resetting:
             return A.UNAVAILABLE
+        allowed, r = self._reservation_for(e, id_tag, group)
+        if not allowed:
+            return A.RESERVED
         if not e.plugged:
             self._clear_pending(e)
             e.pending_tag = id_tag
+            self._claim(e, r)
             self._arm_connection_timeout(e)
             self._refresh(e)
             return A.ACCEPTED
-        self._start_tx(e, id_tag, T.authorized)
+        self._start_tx(e, id_tag, T.authorized, reservation=r)
         return A.ACCEPTED
 
     async def stop_tx(self, connector: int) -> bool:
@@ -1350,6 +1720,7 @@ class Station201(VersionStation):
         e.fault = error_code
         if e.tx is not None:
             self._end_tx(e, T.abnormal_condition, ReasonEnumType(error_code))
+        self._drop_reservations_of([e])  # H01.FR.16
         self._refresh(e)
 
     async def clear_fault(self, connector: int) -> bool:

@@ -41,6 +41,11 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | SetChargingProfile | ChargePointMaxProfile（仅 connector 0）/ TxDefaultProfile / TxProfile（需要进行中的交易） |
 | ClearChargingProfile | 按 `id` / `connectorId` / `chargingProfilePurpose` / `stackLevel` 过滤 |
 | GetCompositeSchedule | `chargingRateUnit` 可选；与实际功率限值使用同一个计算函数 |
+| SendLocalList | Full / Differential。`listVersion` 必须大于 0（否则 CALLERROR `PropertyConstraintViolation`）；Differential 必须提高版本号（`VersionMismatch`）。条目数超过 `SendLocalListMaxLength`、标签重复、Full 的条目没有 `idTagInfo`、或标签数超过 `LocalAuthListMaxLength` → `Failed`（列表不变）；`LocalAuthListEnabled` 为 false 时应答 `NotSupported` |
+| GetLocalListVersion | 保存的版本号；收到第一份列表之前为 0 |
+| ClearCache | 清空授权缓存；`AuthorizationCacheEnabled` 为 false 时应答 `Rejected` |
+| ReserveNow | 按 connector 状态应答 Faulted / Unavailable / Occupied，否则 Accepted；相同 `reservationId` 替换原预约；connector 0 的预约会保留一个空闲 connector（`ReserveConnectorZeroSupported` 为 false 时 `Rejected`）。被预约的 connector 报告 `Reserved`，只允许预约的 `idTag` 或以其为父标签的标签开始；`reservationId` 随 StartTransaction 发送。到期、取消、或 connector 变为 Faulted / Unavailable 时结束 |
+| CancelReservation | 已知预约应答 `Accepted`，否则 `Rejected` |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -72,10 +77,10 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | NotifyReport | 支持 | 分段应答 GetBaseReport（每段 `DeviceDataCtrlr.ItemsPerMessage[GetReport]` 条，`seqNo` 从 0 开始，除最后一段外 `tbc`） |
 | PublishFirmwareStatusNotification | Not supported |  |
 | ReportChargingProfiles | 支持 | 应答 GetChargingProfiles：每个 EVSE 与 `chargingLimitSource` 一段，除最后一段外 `tbc` |
-| ReservationStatusUpdate | Not supported |  |
+| ReservationStatusUpdate | 支持 | 到达 `expiryDateTime` 时 `Expired`；预约的 EVSE（无 `evseId` 时为整个充电站）变为 Faulted / Unavailable 时 `Removed` |
 | SecurityEventNotification | Not supported |  |
 | SignCertificate | Not supported |  |
-| StatusNotification | 支持 | 每个 EVSE（connector 1）一条，EVSE 0 不发送。`connectorStatus` 为 Available / Occupied / Unavailable / Faulted；更细的状态（充电、暂停）由 TransactionEvent 的 `chargingState` 表示 |
+| StatusNotification | 支持 | 每个 EVSE（connector 1）一条，EVSE 0 不发送。`connectorStatus` 为 Available / Occupied / Reserved / Unavailable / Faulted；更细的状态（充电、暂停）由 TransactionEvent 的 `chargingState` 表示 |
 | TransactionEvent | 支持 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）由充电站生成；`seqNo` 每笔交易从 0 计数；每隔 `SampledDataCtrlr.TxUpdatedInterval` 发送周期性 `Updated`；断线期间产生的事件带 `offline: true` |
 
 TransactionEvent 和状态变化引起的 StatusNotification 与 1.6 一样经同一个有序队列发送。失败的 TransactionEvent
@@ -91,10 +96,10 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 
 | 消息 | 支持 | 备注 |
 |---|---|---|
-| CancelReservation | Not supported |  |
+| CancelReservation | 支持 | 已知预约应答 `Accepted`（不发送 ReservationStatusUpdate），否则 `Rejected` |
 | CertificateSigned | Not supported |  |
 | ChangeAvailability | 支持 | 无 `evse` 或 EVSE 0 设置充电站自身的可用性，与 EVSE 的可用性分开保存（EVSE `Operative` 不会解除充电站 `Inoperative`）。交易进行中（该 EVSE，或对充电站而言任一 EVSE）改为 Inoperative 应答 `Scheduled`，交易结束后生效；充电站 Inoperative 时空闲 EVSE 立即变为 Unavailable |
-| ClearCache | Not supported |  |
+| ClearCache | 支持 | 清空授权缓存；`AuthCacheCtrlr.Enabled` 为 false 时应答 `Rejected` |
 | ClearChargingProfile | 支持 | `chargingProfileId` 优先于其他条件，条件之间为 AND；外部约束不会被 CSMS 清除 |
 | ClearDisplayMessage | Not supported |  |
 | ClearVariableMonitoring | Not supported |  |
@@ -107,7 +112,7 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | GetCompositeSchedule | 支持 | 与实际功率限值使用同一计算函数；各时段的值以硬件最大值封顶，该最大值也表示“无限制”。未知 EVSE 或 duration < 1 → `Rejected`；`chargingRateUnit` 不在 `SmartChargingCtrlr.RateUnit` 中 → `Rejected`（`UnsupportedRateUnit`） |
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
-| GetLocalListVersion | Not supported |  |
+| GetLocalListVersion | 支持 | 保存的版本号；收到第一份列表之前、或 `LocalAuthListCtrlr.Enabled` 为 false 时为 0 |
 | GetLog | Not supported |  |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | 请使用 GetBaseReport |
@@ -117,9 +122,9 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | 支持 | `remoteStartId` 与可选的 `chargingProfile`（不带 `transactionId` 的 TxProfile，安装后绑定到新交易）。无 `evseId` 时使用第一个已插枪且可启动的 EVSE。`AuthCtrlr.AuthorizeRemoteStart` 为 true 时，令牌与现场出示一样进行授权。type 为 `Central` / `NoAuthorization` 的令牌不授权。由它启动的交易 `triggerReason` 为 `RemoteStart`（之后才插枪也一样）。超过 `TxCtrlr.EVConnectionTimeOut` 仍在等待插枪的令牌被丢弃 |
 | RequestStopTransaction | 支持 | 本充电站进行中的交易应答 `Accepted`（以 `RemoteStop` 结束），否则 `Rejected` |
-| ReserveNow | Not supported |  |
+| ReserveNow | 支持 | 按 EVSE 状态应答 Faulted / Unavailable / Occupied，否则 Accepted；相同 `id` 替换原预约；无 `evseId` 的预约会保留一个空闲 EVSE（`ReservationCtrlr.NonEvseSpecific` 为 false 时 `Rejected`）；不模拟 `connectorType`；`ReservationCtrlr.Enabled` 为 false 时 `Rejected`。被预约的 EVSE 报告 `Reserved`，只允许预约的 `idToken` 或其 `groupIdToken` 的令牌开始；`reservationId` 随 `Started` 事件发送 |
 | Reset | 支持 | `Immediate` / `OnIdle`（交易进行中为 `Scheduled`）；之后的 BootNotification 的 reason 为 `RemoteReset`。EVSE 级复位 `Rejected` |
-| SendLocalList | Not supported |  |
+| SendLocalList | 支持 | Full / Differential。`versionNumber` 必须大于 0（否则 CALLERROR `PropertyConstraintViolation`）；Differential 必须提高版本号（`VersionMismatch`）。条目数超过 `LocalAuthListCtrlr.ItemsPerMessage`、令牌重复、Full 的条目没有 `idTokenInfo` → `Failed`；`LocalAuthListCtrlr.Enabled` 为 false 时也应答 `Failed` |
 | SetChargingProfile | 支持 | ChargingStationMaxProfile（仅 EVSE 0）、TxDefaultProfile、TxProfile；来自 CSMS 的 ChargingStationExternalConstraints `Rejected`（`UnsupportedPurpose`）。只能有一个 `chargingSchedule`。见 [Smart Charging](smart-charging.md#ocpp-201) |
 | SetDisplayMessage | Not supported |  |
 | SetMonitoringBase | Not supported |  |
@@ -138,7 +143,5 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 |---|---|
 | OCPP 2.1 | 计划在 v0.3 支持（UI 中灰色显示） |
 | Security Profile 3（TLS 客户端证书）、证书管理、Security Whitepaper 消息（SecurityEventNotification 等） | 计划中 |
-| 本地授权列表（SendLocalList / GetLocalListVersion）、授权缓存 | 计划中（目前为 `id_tags` 列表加 CSMS 查询） |
-| 预约（ReserveNow / CancelReservation） | 计划中 |
 | 固件更新、诊断 / 日志上传及其状态通知 | 计划中（目前应答 CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 不支持（付费标准） |

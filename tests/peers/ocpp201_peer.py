@@ -64,6 +64,7 @@ class Session:
     cleared_limits: list = field(default_factory=list)     # dict per ClearedChargingLimit
     log_statuses: list = field(default_factory=list)       # status per LogStatusNotification
     firmware_statuses: list = field(default_factory=list)  # status per FirmwareStatusNotification
+    reservation_updates: list = field(default_factory=list)  # (reservationId, status) per ReservationStatusUpdate
     cs: object = None
 
 
@@ -114,7 +115,11 @@ class PeerCS(OcppCP201):
     async def on_authorize(self, id_token, **_):
         await self.peer.hold("Authorize")
         self.session.authorizes.append(id_token)
-        return call_result.Authorize(id_token_info={"status": self.peer.token_status(id_token["id_token"])})
+        info = {"status": self.peer.token_status(id_token["id_token"])}
+        group = self.peer.token_groups.get(id_token["id_token"])
+        if group is not None:
+            info["group_id_token"] = {"id_token": group, "type": "Central"}
+        return call_result.Authorize(id_token_info=info)
 
     @on("TransactionEvent")
     async def on_transaction_event(self, event_type, timestamp, trigger_reason, seq_no, transaction_info, **kw):
@@ -165,6 +170,11 @@ class PeerCS(OcppCP201):
         self.session.firmware_statuses.append(status)
         return call_result.FirmwareStatusNotification()
 
+    @on("ReservationStatusUpdate")
+    async def on_reservation_status_update(self, reservation_id, reservation_update_status, **_):
+        self.session.reservation_updates.append((reservation_id, reservation_update_status))
+        return call_result.ReservationStatusUpdate()
+
     @on("DataTransfer")
     async def on_data_transfer(self, vendor_id, **kw):
         self.session.data_transfers.append({"vendor_id": vendor_id, **kw})
@@ -175,11 +185,12 @@ class CsmsPeer201:
     def __init__(self, *, hb_interval: int = 1, registered: Optional[set] = None,
                  passwords: Optional[dict] = None, ssl_context: Optional[ssl.SSLContext] = None,
                  boot_statuses: Optional[list] = None, retry_interval: int = 1,
-                 token_statuses: Optional[dict] = None) -> None:
+                 token_statuses: Optional[dict] = None, token_groups: Optional[dict] = None) -> None:
         self.hb_interval = hb_interval
         self.boot_statuses = list(boot_statuses or [])   # consumed one per BootNotification, then Accepted
         self.retry_interval = retry_interval              # interval answered with Pending / Rejected
         self.token_statuses = dict(token_statuses or {})  # idToken -> AuthorizationStatus (default Accepted)
+        self.token_groups = dict(token_groups or {})      # idToken -> groupIdToken of the Authorize answer
         self.gates: dict[str, asyncio.Event] = {}         # action -> answer only once the event is set
         self.delays: dict[str, float] = {}                # action -> answer delay in seconds
         self.history: list = []                           # every Session, oldest first

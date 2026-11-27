@@ -136,6 +136,12 @@ class ChargerRuntime:
         Setting ``stop`` while a connection attempt is in progress may take up to the transport's
         ``open_timeout`` to return.
         """
+        try:
+            await self._run(stop)
+        finally:
+            self.station.close()  # station timers (reservation expiry, ...) do not outlive the run
+
+    async def _run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             self.connect_attempts += 1
             try:

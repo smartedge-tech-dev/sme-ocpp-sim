@@ -84,6 +84,15 @@ from .enums import (
     TriggerReasonEnumType,
     UnlockStatusEnumType,
 )
+from .enums import (
+    CancelReservationStatusEnumType,
+    ClearCacheStatusEnumType,
+    ConnectorEnumType,
+    ReservationUpdateStatusEnumType,
+    ReserveNowStatusEnumType,
+    SendLocalListStatusEnumType,
+    UpdateEnumType,
+)
 
 
 def format_datetime(value: datetime) -> str:
@@ -753,6 +762,84 @@ class FirmwareStatusNotificationResponse(OcppModel):
     custom_data: Optional[CustomDataType] = None
 
 
+# --- M6: local authorization list, authorization cache, reservations ---------------------
+
+
+class AuthorizationData(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    id_token: IdTokenType
+    id_token_info: Optional[IdTokenInfoType] = None
+
+
+class SendLocalListRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    local_authorization_list: Optional[Annotated[list[AuthorizationData], Field(min_length=1)]] = None
+    version_number: int
+    update_type: UpdateEnumType
+
+
+class SendLocalListResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: SendLocalListStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class GetLocalListVersionRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
+class GetLocalListVersionResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    version_number: int
+
+
+class ClearCacheRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
+class ClearCacheResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: ClearCacheStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class ReserveNowRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    id: int
+    expiry_date_time: DateTime
+    connector_type: Optional[ConnectorEnumType] = None
+    id_token: IdTokenType
+    evse_id: Optional[int] = None
+    group_id_token: Optional[IdTokenType] = None
+
+
+class ReserveNowResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: ReserveNowStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class CancelReservationRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    reservation_id: int
+
+
+class CancelReservationResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: CancelReservationStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class ReservationStatusUpdateRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    reservation_id: int
+    reservation_update_status: ReservationUpdateStatusEnumType
+
+
+class ReservationStatusUpdateResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -786,6 +873,13 @@ ACTIONS = (
     # TriggerMessage LogStatusNotification / FirmwareStatusNotification (F06.FR.14 / FR.16)
     "LogStatusNotification",
     "FirmwareStatusNotification",
+    # M6 local authorization list, authorization cache, reservations
+    "SendLocalList",
+    "GetLocalListVersion",
+    "ClearCache",
+    "ReserveNow",
+    "CancelReservation",
+    "ReservationStatusUpdate",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

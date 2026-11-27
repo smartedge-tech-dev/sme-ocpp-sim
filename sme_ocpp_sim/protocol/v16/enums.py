@@ -253,3 +253,36 @@ class ClearChargingProfileStatus(str, Enum):
 class GetCompositeScheduleStatus(str, Enum):
     accepted = "Accepted"
     rejected = "Rejected"
+
+
+# --- Local Auth List Management / Reservation profiles (M6) -----------------------------
+
+
+class UpdateType(str, Enum):
+    differential = "Differential"
+    full = "Full"
+
+
+class UpdateStatus(str, Enum):
+    accepted = "Accepted"
+    failed = "Failed"
+    not_supported = "NotSupported"
+    version_mismatch = "VersionMismatch"
+
+
+class ClearCacheStatus(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class ReservationStatus(str, Enum):
+    accepted = "Accepted"
+    faulted = "Faulted"
+    occupied = "Occupied"
+    rejected = "Rejected"
+    unavailable = "Unavailable"
+
+
+class CancelReservationStatus(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"

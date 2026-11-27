@@ -42,6 +42,11 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 | SetChargingProfile | ChargePointMaxProfile (connector 0 only) / TxDefaultProfile / TxProfile (needs a running transaction) |
 | ClearChargingProfile | Filters `id` / `connectorId` / `chargingProfilePurpose` / `stackLevel` |
 | GetCompositeSchedule | Optional `chargingRateUnit`; same evaluator as the live power limit |
+| SendLocalList | Full / Differential. `listVersion` must be > 0 (else CALLERROR `PropertyConstraintViolation`); a Differential update must raise it (`VersionMismatch`). More entries than `SendLocalListMaxLength`, duplicate tags, a Full entry without `idTagInfo` or more than `LocalAuthListMaxLength` tags → `Failed` (the list is unchanged); `NotSupported` while `LocalAuthListEnabled` is false |
+| GetLocalListVersion | The stored version; 0 before the first list |
+| ClearCache | Clears the Authorization Cache; `Rejected` while `AuthorizationCacheEnabled` is false |
+| ReserveNow | Faulted / Unavailable / Occupied by the connector state, else Accepted; the same `reservationId` replaces a reservation; connector 0 keeps one connector free (`Rejected` while `ReserveConnectorZeroSupported` is false). A reserved connector reports `Reserved` and starts only for the reserved `idTag` or a tag with that parent; the `reservationId` goes with StartTransaction. It ends on expiry, cancel, or when the connector becomes Faulted / Unavailable |
+| CancelReservation | `Accepted` for a known reservation, else `Rejected` |
 
 ## OCPP 2.0.1 { #ocpp-201 }
 
@@ -74,10 +79,10 @@ specification leaves a point open, the notes below give the simulator's interpre
 | NotifyReport | Supported | Answers GetBaseReport in parts (`DeviceDataCtrlr.ItemsPerMessage[GetReport]` entries each, `seqNo` from 0, `tbc` on all but the last) |
 | PublishFirmwareStatusNotification | Not supported |  |
 | ReportChargingProfiles | Supported | Answers GetChargingProfiles: one part per EVSE and `chargingLimitSource`, `tbc` on all but the last |
-| ReservationStatusUpdate | Not supported |  |
+| ReservationStatusUpdate | Supported | `Expired` at `expiryDateTime`, `Removed` when the reserved EVSE (no `evseId`: the station) becomes Faulted / Unavailable |
 | SecurityEventNotification | Not supported |  |
 | SignCertificate | Not supported |  |
-| StatusNotification | Supported | One per EVSE (connector 1), none for EVSE 0. `connectorStatus` Available / Occupied / Unavailable / Faulted; the finer state (charging, suspended) is the `chargingState` of TransactionEvent |
+| StatusNotification | Supported | One per EVSE (connector 1), none for EVSE 0. `connectorStatus` Available / Occupied / Reserved / Unavailable / Faulted; the finer state (charging, suspended) is the `chargingState` of TransactionEvent |
 | TransactionEvent | Supported | `Started` → `Updated` → `Ended`. The station generates the `transactionId` (a UUID); `seqNo` counts from 0 per transaction; periodic `Updated` every `SampledDataCtrlr.TxUpdatedInterval`; `offline: true` for events raised while disconnected |
 
 TransactionEvents and state-change StatusNotifications go through one ordered queue, as in 1.6. A failed
@@ -95,10 +100,10 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 
 | Message | Support | Notes |
 |---|---|---|
-| CancelReservation | Not supported |  |
+| CancelReservation | Supported | `Accepted` for a known reservation (no ReservationStatusUpdate), else `Rejected` |
 | CertificateSigned | Not supported |  |
 | ChangeAvailability | Supported | No `evse` or EVSE 0 sets the station's own availability, kept apart from the EVSEs' (an EVSE `Operative` does not undo a station `Inoperative`). Going Inoperative while a transaction runs (on the EVSE, or on any EVSE for the station) is `Scheduled` until it ends; idle EVSEs follow a station Inoperative at once |
-| ClearCache | Not supported |  |
+| ClearCache | Supported | Clears the Authorization Cache; `Rejected` while `AuthCacheCtrlr.Enabled` is false |
 | ClearChargingProfile | Supported | `chargingProfileId` wins over the criteria, the criteria are ANDed; external constraints are never cleared by the CSMS |
 | ClearDisplayMessage | Not supported |  |
 | ClearVariableMonitoring | Not supported |  |
@@ -111,7 +116,7 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | GetCompositeSchedule | Supported | Same evaluator as the live power limit; periods are capped at the hardware maximum, which also stands for "no limit". Unknown EVSE or duration < 1 → `Rejected`; a `chargingRateUnit` not in `SmartChargingCtrlr.RateUnit` → `Rejected` (`UnsupportedRateUnit`) |
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
-| GetLocalListVersion | Not supported |  |
+| GetLocalListVersion | Supported | The stored version; 0 before the first list or while `LocalAuthListCtrlr.Enabled` is false |
 | GetLog | Not supported |  |
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | Use GetBaseReport |
@@ -121,9 +126,9 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | Supported | `remoteStartId` and an optional `chargingProfile` (a TxProfile without `transactionId`, installed bound to the new transaction). Without `evseId` the first startable EVSE with a plugged cable is used. With `AuthCtrlr.AuthorizeRemoteStart` true the token is authorized like a presented one. A token of type `Central` or `NoAuthorization` is never authorized. A transaction started by it has `triggerReason` `RemoteStart`, also when the cable comes later. A token still waiting for the cable after `TxCtrlr.EVConnectionTimeOut` is dropped |
 | RequestStopTransaction | Supported | `Accepted` for a running transaction of this station (it ends with `RemoteStop`), else `Rejected` |
-| ReserveNow | Not supported |  |
+| ReserveNow | Supported | Faulted / Unavailable / Occupied by the EVSE state, else Accepted; the same `id` replaces a reservation; without `evseId` one EVSE is kept free (`Rejected` while `ReservationCtrlr.NonEvseSpecific` is false); `connectorType` is not modelled; `Rejected` while `ReservationCtrlr.Enabled` is false. A reserved EVSE reports `Reserved` and starts only for the reserved `idToken` or a token of its `groupIdToken`; the `reservationId` goes with the `Started` event |
 | Reset | Supported | `Immediate` / `OnIdle` (`Scheduled` while a transaction runs); the next BootNotification has reason `RemoteReset`. An EVSE reset is `Rejected` |
-| SendLocalList | Not supported |  |
+| SendLocalList | Supported | Full / Differential. `versionNumber` must be > 0 (else CALLERROR `PropertyConstraintViolation`); a Differential update must raise it (`VersionMismatch`). More entries than `LocalAuthListCtrlr.ItemsPerMessage`, duplicate tokens or a Full entry without `idTokenInfo` → `Failed`; `Failed` while `LocalAuthListCtrlr.Enabled` is false |
 | SetChargingProfile | Supported | ChargingStationMaxProfile (EVSE 0 only), TxDefaultProfile, TxProfile; ChargingStationExternalConstraints is `Rejected` from the CSMS (`UnsupportedPurpose`). One `chargingSchedule` only. See [Smart Charging](smart-charging.md#ocpp-201) |
 | SetDisplayMessage | Not supported |  |
 | SetMonitoringBase | Not supported |  |
@@ -142,7 +147,5 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 |---|---|
 | OCPP 2.1 | Planned for v0.3 (greyed out in the UI) |
 | Security profile 3 (TLS client certificates), certificate management, Security Whitepaper messages (SecurityEventNotification, ...) | Planned |
-| Local authorization list (SendLocalList / GetLocalListVersion), authorization cache | Planned (today: the `id_tags` list plus CSMS lookups) |
-| Reservations (ReserveNow / CancelReservation) | Planned |
 | Firmware update, diagnostics / log upload and their status notifications | Planned (CALLERROR `NotImplemented` today) |
 | ISO 15118 / Plug & Charge | Not supported (paid standard) |

@@ -52,7 +52,7 @@ def test_rejected_answers_every_csms_call_with_security_error():
         assert await peer.request(CP, call.GetVariables(get_variable_data=[
             {"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "HeartbeatInterval"}}])) is None
         assert await peer.data_transfer(CP, "acme") is None
-        assert await peer.request(CP, call.ClearCache()) is None
+        assert await peer.request(CP, call.ClearDisplayMessage(id=1)) is None
         await _until(lambda: len(_call_errors(s)) == 3)
         assert [code for _, code in _call_errors(s)] == ["SecurityError"] * 3
     _scenario(body, {"boot_statuses": ["Rejected"], "retry_interval": 60})

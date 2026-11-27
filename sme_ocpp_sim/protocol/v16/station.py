@@ -52,6 +52,48 @@ the supply's phases otherwise (errata 3.34); GetCompositeSchedule periods are ca
 (``max_power_w``, times the connector count for connectorId 0), which also stands for "no limit"; ticks are
 session tasks, so after an offline gap the first step integrates the gap at the limit in force on reconnect.
 
+Local authorization (M6, §3.5, §5.4, §5.10, §5.15, errata 3.52): the station keeps a Local Authorization List
+and an Authorization Cache (``runtime.local_auth``, in memory, kept across reconnects and Resets). A presented
+tag is authorized in this order: ``auth_mode`` ``accept_all`` -> Accepted; the entry of the Local Authorization
+List (LocalAuthListEnabled) or else of the cache (AuthorizationCacheEnabled) is looked up (a list entry has
+priority, §3.5.3; an Accepted list entry whose expiryDate has passed counts as Expired, §3.5.4); ``local_only``:
+``id_tags`` -> Accepted, else the entry's status, else Invalid; ``local_then_csms`` and in ``id_tags`` ->
+Accepted; offline: the entry when LocalAuthorizeOffline, else ``Offline``; online: an Accepted entry when
+LocalPreAuthorize, else Authorize.req (also for an entry that is not Accepted, §3.5.1). Every IdTagInfo received
+(Authorize, StartTransaction, StopTransaction) updates the cache unless the tag is in the Local Authorization
+List (§3.5.1, §3.5.3).
+
+Reservations (M6, §3.11, §5.1, §5.13): ReserveNow answers Faulted / Unavailable / Occupied for a faulted,
+inoperative or occupied (transaction, cable plugged, tag waiting, reserved) connector, Rejected for connector 0
+while ReserveConnectorZeroSupported is false, else Accepted; a reservation with the same id is replaced. A
+reserved connector reports Reserved; it only starts for the reserved idTag or a tag whose parent is the
+reservation's parentIdTag (§5.13 read pairwise, see ``runtime.local_auth``; the parent comes from the
+authorization, the Local Authorization List or the cache, else from an Authorize.req). Any other tag is refused
+(``Reserved``). A connector-0 reservation keeps one connector free: while the free connectors are no more than
+the connector-0 reservations they report Reserved, and a non-matching tag is refused when its start would leave
+fewer free connectors than connector-0 reservations. "Free" = no fault, operative, no transaction, no waiting tag,
+not reserved; a plugged cable does not make a connector unavailable for the reservation (it authorizes nothing),
+but a specific ReserveNow on a plugged connector is Occupied. A matching tag that waits (for the cable, or a
+RemoteStart being authorized) claims the reservation: it stays stored but holds no connector; it ends when the
+transaction starts (the StartTransaction carries its ``reservationId``) and holds its connector again when the
+tag is dropped (failed authorization, Reset, availability change). A reservation ends when it is used, when
+``expiryDate`` is reached (StatusNotification Available), when CancelReservation names it, or when its connector
+(connector 0: the charge point) becomes Faulted or Unavailable. Stopping the charger cancels the expiry timers;
+the next accepted boot re-arms them (an expired reservation then ends at once).
+
+Interpretations (M6, not defined by the spec): SendLocalList while LocalAuthListEnabled is false is answered
+NotSupported; one with more entries than SendLocalListMaxLength, duplicate tags, a Full entry without idTagInfo or
+a result longer than LocalAuthListMaxLength is Failed (the list is unchanged); a Full update may set any version
+> 0, a Differential one must raise it (VersionMismatch). GetLocalListVersion reports the stored version (0 = no
+list received yet); while LocalAuthListEnabled is false it reports 0 (§5.10: 0 = the list is empty, -1 = Local
+Authorization Lists not supported; the profile is supported, a disabled list is used as an empty one, as 2.0.1
+D02.FR.03). ClearCache is Rejected while AuthorizationCacheEnabled is
+false (as 2.0.1 C11.FR.04). ReserveNow with an expiryDate that is not in the future is Rejected. A replacing
+ReserveNow is checked as if the old reservation did not exist; when it is refused, the old one stays. RemoteStartTransaction on a reserved connector compares the request's idTag with the reservation's
+idTag / parentIdTag only (no parent lookup). The expiry timer runs on the wall clock (not scaled, not paused).
+TODO(spec): the LocalListConflict StatusNotification (§3.5.2) and the cache update "upon receipt of a
+ReserveNow.conf" (§5.13, which reads like an Authorize.conf) are not sent / done.
+
 Concurrency invariant: there is no lock around connector state. Every state check and the mutation that depends
 on it run without an ``await`` in between (single-threaded asyncio), so they are atomic.
 """
@@ -70,6 +112,7 @@ from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Option
 from ...charging import power
 from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
+from ...runtime.local_auth import AuthCache, LocalAuthList, Reservation
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
@@ -110,6 +153,18 @@ ATTEMPTS_KEY = "TransactionMessageAttempts"
 RETRY_INTERVAL_KEY = "TransactionMessageRetryInterval"
 STOP_ON_INVALID_KEY = "StopTransactionOnInvalidId"
 AUTHORIZE_REMOTE_KEY = "AuthorizeRemoteTxRequests"
+CACHE_ENABLED_KEY = "AuthorizationCacheEnabled"
+LOCAL_PRE_AUTHORIZE_KEY = "LocalPreAuthorize"
+LOCAL_AUTHORIZE_OFFLINE_KEY = "LocalAuthorizeOffline"
+LIST_ENABLED_KEY = "LocalAuthListEnabled"
+LIST_MAX_KEY = "LocalAuthListMaxLength"
+SEND_LIST_MAX_KEY = "SendLocalListMaxLength"
+RESERVE_ZERO_KEY = "ReserveConnectorZeroSupported"
+
+
+def _reservation_view(r: Reservation) -> Dict[str, Any]:
+    return {"id": r.id, "connector": r.connector, "id_tag": r.id_token, "parent_id_token": r.parent_id_token,
+            "expiry": r.expiry.isoformat()}
 
 
 @dataclass
@@ -128,6 +183,7 @@ class _Tx:
     tx_id: Optional[str] = None    # set once the CSMS answered StartTransaction
     ended: Optional[_Stop] = None  # set when the transaction ended (maybe before tx_id arrived)
     profile: Optional[ChargingProfile] = None  # RemoteStart TxProfile, installed once tx_id is known
+    reservation_id: Optional[int] = None  # the reservation this transaction used (StartTransaction.req)
 
 
 @dataclass
@@ -141,6 +197,7 @@ class _Conn:
     finishing: bool = False
     pending_tag: Optional[str] = None         # authorized, waiting for the cable
     pending_profile: Optional[ChargingProfile] = None  # RemoteStart TxProfile of ``pending_tag``
+    pending_reservation: Optional[int] = None  # reservation used by ``pending_tag``
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0                     # energy register
     pw: Optional[PowerState] = None           # power model state while charging (None otherwise)
@@ -207,6 +264,10 @@ class Station16(VersionStation):
         self.conns: Dict[int, _Conn] = {i: _Conn(i, ConnectorState(i)) for i in range(1, cfg.connectors + 1)}
         #: (vendorId, messageId or None) -> answer for inbound DataTransfer; default UnknownVendorId.
         self.data_transfer_rules: Dict[Tuple[str, Optional[str]], d.DataTransferResult] = {}
+        #: Local Authorization List / Authorization Cache / reservations by id (M6).
+        self.local_list = LocalAuthList(self.store.get_int(LIST_MAX_KEY))
+        self.cache = AuthCache()
+        self.reservations: Dict[int, Reservation] = {}
 
         self._outq: Deque[_OutMsg] = deque()
         self._outq_wake = asyncio.Event()
@@ -231,6 +292,12 @@ class Station16(VersionStation):
             d.SetProfile: self._set_profile,
             d.ClearProfiles: self._clear_profiles,
             d.GetComposite: self._get_composite,
+            d.SendLocalList: self._send_local_list,
+            d.GetLocalListVersion: lambda cmd: (self.local_list.version if self.store.get_bool(LIST_ENABLED_KEY)
+                                                else 0),
+            d.ClearCache: self._clear_cache,
+            d.ReserveNow: self._reserve_now,
+            d.CancelReservation: self._cancel_reservation,
         }
 
     # ================================================================== session (called by the shell)
@@ -256,6 +323,9 @@ class Station16(VersionStation):
         for c in self.conns.values():
             if c.tx is not None and c.tx.tx_id is not None:
                 self._start_meter(c)
+        for r in list(self.reservations.values()):
+            if r.timer is None:  # cancelled by close(): the charger was stopped and started again
+                self._arm(r)
 
     def on_session_ended(self) -> None:
         for c in self.conns.values():
@@ -274,15 +344,18 @@ class Station16(VersionStation):
             if c.tx is not None:
                 tx = {"tx_id": c.tx.tx_id, "id_tag": c.tx.id_tag, "meter_start_wh": c.tx.meter_start_wh,
                       "started_at": c.tx.started_at.isoformat()}
+            r = self._specific(c)
             return {"id": c.id, "status": c.state.status.value, "error_code": c.state.error_code,
                     "plugged": c.plugged, "operative": c.operative, "pending_operative": c.pending_operative,
                     "pending_tag": c.pending_tag, "meter_wh": round(c.meter_wh, 3),
                     "power_w": round(c.pw.power_w, POWER_DECIMALS) if c.pw is not None else 0.0,
                     "soc_pct": round(c.pw.soc_pct, SOC_DECIMALS) if c.pw is not None else None,
-                    "transaction": tx}
+                    "transaction": tx, "reservation": _reservation_view(r) if r is not None else None}
 
         return {
             "tx_queue": sum(1 for m in self._outq if m.transactional),
+            "local_list_version": self.local_list.version,
+            "reservations": [_reservation_view(r) for r in self.reservations.values()],
             "station": {"status": self.cp_state.status.value, "operative": self._station_operative},
             "connectors": [conn(c) for c in self.conns.values()],
         }
@@ -409,6 +482,8 @@ class Station16(VersionStation):
             outcome = self._on_started(msg.conn, msg.tx, value)
             if msg.result is not None and not msg.result.done():
                 msg.result.set_result(outcome)
+        elif msg.kind is _Kind.STOP and msg.tx is not None:
+            self._remember(msg.tx.id_tag, value)  # §3.5.1: StopTransaction.conf idTagInfo
 
     # ================================================================== status
 
@@ -426,6 +501,8 @@ class Station16(VersionStation):
             return S.FINISHING
         if c.plugged or c.pending_tag:
             return S.PREPARING
+        if self._specific(c) is not None or self._held_for_zero(c):
+            return S.RESERVED
         return S.AVAILABLE
 
     def _station_target(self) -> S:
@@ -442,9 +519,20 @@ class Station16(VersionStation):
             return True
 
     def _refresh(self, c: _Conn) -> None:
-        """Move ``c`` to its target state; when online, queue the StatusNotification (never waits)."""
+        """Move ``c`` to its target state; when online, queue the StatusNotification (never waits). With
+        connector-0 reservations the other connectors may change too (Reserved while held for them)."""
+        self._refresh_one(c)
+        if self._general():
+            self._refresh_all(skip=c)
+
+    def _refresh_one(self, c: _Conn) -> None:
         if self._apply(c.state, self._target(c), c.fault) and self.host.online:
             self._queue_status(c.state)
+
+    def _refresh_all(self, skip: Optional[_Conn] = None) -> None:
+        for c in self.conns.values():
+            if c is not skip:
+                self._refresh_one(c)
 
     def _refresh_station(self) -> None:
         if self._apply(self.cp_state, self._station_target()) and self.host.online:
@@ -464,19 +552,223 @@ class Station16(VersionStation):
     # ================================================================== authorization / transactions
 
     async def _authorize(self, tag: str) -> A:
+        return (await self._authorize_info(tag))[0].status
+
+    def _known(self, tag: str) -> Optional[d.IdTokenInfo]:
+        """The tag's Local Authorization List entry (when enabled; priority, §3.5.3), else its cache entry (when
+        enabled). An Accepted list entry past its expiryDate counts as Expired (§3.5.4)."""
+        now = self.host.clock()
+        if self.store.get_bool(LIST_ENABLED_KEY):
+            entry = self.local_list.get(tag)
+            if entry is not None:
+                return replace(entry, status=A.EXPIRED) if entry.accepted and entry.expired(now) else entry
+        if self.store.get_bool(CACHE_ENABLED_KEY):
+            return self.cache.get(tag, now)
+        return None
+
+    def _remember(self, tag: str, info: Optional[d.IdTokenInfo]) -> None:
+        """§3.5.1: a received IdTagInfo updates the cache, except for a tag in the Local Authorization List
+        (§3.5.3)."""
+        if info is not None and self.store.get_bool(CACHE_ENABLED_KEY) and self.local_list.get(tag) is None:
+            self.cache.update(tag, info, self.host.clock())
+
+    async def _authorize_info(self, tag: str) -> Tuple[d.IdTokenInfo, bool]:
+        """Authorize ``tag`` (module docstring): ``(info, asked)``, ``asked`` = the info is a CSMS answer."""
         mode = self.cfg.auth_mode
         if mode == "accept_all":
-            return A.ACCEPTED
+            return d.IdTokenInfo(A.ACCEPTED), False
+        known = self._known(tag)
         local = tag in self.cfg.id_tags
         if mode == "local_only":
-            return A.ACCEPTED if local else A.INVALID
+            if local:
+                return d.IdTokenInfo(A.ACCEPTED), False
+            return (known if known is not None else d.IdTokenInfo(A.INVALID)), False
         if mode == "local_then_csms" and local:
-            return A.ACCEPTED
+            return d.IdTokenInfo(A.ACCEPTED), False
         if not self.host.online:
-            return A.OFFLINE  # TODO(spec): offline authorization (LocalAuthorizeOffline / cache) is not simulated
+            if known is not None and self.store.get_bool(LOCAL_AUTHORIZE_OFFLINE_KEY):
+                return known, False
+            # TODO(spec): AllowOfflineTxForUnknownId (§3.5.4) is not simulated.
+            return d.IdTokenInfo(A.OFFLINE), False
+        if known is not None and known.accepted and self.store.get_bool(LOCAL_PRE_AUTHORIZE_KEY):
+            return known, False
         info: Optional[d.IdTokenInfo] = await self.host.safe(self._adapter.send_authorize(d.AuthorizeRequest(tag)),
                                                          "Authorize")
-        return info.status if info is not None else A.ERROR
+        self._remember(tag, info)
+        return (info if info is not None else d.IdTokenInfo(A.ERROR)), True
+
+    # ================================================================== reservations (M6)
+
+    def _active(self) -> List[Reservation]:
+        """Reservations that hold a connector: not claimed by a waiting tag (``runtime.local_auth``)."""
+        return [r for r in self.reservations.values() if r.claimed_by is None]
+
+    def _specific(self, c: _Conn) -> Optional[Reservation]:
+        return next((r for r in self._active() if r.connector == c.id), None)
+
+    def _general(self) -> List[Reservation]:
+        """Connector-0 reservations."""
+        return [r for r in self._active() if r.connector == 0]
+
+    def _free(self, c: _Conn) -> bool:
+        """``c`` could serve a connector-0 reservation now: no fault, operative, no transaction, no waiting tag,
+        not reserved itself. A plugged cable does not count (it authorizes nothing; module docstring)."""
+        return (not c.fault and c.operative and c.tx is None and c.pending_tag is None
+                and self._specific(c) is None)
+
+    def _held_for_zero(self, c: _Conn) -> bool:
+        """``c`` is free and the free connectors are no more than the connector-0 reservations."""
+        n = len(self._general())
+        return n > 0 and self._free(c) and sum(1 for x in self.conns.values() if self._free(x)) <= n
+
+    def _reservation_for(self, c: _Conn, tag: str, parent: Optional[str]) -> Tuple[bool, Optional[Reservation]]:
+        """May ``tag`` (with ``parent``) start on ``c``; the reservation it uses, if any (§5.13)."""
+        r = self._specific(c)
+        if r is not None:
+            return (True, r) if r.matches(tag, parent) else (False, None)
+        general = self._general()
+        mine = next((x for x in general if x.matches(tag, parent)), None)
+        if mine is not None:
+            return True, mine
+        # §5.13 "one connector remains available": refused only when this start takes the last free connector(s).
+        left = sum(1 for x in self.conns.values() if self._free(x)) - (1 if self._free(c) else 0)
+        return left >= len(general), None
+
+    def _parent_may_help(self, c: _Conn, tag: str) -> bool:
+        """The reservations relevant for ``c`` refuse ``tag`` by itself, but one has a parentIdTag."""
+        r = self._specific(c)
+        return any(x.parent_id_token for x in ([r] if r is not None else self._general()))
+
+    async def _parent_of(self, tag: str, info: d.IdTokenInfo, asked: bool) -> Optional[str]:
+        """The tag's parent: from its authorization, the Local Authorization List or the cache, else from an
+        Authorize.req (§5.13, errata 4.12) unless the CSMS was asked already or may not be asked."""
+        if info.parent_id_token:
+            return info.parent_id_token
+        known = self._known(tag)
+        if known is not None and known.parent_id_token:
+            return known.parent_id_token
+        if asked or not self.host.online or self.cfg.auth_mode in ("accept_all", "local_only"):
+            return None
+        res: Optional[d.IdTokenInfo] = await self.host.safe(self._adapter.send_authorize(d.AuthorizeRequest(tag)),
+                                                        "Authorize")
+        self._remember(tag, res)
+        return res.parent_id_token if res is not None else None
+
+    def _claim(self, c: _Conn, r: Optional[Reservation]) -> None:
+        """The tag waiting on ``c`` claims reservation ``r``; it is consumed when the transaction starts
+        (:meth:`_consume`) and released when the tag is dropped (:meth:`_release`)."""
+        if r is None or self.reservations.get(r.id) is not r:
+            return
+        r.claimed_by, c.pending_reservation = c.id, r.id
+        self._refresh_all(skip=c)  # ``c`` itself is refreshed by the caller
+
+    def _release(self, c: _Conn) -> None:
+        """The waiting tag of ``c`` is dropped: its reservation (if still there) holds its connector again."""
+        rid, c.pending_reservation = c.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is not None and r.claimed_by == c.id:
+            r.claimed_by = None
+
+    def _consume(self, c: _Conn) -> Optional[int]:
+        """The transaction on ``c`` starts: its claimed reservation ends; its id for StartTransaction.req."""
+        rid, c.pending_reservation = c.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is None or r.claimed_by != c.id:
+            return None  # expired / cancelled meanwhile
+        del self.reservations[r.id]
+        r.cancel_timer()
+        return rid
+
+    def _arm(self, r: Reservation) -> None:
+        r.cancel_timer()
+        delay = (r.expiry - self.host.clock()).total_seconds()
+        r.timer = asyncio.get_running_loop().call_later(max(0.0, delay), self._reservation_expired, r)
+
+    def close(self) -> None:
+        """The charger stops: cancel the reservation expiry timers (re-armed by :meth:`on_online`)."""
+        for r in self.reservations.values():
+            r.cancel_timer()
+
+    def _drop_reservation(self, r: Reservation, why: str) -> None:
+        if self.reservations.get(r.id) is not r:
+            return
+        del self.reservations[r.id]
+        r.cancel_timer()
+        log.info("%s: reservation %d %s", self.cfg.id, r.id, why)
+        self._refresh_all()
+
+    def _drop_reservations_of(self, conns: Iterable[_Conn], *, station: bool = False) -> None:
+        """§5.13 (3): the connector (connector 0: the charge point) became Faulted or Unavailable."""
+        ids = {c.id for c in conns} | ({0} if station else set())
+        for r in [r for r in self.reservations.values() if r.connector in ids]:
+            self._drop_reservation(r, "ended: its connector is faulted / unavailable")
+
+    def _reservation_expired(self, r: Reservation) -> None:
+        r.timer = None
+        self._drop_reservation(r, "expired")
+
+    def _reserve_now(self, cmd: d.ReserveNow) -> d.ReservationStatus:
+        RS = d.ReservationStatus
+        if cmd.evse_id == 0 and not self.store.get_bool(RESERVE_ZERO_KEY):
+            return RS.REJECTED
+        if cmd.expiry <= self.host.clock():
+            return RS.REJECTED
+        old = self.reservations.pop(cmd.reservation_id, None)  # checked as if it did not exist
+        status = self._reservation_status(cmd.evse_id)
+        if status is not RS.ACCEPTED:
+            if old is not None:
+                self.reservations[old.id] = old
+            return status
+        if old is not None:
+            old.cancel_timer()
+        r = Reservation(cmd.reservation_id, cmd.evse_id, cmd.id_token, cmd.expiry, cmd.parent_id_token)
+        self._arm(r)
+        self.reservations[r.id] = r
+        self.host.after_reply(self._refresh_all)  # Reserved after the answer
+        return RS.ACCEPTED
+
+    def _reservation_status(self, connector: int) -> d.ReservationStatus:
+        RS = d.ReservationStatus
+        if connector == 0:
+            if sum(1 for c in self.conns.values() if self._free(c)) > len(self._general()):
+                return RS.ACCEPTED
+            if all(c.fault for c in self.conns.values()):
+                return RS.FAULTED
+            if all(not c.operative for c in self.conns.values()):
+                return RS.UNAVAILABLE
+            return RS.OCCUPIED
+        c = self.conns[connector]
+        if c.fault:
+            return RS.FAULTED
+        if not c.operative:
+            return RS.UNAVAILABLE
+        if c.plugged or not self._free(c) or self._held_for_zero(c):
+            return RS.OCCUPIED
+        return RS.ACCEPTED
+
+    def _cancel_reservation(self, cmd: d.CancelReservation) -> d.CommandStatus:
+        r = self.reservations.pop(cmd.reservation_id, None)
+        if r is None:
+            return d.CommandStatus.REJECTED
+        r.cancel_timer()
+        self.host.after_reply(self._refresh_all)  # Available after the answer
+        return d.CommandStatus.ACCEPTED
+
+    # ================================================================== local authorization list / cache (M6)
+
+    def _send_local_list(self, cmd: d.SendLocalList) -> d.LocalListStatus:
+        if not self.store.get_bool(LIST_ENABLED_KEY):
+            return d.LocalListStatus.NOT_SUPPORTED
+        if len(cmd.entries) > self.store.get_int(SEND_LIST_MAX_KEY):
+            return d.LocalListStatus.FAILED
+        self.local_list.max_entries = self.store.get_int(LIST_MAX_KEY)
+        return d.LocalListStatus(self.local_list.update(cmd.version, cmd.full, cmd.entries).value)
+
+    def _clear_cache(self, cmd: d.ClearCache) -> d.CommandStatus:
+        if not self.store.get_bool(CACHE_ENABLED_KEY):
+            return d.CommandStatus.REJECTED
+        self.cache.clear()
+        return d.CommandStatus.ACCEPTED
 
     def _samples(self, c: _Conn, measurands: Iterable[str]) -> List[d.Sample]:
         """Readings of the configured measurands (others are skipped; SoC only while an EV charges).
@@ -556,9 +848,12 @@ class Station16(VersionStation):
                      profile.profile_id, ",".join(map(str, moved)), connector_id)
         return st
 
-    async def _start_tx(self, c: _Conn, tag: str, profile: Optional[ChargingProfile] = None) -> A:
+    async def _start_tx(self, c: _Conn, tag: str, profile: Optional[ChargingProfile] = None,
+                        reservation: Optional[Reservation] = None) -> A:
         """Start a transaction for an authorized ``tag``; the state is re-checked here (an await may lie between
-        authorization and this call). Not plugged = keep the tag and wait for the cable (Accepted).
+        authorization and this call). Not plugged = keep the tag and wait for the cable (Accepted). ``reservation``
+        is the one the tag uses (it ends once the tag holds the connector); a waiting tag keeps its reservationId
+        in ``pending_reservation``.
 
         No await until the StartTransaction item is queued: checks and changes below are atomic."""
         if c.tx is not None:
@@ -567,19 +862,26 @@ class Station16(VersionStation):
             return A.UNAVAILABLE
         c.finishing = False
         if not c.plugged:
+            if c.pending_tag != tag:
+                self._release(c)  # another tag's claim does not carry over
             c.pending_tag, c.pending_profile = tag, profile
+            self._claim(c, reservation)
             self._refresh(c)
             return A.ACCEPTED
-        c.pending_tag, c.pending_profile = None, None
         if not self.host.online:
             # TODO(spec): offline transactions are not simulated in v0.1 (§3.7 p.17 would queue a
             # StartTransaction without transactionId); the start is refused with Offline.
+            self._clear_pending(c)
             self._refresh(c)
             return A.OFFLINE
-        tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self.host.clock(), profile=profile)
+        self._claim(c, reservation)
+        reservation_id = self._consume(c)
+        self._clear_pending(c)
+        tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self.host.clock(), profile=profile,
+                        reservation_id=reservation_id)
         c.last_mono = self.host.monotonic()
         self._refresh(c)  # Preparing
-        ev = d.TxStarted(c.id, tx.id_tag, tx.meter_start_wh, tx.started_at)
+        ev = d.TxStarted(c.id, tx.id_tag, tx.meter_start_wh, tx.started_at, reservation_id=reservation_id)
         result: asyncio.Future = asyncio.get_running_loop().create_future()
         self._outq_push(_OutMsg(_Kind.START, lambda: self._adapter.send_tx_started(ev), c, tx, result))
         # The caller may be cancelled here: the item stays queued and the worker finishes the start.
@@ -590,6 +892,7 @@ class Station16(VersionStation):
         if res is None:  # discarded after TransactionMessageAttempts failures, or dropped
             self._abort_tx(c, tx, finishing=False)
             return A.ERROR
+        self._remember(tx.id_tag, res.id_token_info)  # §3.5.1: StartTransaction.conf idTagInfo
         if c.tx is not tx:
             # unplug / stop / fault / Reset while StartTransaction was in flight: the CSMS now knows the
             # transaction, so its StopTransaction goes out next.
@@ -740,7 +1043,8 @@ class Station16(VersionStation):
             return d.CommandStatus.REJECTED  # TODO(spec): RemoteStart before an accepted boot is rejected
 
         def free(c: _Conn) -> bool:
-            return c.tx is None and c.operative and not c.fault and c.pending_tag is None
+            return (c.tx is None and c.operative and not c.fault and c.pending_tag is None
+                    and self._reservation_for(c, cmd.id_token, None)[0])
 
         if cmd.evse_id is None:
             # TODO(spec): without connectorId the first free connector is used.
@@ -755,13 +1059,14 @@ class Station16(VersionStation):
         # Reserve until the follow-up runs; the profile travels with the tag, so a cable plugged in meanwhile
         # (plug -> _start_tx) starts the transaction with it (§5.16.2).
         c.pending_tag, c.pending_profile = cmd.id_token, cmd.profile
+        self._claim(c, self._reservation_for(c, cmd.id_token, None)[1])  # consumed when the transaction starts
         self.host.after_reply(functools.partial(self._remote_start_go, c, cmd.id_token, cmd.profile))
         return d.CommandStatus.ACCEPTED
 
     async def _remote_start_go(self, c: _Conn, tag: str, profile: Optional[ChargingProfile] = None) -> None:
         if self.store.get_bool(AUTHORIZE_REMOTE_KEY) and await self._authorize(tag) is not A.ACCEPTED:
-            if c.pending_tag == tag:  # still our reservation (the await may have let another start in)
-                c.pending_tag, c.pending_profile = None, None
+            if c.pending_tag == tag:  # still our claim (the await may have let another start in)
+                self._clear_pending(c)
                 self._refresh(c)
             return
         # TODO(spec): ConnectionTimeOut (cable not plugged in time) is not enforced.
@@ -781,7 +1086,7 @@ class Station16(VersionStation):
             reason = R.SOFT_RESET if kind is d.ResetKind.SOFT else R.HARD_RESET
             for c in self.conns.values():
                 self._end_tx(c, reason)
-                c.pending_tag, c.pending_profile = None, None
+                self._clear_pending(c)
             # Let the StopTransactions go out before closing, including one queued by a StartTransaction answer
             # that arrives meanwhile; bounded, a silent CSMS must not block the Reset (anything left stays queued
             # for the next session). Idle is set only when the queue is empty and no answer is being applied.
@@ -842,7 +1147,7 @@ class Station16(VersionStation):
             else:
                 c.operative, c.pending_operative = cmd.operative, None
                 if not cmd.operative:
-                    c.pending_tag, c.pending_profile = None, None
+                    self._clear_pending(c)
                 changed.append(c)
         station = cmd.evse_id == 0
         if station:
@@ -850,6 +1155,10 @@ class Station16(VersionStation):
                 self._station_pending = cmd.operative
             else:
                 self._station_operative, self._station_pending = cmd.operative, None
+        if not cmd.operative:  # §5.13 (3): a reservation ends when its connector becomes Unavailable (after the
+            # answer, like the StatusNotifications)
+            self.host.after_reply(functools.partial(
+                self._drop_reservations_of, [c for c in changed if not c.operative], station=station))
         self.host.after_reply(functools.partial(self._refresh_after_availability, station and not scheduled,
                                             changed))
         return d.AvailabilityStatus.SCHEDULED if scheduled else d.AvailabilityStatus.ACCEPTED
@@ -861,6 +1170,11 @@ class Station16(VersionStation):
             self._refresh(c)
 
     # ================================================================== public API (Web API, M6)
+
+    def _clear_pending(self, c: _Conn) -> None:
+        """Drop the waiting tag; a reservation it claimed holds its connector again (the caller refreshes)."""
+        self._release(c)
+        c.pending_tag, c.pending_profile = None, None
 
     def _conn(self, connector: int) -> _Conn:
         try:
@@ -874,7 +1188,7 @@ class Station16(VersionStation):
             return
         c.plugged = True
         if c.pending_tag and c.operative and not c.fault:
-            await self._start_tx(c, c.pending_tag, c.pending_profile)
+            await self._start_tx(c, c.pending_tag, c.pending_profile)  # with its pending_reservation
         else:
             self._refresh(c)
 
@@ -908,10 +1222,18 @@ class Station16(VersionStation):
             return A.BUSY  # TODO(spec): stopping with a different tag of the same parent id is not simulated
         if c.fault or not c.operative:
             return A.UNAVAILABLE
-        status = await self._authorize(id_tag)
-        if status is not A.ACCEPTED:
-            return status
-        return await self._start_tx(c, id_tag)
+        if not self._reservation_for(c, id_tag, None)[0] and not self._parent_may_help(c, id_tag):
+            return A.RESERVED  # reserved for another tag: refused without asking the CSMS
+        info, asked = await self._authorize_info(id_tag)
+        if info.status is not A.ACCEPTED:
+            return info.status
+        allowed, r = self._reservation_for(c, id_tag, None)
+        if not allowed:
+            parent = await self._parent_of(id_tag, info, asked)
+            allowed, r = self._reservation_for(c, id_tag, parent)  # re-checked after the await
+            if not allowed:
+                return A.RESERVED
+        return await self._start_tx(c, id_tag, reservation=r)
 
     async def stop_tx(self, connector: int) -> bool:
         """Never waits for the CSMS: the StopTransaction is queued before this returns."""
@@ -927,6 +1249,7 @@ class Station16(VersionStation):
         c.fault = error_code
         if c.tx is not None:
             self._end_tx(c, R.OTHER)  # TODO(spec): a fault ends the transaction with reason Other
+        self._drop_reservations_of([c])  # §5.13 (3)
         self._refresh(c)
 
     async def clear_fault(self, connector: int) -> bool:

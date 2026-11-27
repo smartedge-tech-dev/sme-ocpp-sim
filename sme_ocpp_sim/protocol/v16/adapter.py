@@ -3,7 +3,7 @@
 Inbound: every handler parses with :func:`codec.parse` (lenient unless ``strict``), applies the range checks the
 schemas cannot express (connectorId vs connector count), hands one domain command to the runtime and dumps the
 domain result as the 1.6 response. Actions without a handler are answered CALLERROR NotImplemented by the RPC
-layer (UpdateFirmware, GetDiagnostics, Reservation, LocalAuthList, ...).
+layer (UpdateFirmware, GetDiagnostics, ...).
 
 Outbound: ``send_*`` build 1.6 requests from domain events and parse the responses (``kind="response"``).
 Transaction ids are 1.6 integers on the wire and strings in the domain.
@@ -13,8 +13,15 @@ become :class:`protocol.v16.profiles.ChargingProfile` (naive datetimes are taken
 ``chargingRateUnit`` (like any other invalid enum value) is CALLERROR PropertyConstraintViolation (errata 3.24),
 raised by the codec.
 
+Local Auth List Management / Reservation (M6, §3.5, §3.11, §5.1, §5.4, §5.10, §5.13, §5.15, errata 3.52):
+SendLocalList / GetLocalListVersion / ClearCache / ReserveNow / CancelReservation become the domain commands of
+the same name; the station decides every status.
+
 Interpretations (not defined by the spec)
 -----------------------------------------
+- SendLocalList ``listVersion`` < 1 is CALLERROR PropertyConstraintViolation (errata 3.52: it "SHALL NOT be -1 or
+  0"), like the other range checks the schema cannot express. ReserveNow ``connectorId`` outside 0..N is CALLERROR
+  PropertyConstraintViolation.
 - RemoteStartTransaction.chargingProfile must be a TxProfile without transactionId (§5.16.2: it "SHALL NOT be
   set"); anything else is answered Rejected without starting a transaction. The runtime also rejects a profile
   the profile store would refuse (first period not 0, ...).
@@ -72,7 +79,8 @@ def _sampled(samples: Sequence[d.Sample], context: str) -> List[m.SampledValue]:
 
 
 def _id_info(info: m.IdTagInfo) -> d.IdTokenInfo:
-    return d.IdTokenInfo(status=d.AuthResult(info.status.value), expiry=info.expiry_date, parent_id_token=info.parent_id_tag)
+    return d.IdTokenInfo(status=d.AuthResult(info.status.value), expiry=_utc(info.expiry_date),
+                         parent_id_token=info.parent_id_tag)
 
 
 def _meter_values(evse_id: int, tx_id: Optional[str], ts: datetime, samples: Sequence[d.Sample],
@@ -163,6 +171,11 @@ class Adapter16(d.VersionAdapter):
             "SetChargingProfile": self._set_profile,
             "ClearChargingProfile": self._clear_profile,
             "GetCompositeSchedule": self._get_composite,
+            "SendLocalList": self._send_local_list,
+            "GetLocalListVersion": self._get_local_list_version,
+            "ClearCache": self._clear_cache,
+            "ReserveNow": self._reserve_now,
+            "CancelReservation": self._cancel_reservation,
         }
         return {a: functools.partial(h, runtime) for a, h in table.items()}
 
@@ -262,6 +275,39 @@ class Adapter16(d.VersionAdapter):
         return dump(m.GetCompositeScheduleResponse(
             status="Accepted", connector_id=res.evse_id, schedule_start=res.schedule_start,
             charging_schedule=_schedule(res)))
+
+    async def _send_local_list(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("SendLocalList", payload)
+        if req.list_version < 1:
+            raise CallError(OCPP16_ERRORS.property_constraint_violation,
+                            f"listVersion: {req.list_version} must be > 0", {"field": "listVersion"})
+        entries = tuple((x.id_tag, _id_info(x.id_tag_info) if x.id_tag_info is not None else None)
+                        for x in req.local_authorization_list or ())
+        st: d.LocalListStatus = await runtime.handle(
+            d.SendLocalList(req.list_version, req.update_type.value == "Full", entries))
+        return dump(m.SendLocalListResponse(status=st.value))
+
+    async def _get_local_list_version(self, runtime: d.CommandSink, payload: dict) -> dict:
+        self._parse("GetLocalListVersion", payload)
+        version: int = await runtime.handle(d.GetLocalListVersion())
+        return dump(m.GetLocalListVersionResponse(list_version=version))
+
+    async def _clear_cache(self, runtime: d.CommandSink, payload: dict) -> dict:
+        self._parse("ClearCache", payload)
+        st = await runtime.handle(d.ClearCache())
+        return dump(m.ClearCacheResponse(status=_accepted(st)))
+
+    async def _reserve_now(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("ReserveNow", payload)
+        _check_connector(req.connector_id, runtime, allow_zero=True)
+        st: d.ReservationStatus = await runtime.handle(d.ReserveNow(
+            req.reservation_id, req.connector_id, req.id_tag, _utc(req.expiry_date), req.parent_id_tag))
+        return dump(m.ReserveNowResponse(status=st.value))
+
+    async def _cancel_reservation(self, runtime: d.CommandSink, payload: dict) -> dict:
+        req = self._parse("CancelReservation", payload)
+        st = await runtime.handle(d.CancelReservation(req.reservation_id))
+        return dump(m.CancelReservationResponse(status=_accepted(st)))
 
     # ------------------------------------------------------------------ outbound
 

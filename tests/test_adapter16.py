@@ -229,7 +229,8 @@ def test_remote_start_with_invalid_profile_rejected(profile):
 
 def test_unlisted_actions_have_no_handler():
     h = Adapter16().handlers(FakeRuntime())
-    assert "UpdateFirmware" not in h and "GetDiagnostics" not in h and "ReserveNow" not in h
+    assert "UpdateFirmware" not in h and "GetDiagnostics" not in h and "SignCertificate" not in h
+    assert {"SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation"} <= set(h)
 
 
 def test_lenient_and_strict_unknown_fields():
@@ -325,3 +326,55 @@ def test_bad_response_and_unbound():
         _out(lambda a: a.send_heartbeat(d.Heartbeat()), {"Heartbeat": {}})
     with pytest.raises(ConnectionError):
         asyncio.run(Adapter16().send_heartbeat(d.Heartbeat()))
+
+
+# --------------------------------------------------------------------------------------------- M6: local list / reservations
+
+
+def test_send_local_list_full_and_differential():
+    entries = [{"idTag": "T1", "idTagInfo": {"status": "Accepted", "expiryDate": "2026-11-27T00:00:00Z",
+                                             "parentIdTag": "P"}},
+               {"idTag": "T2"}]
+    out, cmds = _call("SendLocalList", {"listVersion": 5, "updateType": "Differential",
+                                        "localAuthorizationList": entries}, d.LocalListStatus.VERSION_MISMATCH)
+    assert out == {"status": "VersionMismatch"}
+    cmd = cmds[0]
+    assert (cmd.version, cmd.full) == (5, False)
+    assert cmd.entries == (("T1", d.IdTokenInfo(d.AuthResult.ACCEPTED, datetime(2026, 11, 27, tzinfo=timezone.utc),
+                                                "P")), ("T2", None))
+    out, cmds = _call("SendLocalList", {"listVersion": 1, "updateType": "Full"}, d.LocalListStatus.NOT_SUPPORTED)
+    assert out == {"status": "NotSupported"} and cmds == [d.SendLocalList(1, True, ())]
+
+
+@pytest.mark.parametrize("version", [0, -1])
+def test_send_local_list_version_must_be_positive(version):
+    """Errata 3.52: listVersion SHALL NOT be -1 or 0."""
+    assert _error("SendLocalList", {"listVersion": version, "updateType": "Full"},
+                  d.LocalListStatus.ACCEPTED) == PCV
+
+
+def test_get_local_list_version_and_clear_cache():
+    out, cmds = _call("GetLocalListVersion", {}, 7)
+    assert out == {"listVersion": 7} and cmds == [d.GetLocalListVersion()]
+    assert _call("ClearCache", {}, A)[0] == {"status": "Accepted"}
+    assert _call("ClearCache", {}, R)[0] == {"status": "Rejected"}
+
+
+@pytest.mark.parametrize("st", list(d.ReservationStatus))
+def test_reserve_now(st):
+    out, cmds = _call("ReserveNow", {"connectorId": 2, "expiryDate": "2026-11-26T01:02:03.456Z", "idTag": "T1",
+                                     "parentIdTag": "P", "reservationId": 9}, st)
+    assert out == {"status": st.value}
+    assert cmds == [d.ReserveNow(9, 2, "T1", TS, "P")]
+
+
+@pytest.mark.parametrize("cid", [3, -1])
+def test_reserve_now_connector_out_of_range(cid):
+    assert _error("ReserveNow", {"connectorId": cid, "expiryDate": "2026-11-26T01:02:03Z", "idTag": "T1",
+                                 "reservationId": 1}, d.ReservationStatus.ACCEPTED) == PCV
+
+
+@pytest.mark.parametrize("st, wire", [(A, "Accepted"), (R, "Rejected")])
+def test_cancel_reservation(st, wire):
+    out, cmds = _call("CancelReservation", {"reservationId": 4}, st)
+    assert out == {"status": wire} and cmds == [d.CancelReservation(4)]
