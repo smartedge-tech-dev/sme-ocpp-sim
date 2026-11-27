@@ -1,0 +1,75 @@
+# SME OCPPSim self-contained demo: two chargers (OCPP 1.6 and 2.0.1) connect to the built-in Mini CSMS of the
+# same process. No external CSMS needed:
+#
+#   sme-ocpp-sim run -c configs/mini-csms-demo.yaml
+#
+# 30 s after each charger's accepted BootNotification the Mini CSMS plan sends a SetChargingProfile
+# (TxDefaultProfile, 3 kW): it shows up in the charger's Smart Charging panel. Open "Mini CSMS" in the
+# Simulation menu to see the connected stations, their transactions and to send any CALL from the JSON editor.
+#
+# Always quote ids, id tags and passwords ("0123", "ON" and "1e5" are not strings in unquoted YAML).
+
+simulation:
+  tick_seconds: 1
+  time_scale: 1
+  running: true
+
+csms_defaults:
+  url: "ws://127.0.0.1:9000/ocpp"
+  ocpp_version: "1.6"
+  security_profile: 0
+  reconnect: { min_s: 1, max_s: 30, jitter: 0.2 }
+
+chargers:
+  - id: "DEMO-16"
+    model: "SIM-AC6"
+    max_power_w: 6000
+    auth_mode: accept_all
+    config_keys:
+      MeterValueSampleInterval: 10
+  - id: "DEMO-201"
+    ocpp_version: "2.0.1"
+    model: "SIM-AC11"
+    max_power_w: 11000
+    phases: 3
+    voltage_v: 200
+    line_to_line: true
+    auth_mode: accept_all
+    meter_sample_interval_s: 10
+
+mini_csms:
+  enabled: true
+  host: "127.0.0.1"      # "0.0.0.0" to accept stations from other hosts (and in Docker)
+  port: 9000
+  versions: ["1.6", "2.0.1"]
+  boot: { status: Accepted, interval: 300 }
+  plan:
+    - at_s: 30
+      after: boot
+      ocpp_version: "1.6"
+      action: SetChargingProfile
+      payload:
+        connectorId: 1
+        csChargingProfiles:
+          chargingProfileId: 1
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            chargingRateUnit: W
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: 3000 }]
+    - at_s: 30
+      after: boot
+      ocpp_version: "2.0.1"
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 1
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            - id: 1
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 3000 }]

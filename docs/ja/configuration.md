@@ -185,3 +185,28 @@ Web UI では、2.0.1 の充電器の **変数（Device Model）** 表にこれ�
 1.6 / 2.0.1 混在の例は [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml) です。
 
 未対応: 充電器テンプレート、2.0.1 の `evses` ツリー（EVSE あたり複数コネクター）、`behaviors`。
+
+
+## mini_csms { #mini_csms }
+
+組み込みの簡易 CSMS です。[Mini CSMS](mini-csms.md) を参照。既定では無効です。
+
+| 項目 | 既定値 | 意味 |
+|---|---|---|
+| `enabled` | `false` | Mini CSMS の WebSocket サーバーを起動する |
+| `host` | `"127.0.0.1"` | 待受アドレス（他ホストや Docker からは `"0.0.0.0"`） |
+| `port` | `9000` | 待受ポート |
+| `versions` | `["1.6", "2.0.1"]` | 受け付ける OCPP バージョン（サブプロトコル交渉） |
+| `boot.status` | `Accepted` | BootNotification の応答: `Accepted`、`Pending`、`Rejected` |
+| `boot.interval` | `300` | Heartbeat 間隔（Accepted）または再試行待ち（Pending / Rejected）、秒 |
+| `auth.basic` | `false` | `true` = Security Profile 1: HTTP Basic 認証を必須にする |
+| `auth.credentials` | `[]` | ステーションごとの `{id, password}`。`basic: true` ではそれ以外の ID・パスワードを拒否（HTTP 401）。Web UI ではマスク表示 |
+| `authorize.default` | `Accepted` | ID タグ / ID トークンに返す認可状態 |
+| `authorize.tags` | `{}` | タグごとの上書き（例 `{"BAD": "Blocked"}`。2.0.1 専用の状態は 1.6 には `Invalid` で返す） |
+| `strict` | `false` | スキーマに合わないペイロードに CALLERROR を返す（既定: 応答して警告を記録） |
+| `call_timeout_s` | `30` | ステーションへ送る CALL のタイムアウト |
+| `frame_log_size` | `5000` | Mini CSMS 専用フレームログの保持数 |
+| `plan` | `[]` | 予定 CALL: `at_s`、`after`（`boot` / `connect`）、`action`、`payload`、任意で `charger`（パターン）と `ocpp_version` |
+
+`enabled`、`host`、`port` を変えると Mini CSMS は再起動します（ステーションは再接続）。その他の変更は即時反映されます
+（計画の変更は次の接続から）。ポートを確保できない場合はイベントログとパネルに表示されます。

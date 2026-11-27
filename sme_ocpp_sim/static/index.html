@@ -251,6 +251,42 @@
   </form>
 </dialog>
 
+<!-- Mini CSMS panel (csms.js): stations connected to the built-in CSMS, their records and a JSON editor for CALLs. -->
+<dialog id="dlgCsms" class="dialog wide sh-dialog">
+  <form method="dialog" class="dlgform">
+    <h3 data-i18n="csms.title">Mini CSMS</h3>
+    <p id="csmsStatus" class="muted"></p>
+    <div class="csms-grid">
+      <div class="csms-list">
+        <table class="tbl">
+          <thead><tr><th data-i18n="csms.col.station">Station</th><th data-i18n="col.version">OCPP</th>
+            <th data-i18n="csms.col.status">Status</th><th data-i18n="csms.col.heartbeat">Heartbeat</th>
+            <th data-i18n="csms.col.active_tx">Tx</th></tr></thead>
+          <tbody id="csmsRows"></tbody>
+        </table>
+        <p id="csmsEmpty" class="empty" data-i18n="csms.empty">No station has connected yet.</p>
+        <h4 data-i18n="csms.rejections">Refused connections</h4>
+        <ul id="csmsRejections" class="plist"></ul>
+      </div>
+      <div id="csmsSelBox" class="csms-sel" hidden>
+        <h4 id="csmsSelTitle"></h4>
+        <div class="csms-editor">
+          <label class="inline"><span data-i18n="csms.editor.action">Action</span> <select id="csmsAction"></select></label>
+          <textarea id="csmsPayload" rows="5" spellcheck="false" data-i18n-placeholder="csms.editor.payload">{}</textarea>
+          <button class="btn small primary" id="csmsSend" type="button" data-i18n="csms.editor.send">Send CALL</button>
+          <pre id="csmsResult" class="json" hidden></pre>
+        </div>
+        <div id="csmsDetail"></div>
+        <h4 data-i18n="csms.sec.frames">Frames</h4>
+        <div class="tablewrap csms-frames"><table class="tbl"><tbody id="csmsFrames"></tbody></table></div>
+      </div>
+    </div>
+    <div class="dlgbtns">
+      <button class="btn primary" value="cancel" data-i18n="common.dlg.close">Close</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Vendor preset (Shell.vendors.smartEdge + vendor.* strings) and common.* strings, then product strings. -->
 <script src="/sme-sim-common/vendor/vendor.js?v=__SME_SIM_COMMON_VERSION__"></script>
 <script src="/sme-sim-common/i18n/common.js?v=__SME_SIM_COMMON_VERSION__"></script>
@@ -258,5 +294,6 @@
 <script src="/static/i18n/ja.js"></script>
 <script src="/static/i18n/zh.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/csms.js"></script>
 </body>
 </html>

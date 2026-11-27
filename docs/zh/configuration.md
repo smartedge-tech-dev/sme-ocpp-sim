@@ -181,3 +181,28 @@ chargers:
 1.6 / 2.0.1 混合站点的示例见 [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml)。
 
 尚不支持：充电桩模板、2.0.1 的 `evses` 树（每个 EVSE 多个 connector）和 `behaviors`。
+
+
+## mini_csms { #mini_csms }
+
+内置简易 CSMS，参见 [Mini CSMS](mini-csms.md)。默认关闭。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `enabled` | `false` | 启动 Mini CSMS WebSocket 服务器 |
+| `host` | `"127.0.0.1"` | 监听地址（供其他主机及 Docker 访问时用 `"0.0.0.0"`） |
+| `port` | `9000` | 监听端口 |
+| `versions` | `["1.6", "2.0.1"]` | 接受的 OCPP 版本（子协议协商） |
+| `boot.status` | `Accepted` | BootNotification 应答：`Accepted`、`Pending` 或 `Rejected` |
+| `boot.interval` | `300` | Heartbeat 间隔（Accepted）或重试间隔（Pending / Rejected），秒 |
+| `auth.basic` | `false` | `true` = Security Profile 1：要求 HTTP Basic 认证 |
+| `auth.credentials` | `[]` | 每个站点的 `{id, password}`；`basic: true` 时其他 ID 或密码被拒绝（HTTP 401）。Web UI 中掩码显示 |
+| `authorize.default` | `Accepted` | 对 ID 标签 / ID 令牌应答的授权状态 |
+| `authorize.tags` | `{}` | 按标签覆盖，例如 `{"BAD": "Blocked"}`（2.0.1 专有状态对 1.6 应答为 `Invalid`） |
+| `strict` | `false` | 对不符合 schema 的载荷返回 CALLERROR（默认：照常应答并记录警告） |
+| `call_timeout_s` | `30` | 发往站点的 CALL 超时 |
+| `frame_log_size` | `5000` | Mini CSMS 自有帧日志保留条数 |
+| `plan` | `[]` | 计划 CALL：`at_s`、`after`（`boot` / `connect`）、`action`、`payload`，可选 `charger`（模式）与 `ocpp_version` |
+
+修改 `enabled`、`host` 或 `port` 会重启 Mini CSMS（站点重连）；其他修改立即生效（计划的修改从下次连接起）。端口无法绑定时会在
+事件日志和面板中提示。

@@ -14,7 +14,8 @@
 // are EVSEs (one connector each), so the panel's selector is labelled EVSE.
 //
 // Global entry points (plan §9, used for screenshots / docs): openChargerDialog(id), openSettingsDialog(id),
-// openProfileDialog(id), openFrameDetail(seq), openAddChargerDialog(); About is Shell.openAbout().
+// openProfileDialog(id), openFrameDetail(seq), openAddChargerDialog(); About is Shell.openAbout(). The Mini CSMS
+// panel lives in csms.js (loaded after this file): openCsmsPanel(stationId).
 
 // ------------------------------------------------------------------ product config (single spot)
 
@@ -993,6 +994,8 @@ Shell.init({
       { separator: true },
       { id: "sim.connect_all", label: "menu.connect_all", onClick: () => api("POST", "/api/chargers/bulk/connect", { all: true }).catch(fail) },
       { id: "sim.disconnect_all", label: "menu.disconnect_all", onClick: () => api("POST", "/api/chargers/bulk/disconnect", { all: true }).catch(fail) },
+      { separator: true },
+      { id: "sim.csms", label: "menu.mini_csms", onClick: () => window.openCsmsPanel() },
     ] },
     { id: "view", label: "common.menu.view", items: [Shell.themeItem(), Shell.langItem()] },
     Shell.helpMenu(),

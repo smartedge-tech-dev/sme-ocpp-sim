@@ -43,6 +43,21 @@ changed blocks kept, values equal to their defaults not written);
   error stops the request with the earlier ones already changed. ``bulk`` is not a valid charger id
   (``config.py``), so the single routes never clash with these.
 
+Mini CSMS (``mini_csms:``, plan M9; station ids are the ids the stations connect with, not the simulator's chargers):
+
+* ``GET /api/csms`` - ``{"enabled", "running", "error", "url", "host", "port", "versions", "basic_auth",
+  "boot_status", "plan_items", "chargers": [summary, ...], "rejections": [...], "frame_seq"}`` (``running`` false
+  and no ``chargers`` while it is disabled or could not bind its port);
+* ``GET /api/csms/chargers/{id}`` - one station: boot info, last status per connector / EVSE, transactions,
+  recent meter values, counts and the last payload per action, payload warnings, sent CALLs and plan state;
+* ``GET /api/csms/transactions`` - the transactions of every station (newest session per station);
+* ``GET /api/csms/actions?version=`` - the CSMS -> CP actions the Mini CSMS can send for a version;
+* ``POST /api/csms/chargers/{id}/call`` - body ``{"action", "payload", "timeout"?}``: checked against the version's
+  schema (400 with the field on a mismatch), then sent; ``{"ok": true, "result", "warning"?}`` or ``{"ok": false,
+  "error": {"code", "description", "details"}}`` for a CALLERROR answer; 409 when the station is not connected,
+  404 for an unknown station, 504 when it does not answer in time, 409 while the Mini CSMS is not running;
+* ``GET /api/csms/frames?since=&charger=&limit=`` - the Mini CSMS's own frame log (direction seen from the CSMS).
+
 Errors: an unknown charger is 404, invalid input or an operation the current state does not allow is 400 (both
 ``sme_sim_common.web.bad``; request validation errors are 400 too instead of FastAPI's 422). A DataTransfer the
 CSMS does not answer in time is 504, one it answers with CALLERROR (or garbage) is 502. A config file that cannot
@@ -580,9 +595,81 @@ def _router(engine: OcppEngine) -> APIRouter:
     return r
 
 
+class CsmsCallBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(min_length=1)
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    timeout: Optional[float] = Field(None, gt=0, le=300)
+
+
+def _csms_router(engine: OcppEngine) -> APIRouter:
+    r = APIRouter(prefix="/api/csms", tags=["mini-csms"])
+
+    def csms():
+        if engine.csms is None:
+            raise bad(409, engine.csms_error or "the Mini CSMS is not running (mini_csms.enabled)")
+        return engine.csms
+
+    def station(cid: str):
+        c = csms()
+        s = c.sessions.get(cid)
+        if s is None:
+            raise bad(404, f"unknown station {cid!r}")
+        return c, s
+
+    @r.get("", summary="Mini CSMS status and connected stations")
+    async def status():
+        cfg = engine.config.mini_csms
+        out = {"enabled": cfg.enabled, "error": engine.csms_error, "host": cfg.host, "port": cfg.port,
+               "running": False, "versions": list(cfg.versions), "basic_auth": cfg.auth.basic,
+               "boot_status": cfg.boot.status, "plan_items": len(cfg.plan), "chargers": [], "rejections": [],
+               "frame_seq": 0}
+        if engine.csms is not None:
+            out.update(engine.csms.snapshot())
+        host = "127.0.0.1" if out["host"] in ("0.0.0.0", "::", "") else out["host"]
+        out["url"] = f"ws://{host}:{out['port']}/ocpp"
+        return out
+
+    @r.get("/chargers/{cid}", summary="One station seen by the Mini CSMS")
+    async def detail(cid: str):
+        return station(cid)[1].detail()
+
+    @r.get("/transactions", summary="Transactions of every station")
+    async def transactions():
+        return {"transactions": csms().transactions()}
+
+    @r.get("/actions", summary="CSMS -> CP actions the Mini CSMS can send")
+    async def actions(version: str = Query(..., description="1.6 or 2.0.1")):
+        try:
+            return {"version": version, "actions": csms().actions(version)}
+        except KeyError:
+            raise bad(400, f"unsupported version {version!r}") from None
+
+    @r.post("/chargers/{cid}/call", summary="Send a CALL to a station (checked against the schema first)")
+    async def call(cid: str, body: CsmsCallBody):
+        c, _ = station(cid)
+        try:
+            return await c.call(cid, body.action, body.payload, timeout=body.timeout)
+        except ValueError as e:
+            raise bad(400, e) from None
+        except ConnectionError as e:
+            raise bad(409, e) from None
+        except TimeoutError:
+            raise bad(504, f"{body.action}: the station did not answer in time") from None
+
+    @r.get("/frames", summary="Mini CSMS frame log entries after since")
+    async def frames(since: int = Query(0, ge=0), charger: Optional[str] = None,
+                     limit: int = Query(500, ge=1, le=MAX_FRAMES)):
+        flog = csms().frame_log
+        rows = flog.since(since, charger=charger or None, limit=limit)
+        return {"frames": [e.to_dict() for e in rows], "last_seq": flog.last_seq}
+
+    return r
+
+
 def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> FastAPI:
     app = make_base_app(engine, config_path=config_path, static_dir=STATIC, title="SME OCPPSim",
-                        version=__version__, config_model=SimConfig, product_routers=[_router(engine)],
+                        version=__version__, config_model=SimConfig, product_routers=[_router(engine), _csms_router(engine)],
                         devices_attr="chargers", device_key="id", key_type=str,
                         duplicate_hook=duplicate_charger, simulation_hook=simulation_hook)
 

@@ -45,6 +45,11 @@ USER sim
 # web UI, or mount your own config, e.g.
 #   docker run -p 8082:8082 -v "$PWD/site.yaml:/app/configs/site.yaml" IMAGE \
 #     sme-ocpp-sim run -c configs/site.yaml --host 0.0.0.0 --no-browser
+#
+# Exception: the built-in Mini CSMS (`mini_csms:` block, off by default) is a WebSocket *server*. To let
+# stations outside the container connect to it, enable it on all interfaces and publish its port, e.g.
+#   docker run -p 8082:8082 -p 9000:9000 IMAGE sme-ocpp-sim run -c configs/mini-csms-demo.yaml #     --host 0.0.0.0 --mini-csms --csms-host 0.0.0.0 --no-browser
 EXPOSE 8082/tcp
+EXPOSE 9000/tcp
 
 CMD ["sme-ocpp-sim", "run", "-c", "configs/demo-site.yaml", "--host", "0.0.0.0", "--http-port", "8082", "--no-browser"]

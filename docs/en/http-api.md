@@ -85,6 +85,22 @@ left out; `last_seq` is the newest sequence number of the whole log (filters ign
 
 The frame log contains OCPP frames only, never HTTP headers or passwords.
 
+## Mini CSMS { #mini-csms }
+
+Routes of the built-in [Mini CSMS](mini-csms.md). Station ids are the ids the stations connected with.
+
+| Method | Path | Meaning |
+|---|---|---|
+| GET | `/api/csms` | Status (`enabled`, `running`, `error`, `url`, `versions`, ...), the stations (`chargers`) and refused connections (`rejections`) |
+| GET | `/api/csms/chargers/{id}` | One station: boot info, last status per connector / EVSE, transactions, recent meter values, counts and last payload per action, warnings, sent CALLs, plan state |
+| GET | `/api/csms/transactions` | Transactions of every station |
+| GET | `/api/csms/actions?version=` | CSMS → CP actions that can be sent for `1.6` / `2.0.1` |
+| POST | `/api/csms/chargers/{id}/call` | Body `{"action", "payload", "timeout"?}`. Checked against the schema (400 naming the field), then sent. Answer `{"ok": true, "result"}` (plus `warning` if the answer does not match its schema) or `{"ok": false, "error": {"code", "description", "details"}}` for a CALLERROR |
+| GET | `/api/csms/frames?since=&charger=&limit=` | The Mini CSMS's own frame log (direction seen from the CSMS) |
+
+Errors: 404 unknown station, 400 schema mismatch, 409 station not connected, 504 no answer in time, 409 while the
+Mini CSMS is not running (except `GET /api/csms`).
+
 ## WebSocket `/ws`
 
 Clients that want live updates connect to `ws://127.0.0.1:8082/ws`:
