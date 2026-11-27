@@ -195,6 +195,11 @@
   <form method="dialog" class="dlgform" id="addForm">
     <h3 data-i18n="add.title">Add charger</h3>
     <div class="row2">
+      <label><span data-i18n="add.template">Charger template</span> <select id="addTemplate"></select></label>
+      <label><span data-i18n="add.count">Number of chargers</span> <input id="addCount" type="number" min="1" max="1000" value="1" required></label>
+    </div>
+    <p class="hint" id="addTemplateInfo"></p>
+    <div class="row2">
       <label><span data-i18n="add.id">Charger ID</span> <input id="addId" required maxlength="48"></label>
       <label><span data-i18n="add.model">Model</span> <input id="addModel" value="SIM-AC6" maxlength="20"></label>
     </div>
@@ -202,7 +207,9 @@
       <label><span data-i18n="add.connectors">Connectors</span> <input id="addConnectors" type="number" min="1" max="8" value="1" required></label>
       <label><span data-i18n="add.max_power">Max power (W)</span> <input id="addPower" type="number" min="1" step="100" value="6000" required></label>
     </div>
+    <label><span data-i18n="add.password">Password (security profile 1 / 2)</span> <input id="addPassword" type="password" autocomplete="new-password"></label>
     <label><span data-i18n="add.id_tags">Local id tags (comma separated)</span> <input id="addTags"></label>
+    <p class="hint" data-i18n="add.count.hint">With more than one charger the ID and the password count up from their last digits (CP-0001, CP-0002 …).</p>
     <div class="err" id="addErr"></div>
     <div class="dlgbtns">
       <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
@@ -210,6 +217,17 @@
     </div>
   </form>
 </dialog>
+
+<dialog id="dlgImport" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform">
+    <h3 id="importTitle"></h3>
+    <ul class="errlist" id="importErrors"></ul>
+    <div class="dlgbtns">
+      <button class="btn primary" value="close" data-i18n="common.dlg.close">Close</button>
+    </div>
+  </form>
+</dialog>
+<input type="file" id="xlsxFile" accept=".xlsx" hidden>
 
 <dialog id="dlgDataTransfer" class="dialog sh-dialog">
   <form method="dialog" class="dlgform" id="dtForm">

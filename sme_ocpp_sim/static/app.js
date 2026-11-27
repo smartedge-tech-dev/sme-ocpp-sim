@@ -805,22 +805,96 @@ async function openFrameDetail(seq) {
   $("dlgFrame").showModal();
 }
 
-function openAddChargerDialog() {
+// Add charger(s): plain defaults or a charger template, one or N at once (POST /api/chargers/bulk/create).
+const ADD = { templates: [] };
+
+function syncAddTemplate() {
+  const tpl = ADD.templates.find((x) => x.name === $("addTemplate").value);
+  for (const id of ["addModel", "addConnectors", "addPower"]) $(id).disabled = !!tpl;
+  $("addTemplateInfo").textContent = tpl ? (tpl.description || tpl.title) : "";
+}
+
+async function openAddChargerDialog() {
   $("addErr").textContent = "";
   let n = S.chargers.size + 1, id;
   do { id = `CP-${String(n++).padStart(4, "0")}`; } while (S.chargers.has(id));
   $("addId").value = id;
+  $("addCount").value = 1;
+  try { ADD.templates = await api("GET", "/api/templates"); } catch (e) { ADD.templates = []; fail(e); }
+  const sel = $("addTemplate"), keep = sel.value;
+  sel.replaceChildren(new Option(t("add.template.none"), ""),
+    ...ADD.templates.map((x) => new Option(`${x.title} (${x.name})`, x.name)));
+  sel.value = ADD.templates.some((x) => x.name === keep) ? keep : "";
+  syncAddTemplate();
   $("dlgAdd").showModal();
 }
 
 async function addCharger() {
   const tags = $("addTags").value.split(",").map((s) => s.trim()).filter(Boolean);
-  const dev = { id: $("addId").value.trim(), model: $("addModel").value.trim() || "SIM-AC6",
-    connectors: Number($("addConnectors").value), max_power_w: Number($("addPower").value) };
-  if (tags.length) dev.id_tags = tags;
-  await api("POST", "/api/devices", dev);
-  Shell.toast(t("add.done", { id: dev.id }), "ok");
-  selectWhenListed(dev.id);
+  const body = { id: $("addId").value.trim(), count: Number($("addCount").value) || 1, fields: {} };
+  if ($("addTemplate").value) body.template = $("addTemplate").value;
+  else Object.assign(body.fields, { model: $("addModel").value.trim() || "SIM-AC6",
+    connectors: Number($("addConnectors").value), max_power_w: Number($("addPower").value) });
+  if ($("addPassword").value) body.password = $("addPassword").value;
+  if (tags.length) body.fields.id_tags = tags;
+  const r = await api("POST", "/api/chargers/bulk/create", body);
+  $("addPassword").value = "";
+  const ids = r.ids || [body.id];
+  Shell.toast(ids.length > 1 ? t("add.done_n", { n: ids.length, first: ids[0], last: ids[ids.length - 1] })
+    : t("add.done", { id: ids[0] }), "ok");
+  selectWhenListed(ids[0]);
+}
+
+// ------------------------------------------------------------------ Excel import / charger templates
+
+function showImportMessages(title, msgs) {
+  $("importTitle").textContent = title;
+  $("importErrors").replaceChildren(...msgs.map((m) => { const li = document.createElement("li"); li.textContent = m; return li; }));
+  $("dlgImport").showModal();
+}
+
+async function importXlsx(file) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  try {
+    const r = await fetch("/api/config/import", { method: "POST", body: form });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const errs = data.errors || [data.error || String(r.status)];
+      showImportMessages(t("xlsx.import.failed", { n: errs.length, file: file.name }), errs);
+      return;
+    }
+    Shell.toast(t("common.config.import_xlsx.ok"), "ok");
+    if ((data.warnings || []).length) showImportMessages(t("xlsx.import.warnings", { n: data.warnings.length }), data.warnings);
+    await loadState();
+  } catch (e) { fail(e); }
+}
+
+async function reloadTemplates() {
+  try {
+    const r = await api("POST", "/api/templates/reload");
+    Shell.toast(t("common.device_templates.reloaded", { n: (r.loaded || []).length, dir: r.dir }), "ok");
+    if ((r.errors || []).length) showImportMessages(t("common.device_templates.errors.title"),
+      r.errors.map((e) => `${e.path}: ${e.error}`));
+  } catch (e) { fail(e); }
+}
+
+async function saveAsTemplate() {
+  if (!S.sel) { Shell.toast(t("templates.select_first"), "info"); return; }
+  const name = (window.prompt(t("common.device_templates.save.prompt"), "") || "").trim();
+  if (!name) return;
+  const url = `/api/templates/from-device/${enc(S.sel)}`;
+  try {
+    let r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    if (r.status === 409 && window.confirm(t("common.device_templates.save.exists", { name }))) {
+      r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, overwrite: true }) });
+    }
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 409) return;
+    if (!r.ok) throw new Error(data.error || String(r.status));
+    Shell.toast(t("common.device_templates.saved", { name, path: data.path || "" }), "ok");
+  } catch (e) { fail(e); }
 }
 
 // A new charger reaches the list with the next push; poll /api/state briefly, then select it (or say so).
@@ -986,6 +1060,15 @@ Shell.init({
       { separator: true },
       { id: "file.save", label: "common.config.save", onClick: saveConfig },
       { id: "file.export", label: "menu.export_frames", href: "/api/frames.jsonl", download: "frames.jsonl" },
+      { separator: true },
+      { id: "file.xlsx_export", label: "common.config.export_xlsx", href: "/api/config/xlsx", download: "sme-ocpp-sim-chargers.xlsx" },
+      { id: "file.xlsx_import", label: "common.config.import_xlsx", onClick: () => $("xlsxFile").click() },
+      { id: "file.xlsx_template", label: "common.config.xlsx_template", href: "/api/config/xlsx-template", download: "sme-ocpp-sim-template.xlsx" },
+      { separator: true },
+      { id: "file.templates", label: "common.device_templates.menu", submenu: [
+        { id: "file.templates.save", label: "common.device_templates.save", title: t("common.device_templates.save.title"), onClick: saveAsTemplate },
+        { id: "file.templates.reload", label: "common.device_templates.reload", onClick: reloadTemplates },
+      ] },
     ] },
     { id: "sim", label: "common.menu.sim", items: [
       { id: "sim.toggle", label: "common.sim.pause", onClick: () => setSim({ running: !S.running }) },
@@ -1052,6 +1135,12 @@ $("extForm").addEventListener("submit", (e) => {
 $("extClear").addEventListener("click", () => setExternalLimit(null));
 bindForm("setForm", "setErr", applySettings);
 bindForm("addForm", "addErr", addCharger);
+$("addTemplate").addEventListener("change", syncAddTemplate);
+$("xlsxFile").addEventListener("change", (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (file) importXlsx(file);
+});
 bindForm("dtForm", "dtErr", sendDataTransfer, true);
 
 // Composite schedule and chart refresh for the selected charger (the "now" line moves even without pushes).

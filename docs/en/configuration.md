@@ -128,6 +128,8 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `session.ev_model` | `compact-40kwh` | The EV plugged into the connectors (preset or `ev_models` id) |
 | `session.initial_soc` | `30.0` | SoC (%) at the start of every transaction |
 | `session.target_soc` | `90.0` | When reached, the EV stops accepting power (SuspendedEV) |
+| `template` | none | Charger template (built-in or user, see [Excel and templates](excel-templates.md)); the template fields this charger does not set come from it |
+| `params` | `{}` | Parameters of a user template with `{param}` placeholders |
 | `meter_sample_interval_s` | key default | Default `MeterValueSampleInterval` when `config_keys` does not set it; for 2.0.1 the initial `SampledDataCtrlr.TxUpdatedInterval` |
 | `variables` | `[]` | OCPP 2.0.1 chargers only: Device Model overrides and user-defined variables (see below) |
 
@@ -191,7 +193,7 @@ In the web UI the **Variables (Device Model)** table of a 2.0.1 charger shows th
 
 A mixed 1.6 / 2.0.1 example is [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml).
 
-Not supported yet: charger templates, the 2.0.1 `evses` tree (several connectors per EVSE) and `behaviors`.
+Not supported yet: the 2.0.1 `evses` tree (several connectors per EVSE) and `behaviors`. Charger templates: see [Excel and templates](excel-templates.md).
 
 
 ## mini_csms { #mini_csms }

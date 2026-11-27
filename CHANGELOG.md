@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Excel import / export of the charger list (#21): File → Export Excel workbook / Import Excel workbook / Download
+  blank Excel template (sheets `chargers`, `config_keys`, `variables`, `ev_models`; passwords exported as
+  `********`). An import is all or nothing, reports errors by sheet, row and column, keeps every other block and
+  restarts only changed chargers. New routes `GET /api/config/xlsx`, `GET /api/config/xlsx-template`,
+  `POST /api/config/import`; new dependency `sme-sim-common[xlsx]` (openpyxl).
+- Charger templates (#21): `template:` / `params:` on a charger take the model defaults (power, voltage, phases,
+  connectors, model ...) from a built-in template (`jp-ac-3kw`, `jp-ac-6kw`, `jp-ac-6kw-dual`, `eu-ac-11kw`,
+  `eu-ac-22kw`) or a user template in `~/.sme-ocpp-sim/templates/` (`SME_OCPP_SIM_TEMPLATES`); the saved config
+  keeps only a charger's own overrides. The Add charger dialog adds N chargers from a template at once (IDs and
+  passwords count up), new route `POST /api/chargers/bulk/create`; `GET /api/templates`,
+  `POST /api/templates/reload` and `POST /api/templates/from-device/{id}` (save a charger as user template).
 - Mini CSMS: a simple built-in OCPP 1.6J / 2.0.1 CSMS (WebSocket server, default port 9000) in the same process,
   with a new web UI panel (Simulation → Mini CSMS). Subprotocol negotiation, Security Profile 0 / 1 (optional
   Basic Auth), configurable BootNotification answer (Accepted / Pending / Rejected + interval) and authorization

@@ -42,6 +42,17 @@ changed blocks kept, values equal to their defaults not written);
   (``ids`` and ``all`` together are rejected). Not atomic: the chargers are handled one after the other and an
   error stops the request with the earlier ones already changed. ``bulk`` is not a valid charger id
   (``config.py``), so the single routes never clash with these.
+* ``POST /api/chargers/bulk/create`` - body ``{"id": "CP001", "count": 10, "template"?, "params"?, "password"?,
+  "fields"?}``: adds ``count`` chargers in one reload (all or none). The ids count up from the trailing digits of
+  ``id`` (:func:`.templates_builtin.next_ids`), a password ending in digits likewise; ``fields`` are further charger
+  fields for every new one. An id that already exists is 409, an invalid result 400.
+
+Excel and charger templates (``sme_sim_common.web.make_base_app`` features ``xlsx`` / ``templates``):
+``GET /api/config/xlsx`` (export, passwords masked), ``GET /api/config/xlsx-template`` (blank workbook),
+``POST /api/config/import`` (multipart ``file``; 400 with ``errors`` = sheet / row / column messages) - workbook
+layout in :mod:`.xlsx_io`; ``GET /api/templates``, ``POST /api/templates/reload``,
+``POST /api/templates/from-device/{id}`` (``{"name"}``: save a charger's template fields as a user template) - see
+:mod:`.templates_builtin`.
 
 Mini CSMS (``mini_csms:``, plan M9; station ids are the ids the stations connect with, not the simulator's chargers):
 
@@ -101,7 +112,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
-from . import __version__
+from . import __version__, templates_builtin, xlsx_io
 from .config import PASSWORD_MASK, CsmsDefaults, SimConfig
 from .engine import OcppEngine, OperationNotPossible
 from .protocol.base import DataTransferStatus
@@ -117,6 +128,7 @@ FAULT_CODES = tuple(dict.fromkeys(code for v in list_versions() if v.available
 #: Literal type of :data:`FAULT_CODES` (an enum in the OpenAPI schema).
 FaultCode = Literal[FAULT_CODES]  # type: ignore[valid-type]
 MAX_FRAMES = 5000
+MAX_BULK_CREATE = 1000
 NDJSON = "application/x-ndjson"
 JSONL_CHUNK = 500  # frame log entries per streamed chunk
 #: What :func:`mask_text` returns for text that is not valid YAML (it cannot be masked reliably).
@@ -168,6 +180,18 @@ class ChargerSettingsBody(BaseModel):
 class BulkBody(BaseModel):
     ids: List[str] = Field(default_factory=list)
     all: bool = False
+
+
+class BulkCreateBody(BaseModel):
+    """``POST /api/chargers/bulk/create``: ``count`` chargers from ``template`` (``None`` = plain defaults)."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, description="First charger id; the others count up from its trailing digits")
+    count: int = Field(1, ge=1, le=MAX_BULK_CREATE)
+    template: Optional[str] = Field(None, min_length=1)
+    params: Dict[str, Any] = Field(default_factory=dict)
+    password: Optional[str] = Field(None, description="Counts up like the id when it ends in digits")
+    #: Other charger fields, the same for every new charger (``csms_url``, ``ocpp_version``, ``id_tags`` ...).
+    fields: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ password masking
@@ -509,6 +533,36 @@ def _router(engine: OcppEngine) -> APIRouter:
         url, version = engine.config.resolve_csms(c)
         return {"id": c.id, **jsonable_encoder(out), "effective": {"csms_url": url, "ocpp_version": version}}
 
+    @r.post("/chargers/bulk/create", summary="Add N chargers from a charger template (reload)")
+    async def bulk_create(body: BulkCreateBody):
+        clash = sorted({"id", "password", "template", "params"} & set(body.fields))
+        if clash:
+            raise bad(400, f"fields: {clash} are request fields of their own")
+        ids = templates_builtin.next_ids(body.id, body.count)
+        taken = sorted(set(ids) & {c.id for c in engine.config.chargers})
+        if taken:
+            raise bad(409, f"charger id(s) already exist: {', '.join(taken[:10])}{' ...' if len(taken) > 10 else ''}")
+        passwords: List[Optional[str]] = [body.password] * body.count
+        if body.password is not None and body.count > 1 and re.search(r"\d$", body.password):
+            passwords = templates_builtin.next_ids(body.password, body.count)
+        new = []
+        for cid, pw in zip(ids, passwords):
+            dev: Dict[str, Any] = {**body.fields, "id": cid}
+            if body.template is not None:
+                dev["template"] = body.template
+            if body.params:
+                dev["params"] = body.params
+            if pw is not None:
+                dev["password"] = pw
+            new.append(dev)
+        data = engine.config.model_dump()
+        data["chargers"] += new
+        await apply(data)
+        what = f"template {body.template}" if body.template else "defaults"
+        engine.log_event("config", f"{len(ids)} charger(s) added from {what}: "
+                                   + (ids[0] if len(ids) == 1 else f"{ids[0]} .. {ids[-1]}"))
+        return {"ok": True, "ids": ids}
+
     @r.get("/csms-defaults", summary="The csms_defaults block")
     async def csms_defaults_get():
         return engine.config.csms_defaults.model_dump(mode="json")
@@ -671,7 +725,8 @@ def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> 
     app = make_base_app(engine, config_path=config_path, static_dir=STATIC, title="SME OCPPSim",
                         version=__version__, config_model=SimConfig, product_routers=[_router(engine), _csms_router(engine)],
                         devices_attr="chargers", device_key="id", key_type=str,
-                        duplicate_hook=duplicate_charger, simulation_hook=simulation_hook)
+                        duplicate_hook=duplicate_charger, simulation_hook=simulation_hook,
+                        xlsx=xlsx_io.SCHEMA, templates=templates_builtin.registry())
 
     async def config_save(request: Request):
         try:

@@ -18,7 +18,8 @@ classifiers = [
 ]
 dependencies = [
   # Web shell, standard routes, config / engine / CLI helpers. 1.x only adds compatible features.
-  "sme-sim-common>=1.1,<2",
+  # [xlsx] = openpyxl for the Excel import / export of the charger list (v0.2 M10).
+  "sme-sim-common[xlsx]>=1.1,<2",
   "fastapi>=0.110",
   "uvicorn[standard]",
   "pydantic>=2",

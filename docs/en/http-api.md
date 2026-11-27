@@ -41,6 +41,20 @@ For an OCPP 2.0.1 charger `/api/chargers/{id}/configuration` returns `{"keys": [
 `null` for a WriteOnly variable), incl. the values the CSMS changed with SetVariables. There is no route to change
 a variable: the CSMS uses SetVariables, and the YAML file sets the start values (`variables:`).
 
+## Excel and templates { #excel-and-templates }
+
+See [Excel import / export and charger templates](excel-templates.md) for the workbook layout and the template rules.
+
+| Method | Path | Meaning |
+|---|---|---|
+| GET | `/api/config/xlsx` | The chargers, config keys, variables and EV models as an Excel workbook (passwords as `********`) |
+| GET | `/api/config/xlsx-template` | A blank workbook with the column headers |
+| POST | `/api/config/import` | Multipart field `file`: apply a workbook (all or nothing). `{"ok": true, "warnings": [...]}`, or `400` with `errors`: one message per problem, naming sheet, row and column |
+| GET | `/api/templates` | Charger templates: `name`, `title`, `description`, `params`, `source` (`builtin` / `user`) |
+| POST | `/api/templates/reload` | Read the user template directory again: `{"dir", "loaded", "errors", "templates"}` |
+| POST | `/api/templates/from-device/{id}` | `{"name", "title"?, "description"?, "overwrite"?}`: save a charger's template fields as a user template (`409` when it exists and `overwrite` is not set) |
+| POST | `/api/chargers/bulk/create` | `{"id": "CP-0001", "count": 10, "template"?, "params"?, "password"?, "fields"?}`: add `count` chargers in one reload; the ID and a password ending in digits count up, `fields` are further charger fields for each (`csms_url`, `ocpp_version`, `id_tags` …). `409` when an ID exists already (nothing is added) |
+
 ## Charger operations
 
 | Method | Path | Body |

@@ -5,8 +5,8 @@ M9) and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
 A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
-``ev_models`` entry). Not in v0.1: ``template`` (TemplateRegistry, v0.2), the ``evses`` tree (2.0.1) and
-``behaviors`` (v0.2).
+``ev_models`` entry). A charger may take its model defaults from a charger template (``template`` / ``params``,
+:mod:`.templates_builtin`). Not supported: the ``evses`` tree (plan Q11: ``connectors: N``) and ``behaviors`` (v0.3).
 
 YAML pitfall: unquoted ``0123``, ``1e5``-like numbers, ``ON`` / ``OFF`` / ``yes`` / ``no`` are not strings in
 YAML 1.1. Identity / text fields therefore only accept real strings and tell the user to quote the value,
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
-from pydantic import AfterValidator, BeforeValidator, Field, field_validator, model_validator
+from pydantic import AfterValidator, BeforeValidator, Field, field_validator, model_serializer, model_validator
 from sme_sim_common.config import StrictModel, atomic_write_text, replace_yaml_block, splice_yaml_block
 from typing_extensions import Annotated
 
@@ -269,6 +269,32 @@ class ChargerConfig(StrictModel):
     variables: List[VariableConfig] = Field(default_factory=list)
     #: Firmware / diagnostics simulation timings and failure injection (M7).
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+    #: Charger template (:mod:`.templates_builtin`): the template fields this charger does not set come from it.
+    template: Optional[Annotated[QuotedStr, Field(min_length=1)]] = None
+    #: Template parameters (``{param}`` placeholders of a user template), overriding the template's defaults.
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_template(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("template") is not None:
+            from .templates_builtin import expand_charger  # lazy: the templates module imports this one
+
+            data = expand_charger(data)
+        return data
+
+    @model_serializer(mode="wrap")
+    def _without_template_values(self, handler):
+        # A dump keeps only the charger's own overrides of its template (module docstring of templates_builtin).
+        out = handler(self)
+        if self.template is None or not isinstance(out, dict):
+            return out
+        from .templates_builtin import template_values
+
+        for k, v in template_values(self.template, self.params).items():
+            if k in out and getattr(self, k) == v:
+                del out[k]
+        return out
 
     @field_validator("id_tags")
     @classmethod
