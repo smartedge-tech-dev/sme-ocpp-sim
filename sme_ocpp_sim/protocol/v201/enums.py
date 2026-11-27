@@ -384,3 +384,31 @@ class ChargingLimitSourceEnumType(str, Enum):
     other = "Other"
     so = "SO"
     cso = "CSO"
+
+
+class UploadLogStatusEnumType(str, Enum):
+    bad_message = "BadMessage"
+    idle = "Idle"
+    not_supported_operation = "NotSupportedOperation"
+    permission_denied = "PermissionDenied"
+    uploaded = "Uploaded"
+    upload_failure = "UploadFailure"
+    uploading = "Uploading"
+    accepted_canceled = "AcceptedCanceled"
+
+
+class FirmwareStatusEnumType(str, Enum):
+    downloaded = "Downloaded"
+    download_failed = "DownloadFailed"
+    downloading = "Downloading"
+    download_scheduled = "DownloadScheduled"
+    download_paused = "DownloadPaused"
+    idle = "Idle"
+    installation_failed = "InstallationFailed"
+    installing = "Installing"
+    installed = "Installed"
+    install_rebooting = "InstallRebooting"
+    install_scheduled = "InstallScheduled"
+    install_verification_failed = "InstallVerificationFailed"
+    invalid_signature = "InvalidSignature"
+    signature_verified = "SignatureVerified"

@@ -77,6 +77,10 @@ Interpretations (not defined by the spec)
   SampledDataCtrlr.TxStartedMeasurands /        MemberList ReadWrite   readings of Started / Updated /
   TxUpdatedMeasurands / TxEndedMeasurands                              Ended; maxLimit (implementer
   (2.7.9 ..)                                                           defined) = length of the full list
+  AlignedDataCtrlr.Measurands (CSV, required)  MemberList ReadWrite   readings of a triggered / operator
+                                                                       MeterValues (F06.FR.06; default as
+                                                                       TxUpdatedMeasurands); no
+                                                                       clock-aligned sampling is modelled
   AuthCtrlr.Enabled (2.3.1)                     boolean    ReadWrite   false: every token is accepted
                                                                        (initial: ``auth_mode`` is not
                                                                        ``accept_all``)
@@ -92,8 +96,9 @@ Interpretations (not defined by the spec)
   AuthCtrlr.DisableRemoteAuthorization (2.3.8)  boolean    ReadWrite   no Authorize is sent: ``id_tags``
                                                                        tokens accepted, others Invalid
                                                                        (initial: ``local_only``)
-  TxCtrlr.EVConnectionTimeOut (2.6.1)           integer s  ReadOnly    fixed: 120 (informative: a waiting
-                                                                       token does not time out)
+  TxCtrlr.EVConnectionTimeOut (2.6.1)           integer s  ReadWrite   120: a token waiting for the cable
+                                                                       is dropped after it (E03 / F02.FR.07;
+                                                                       0 = never)
   TxCtrlr.StopTxOnEVSideDisconnect (2.6.2)      boolean    ReadOnly    fixed: true (unplugging ends the
                                                                        transaction)
   TxCtrlr.TxStartPoint / TxStopPoint            MemberList ReadOnly    ``PowerPathClosed`` (M2 behaviour)
@@ -126,7 +131,9 @@ Interpretations (not defined by the spec)
   .NotifyChargingLimitWithSchedules (2.9.8)                            schedule (default false)
   SmartChargingCtrlr.Entries [ChargingProfiles] integer    ReadOnly    the profiles installed now (no
   (2.9.10)                                                             capacity is modelled: no maxLimit)
-  SmartChargingCtrlr.LimitChangeSignificance    decimal    ReadOnly    fixed: 0 (every change is sent)
+  SmartChargingCtrlr.LimitChangeSignificance    decimal    ReadOnly    fixed: 0 (every change of an
+                                                                       external limit is reported,
+                                                                       K11.FR.04 / K13.FR.03)
   (2.9.11)
   SmartChargingCtrlr.ProfileStackLevel          integer    ReadOnly    100: higher stackLevel -> Rejected
   SmartChargingCtrlr.PeriodsPerSchedule         integer    ReadOnly    1024: more periods -> Rejected
@@ -181,6 +188,7 @@ ATTRIBUTE_ORDER: Tuple[AttributeEnumType, ...] = (AT.actual, AT.target, AT.min_s
 # Standard names (ocpp.v201.enums ControllerComponentName / *VariableName / *InstanceName).
 OCPP_COMM = "OCPPCommCtrlr"
 SAMPLED_DATA = "SampledDataCtrlr"
+ALIGNED_DATA = "AlignedDataCtrlr"
 AUTH = "AuthCtrlr"
 TX = "TxCtrlr"
 SECURITY = "SecurityCtrlr"
@@ -195,6 +203,9 @@ TX_UPDATED_INTERVAL = (SAMPLED_DATA, "TxUpdatedInterval")
 TX_STARTED_MEASURANDS = (SAMPLED_DATA, "TxStartedMeasurands")
 TX_UPDATED_MEASURANDS = (SAMPLED_DATA, "TxUpdatedMeasurands")
 TX_ENDED_MEASURANDS = (SAMPLED_DATA, "TxEndedMeasurands")
+ALIGNED_MEASURANDS = (ALIGNED_DATA, "Measurands")
+EV_CONNECTION_TIMEOUT = (TX, "EVConnectionTimeOut")
+LIMIT_CHANGE_SIGNIFICANCE = (SMART_CHARGING, "LimitChangeSignificance")
 AUTHORIZE_REMOTE_START = (AUTH, "AuthorizeRemoteStart")
 STOP_TX_ON_INVALID_ID = (TX, "StopTxOnInvalidId")
 MESSAGE_ATTEMPTS = (OCPP_COMM, "MessageAttempts")
@@ -235,6 +246,8 @@ MEASURANDS: Tuple[str, ...] = (ENERGY, POWER, CURRENT, VOLTAGE, SOC)
 DEFAULT_TX_STARTED: Tuple[str, ...] = (ENERGY,)
 DEFAULT_TX_UPDATED: Tuple[str, ...] = (ENERGY, POWER)
 DEFAULT_TX_ENDED: Tuple[str, ...] = (ENERGY,)
+DEFAULT_ALIGNED: Tuple[str, ...] = DEFAULT_TX_UPDATED
+DEFAULT_EV_CONNECTION_TIMEOUT_S = 120
 DEFAULT_ITEMS_PER_MESSAGE = 50
 DEFAULT_BYTES_PER_MESSAGE = 65000
 DEFAULT_MESSAGE_ATTEMPTS = 3
@@ -640,13 +653,14 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         var(TX_STARTED_MEASURANDS, DT.member_list, ",".join(started), values_list=meas, max_limit=meas_max),
         var(TX_UPDATED_MEASURANDS, DT.member_list, ",".join(updated), values_list=meas, max_limit=meas_max),
         var(TX_ENDED_MEASURANDS, DT.member_list, ",".join(ended), values_list=meas, max_limit=meas_max),
+        var(ALIGNED_MEASURANDS, DT.member_list, ",".join(DEFAULT_ALIGNED), values_list=meas, max_limit=meas_max),
         var(AUTH_ENABLED, DT.boolean, _b(mode != "accept_all")),
         var(AUTHORIZE_REMOTE_START, DT.boolean, "false"),
         var(LOCAL_PRE_AUTHORIZE, DT.boolean, _b(local_first)),
         var(LOCAL_AUTHORIZE_OFFLINE, DT.boolean, _b(local_first)),
         var(OFFLINE_TX_FOR_UNKNOWN_ID, DT.boolean, _b(mode == "accept_all")),
         var(DISABLE_REMOTE_AUTHORIZATION, DT.boolean, _b(mode == "local_only")),
-        ro((TX, "EVConnectionTimeOut"), DT.integer, "120", unit="s"),
+        var(EV_CONNECTION_TIMEOUT, DT.integer, str(DEFAULT_EV_CONNECTION_TIMEOUT_S), unit="s", min_limit=0),
         ro((TX, "StopTxOnEVSideDisconnect"), DT.boolean, "true"),
         ro((TX, "TxStartPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
         ro((TX, "TxStopPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
@@ -665,7 +679,7 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         var(NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES, DT.boolean, "false"),
         ro((SMART_CHARGING, "Entries"), DT.integer, "0", variable_instance=INSTANCE_CHARGING_PROFILES,
            getter=(lambda: str(profile_count())) if profile_count is not None else None),
-        ro((SMART_CHARGING, "LimitChangeSignificance"), DT.decimal, "0"),
+        ro(LIMIT_CHANGE_SIGNIFICANCE, DT.decimal, "0"),
         var(PROFILE_STACK_LEVEL, DT.integer, str(DEFAULT_PROFILE_STACK_LEVEL), mutability=MU.read_only, min_limit=0),
         var(PERIODS_PER_SCHEDULE, DT.integer, str(DEFAULT_PERIODS_PER_SCHEDULE), mutability=MU.read_only,
             min_limit=1, max_limit=DEFAULT_PERIODS_PER_SCHEDULE),

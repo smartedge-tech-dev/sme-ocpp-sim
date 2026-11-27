@@ -400,4 +400,20 @@ FIXTURES: dict = {
         "min": {},
         "full": {"customData": CUSTOM},
     },
+    ("LogStatusNotification", "request"): {
+        "min": {"status": "Idle"},
+        "full": {"customData": CUSTOM, "status": "Uploading", "requestId": 3},
+    },
+    ("LogStatusNotification", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
+    ("FirmwareStatusNotification", "request"): {
+        "min": {"status": "Idle"},
+        "full": {"customData": CUSTOM, "status": "Installed", "requestId": 4},
+    },
+    ("FirmwareStatusNotification", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
 }

@@ -55,15 +55,15 @@ specification leaves a point open, the notes below give the simulator's interpre
 | Message | Support | Notes |
 |---|---|---|
 | Authorize | Supported | Depends on `auth_mode`; a token presented at the charger is sent with `type` `ISO14443`. Status values the simulator does not model (NoCredit, NotAtThisTime, ...) are shown to the operator as Invalid |
-| BootNotification | Supported | Accepted / Pending / Rejected. `reason` is `PowerUp`, `RemoteReset` after a CSMS Reset, `Triggered` after a TriggerMessage. Until the boot is accepted only BootNotification is sent (CSMS requests are still answered) |
+| BootNotification | Supported | Accepted / Pending / Rejected. `reason` is `PowerUp`, `RemoteReset` after a CSMS Reset, `Triggered` after a TriggerMessage. Until the boot is accepted only BootNotification is sent, except what a TriggerMessage asks for while Pending (B02.FR.02). While Pending, RequestStart/StopTransaction are `Rejected` (B02.FR.05); while Rejected every CSMS request is answered CALLERROR `SecurityError` (B03) |
 | ClearedChargingLimit | Supported | When the external limit is removed (`chargingLimitSource` `EMS`); only while the boot is accepted, see [Smart Charging](smart-charging.md#ocpp-201) |
 | DataTransfer | Supported | Sent manually from the UI or the HTTP API |
-| FirmwareStatusNotification | Not supported |  |
+| FirmwareStatusNotification | Supported | Only on TriggerMessage, status `Idle` (no firmware update is simulated) |
 | Get15118EVCertificate | Not supported | ISO 15118 |
 | GetCertificateStatus | Not supported | ISO 15118 |
 | Heartbeat | Supported | Every `OCPPCommCtrlr.HeartbeatInterval` (also set by an accepted BootNotification) |
-| LogStatusNotification | Not supported |  |
-| MeterValues | Supported | Sent on TriggerMessage (context `Trigger`); transaction readings travel in TransactionEvent |
+| LogStatusNotification | Supported | Only on TriggerMessage, status `Idle` (no log upload is simulated) |
+| MeterValues | Supported | Sent on TriggerMessage (context `Trigger`, measurands from `AlignedDataCtrlr.Measurands`); transaction readings travel in TransactionEvent |
 | NotifyChargingLimit | Supported | When the external limit is set (`chargingLimitSource` `EMS`; with the schedule when `SmartChargingCtrlr.NotifyChargingLimitWithSchedules` is true); only while the boot is accepted, see [Smart Charging](smart-charging.md#ocpp-201) |
 | NotifyCustomerInformation | Not supported |  |
 | NotifyDisplayMessages | Not supported |  |
@@ -89,7 +89,7 @@ In the simulator's interpretation a transaction starts when the cable is plugged
 authorized (`triggerReason` `CablePluggedIn` or `Authorized`, whichever comes last) and ends on the same token
 presented again or an operator stop (`StopAuthorized` / `Local`), an unplugged cable (`EVCommunicationLost`), an
 operator fault (`AbnormalCondition`; the fault code is the `stoppedReason`) or a token the CSMS refuses in a
-TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is true).
+TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is true). With `StopTxOnInvalidId` false the transaction goes on, but the energy transfer stops at once (`Updated` `ChargingStateChanged`, `SuspendedEVSE`).
 
 ### CSMS to charging station
 
@@ -97,7 +97,7 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 |---|---|---|
 | CancelReservation | Not supported |  |
 | CertificateSigned | Not supported |  |
-| ChangeAvailability | Supported | No `evse` or EVSE 0 = every EVSE. Going Inoperative while an addressed EVSE has a transaction is `Scheduled` until it ends |
+| ChangeAvailability | Supported | No `evse` or EVSE 0 sets the station's own availability, kept apart from the EVSEs' (an EVSE `Operative` does not undo a station `Inoperative`). Going Inoperative while a transaction runs (on the EVSE, or on any EVSE for the station) is `Scheduled` until it ends; idle EVSEs follow a station Inoperative at once |
 | ClearCache | Not supported |  |
 | ClearChargingProfile | Supported | `chargingProfileId` wins over the criteria, the criteria are ANDed; external constraints are never cleared by the CSMS |
 | ClearDisplayMessage | Not supported |  |
@@ -108,7 +108,7 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | DeleteCertificate | Not supported |  |
 | GetBaseReport | Supported | ConfigurationInventory (every variable that is not ReadOnly), FullInventory, SummaryInventory; the NotifyReport parts follow the answer |
 | GetChargingProfiles | Supported | `Accepted` when a profile matches, else `NoProfiles`; the ReportChargingProfiles parts follow the answer |
-| GetCompositeSchedule | Supported | Same evaluator as the live power limit; periods are capped at the hardware maximum, which also stands for "no limit". Unknown EVSE or duration < 1 → `Rejected` |
+| GetCompositeSchedule | Supported | Same evaluator as the live power limit; periods are capped at the hardware maximum, which also stands for "no limit". Unknown EVSE or duration < 1 → `Rejected`; a `chargingRateUnit` not in `SmartChargingCtrlr.RateUnit` → `Rejected` (`UnsupportedRateUnit`) |
 | GetDisplayMessages | Not supported |  |
 | GetInstalledCertificateIds | Not supported |  |
 | GetLocalListVersion | Not supported |  |
@@ -119,19 +119,19 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | GetVariables | Supported | Attribute types Actual / Target / MinSet / MaxSet; `UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`; a WriteOnly variable is `Rejected`. More items than `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurrenceConstraintViolation` |
 | InstallCertificate | Not supported |  |
 | PublishFirmware | Not supported |  |
-| RequestStartTransaction | Supported | `remoteStartId` and an optional `chargingProfile` (a TxProfile without `transactionId`, installed bound to the new transaction). Without `evseId` the first startable EVSE with a plugged cable is used. With `AuthCtrlr.AuthorizeRemoteStart` true the token is authorized like a presented one |
+| RequestStartTransaction | Supported | `remoteStartId` and an optional `chargingProfile` (a TxProfile without `transactionId`, installed bound to the new transaction). Without `evseId` the first startable EVSE with a plugged cable is used. With `AuthCtrlr.AuthorizeRemoteStart` true the token is authorized like a presented one. A token of type `Central` or `NoAuthorization` is never authorized. A transaction started by it has `triggerReason` `RemoteStart`, also when the cable comes later. A token still waiting for the cable after `TxCtrlr.EVConnectionTimeOut` is dropped |
 | RequestStopTransaction | Supported | `Accepted` for a running transaction of this station (it ends with `RemoteStop`), else `Rejected` |
 | ReserveNow | Not supported |  |
 | Reset | Supported | `Immediate` / `OnIdle` (`Scheduled` while a transaction runs); the next BootNotification has reason `RemoteReset`. An EVSE reset is `Rejected` |
 | SendLocalList | Not supported |  |
-| SetChargingProfile | Supported | ChargingStationMaxProfile (EVSE 0 only), TxDefaultProfile, TxProfile; ChargingStationExternalConstraints is `Rejected` from the CSMS. See [Smart Charging](smart-charging.md#ocpp-201) |
+| SetChargingProfile | Supported | ChargingStationMaxProfile (EVSE 0 only), TxDefaultProfile, TxProfile; ChargingStationExternalConstraints is `Rejected` from the CSMS (`UnsupportedPurpose`). One `chargingSchedule` only. See [Smart Charging](smart-charging.md#ocpp-201) |
 | SetDisplayMessage | Not supported |  |
 | SetMonitoringBase | Not supported |  |
 | SetMonitoringLevel | Not supported |  |
 | SetNetworkProfile | Not supported |  |
 | SetVariableMonitoring | Not supported |  |
 | SetVariables | Supported | Values are checked (data type, limits, values list); a ReadOnly variable is `Rejected`; `RebootRequired` for variables marked so. Changes apply at once and are not written back to the YAML file |
-| TriggerMessage | Supported | BootNotification (only while the boot is not accepted), Heartbeat, StatusNotification, MeterValues, TransactionEvent; other requested messages answer `NotImplemented`. All but BootNotification are `Rejected` until the boot is accepted; an unknown EVSE is `Rejected` |
+| TriggerMessage | Supported | BootNotification (only while the boot is not accepted), Heartbeat, StatusNotification, MeterValues, TransactionEvent (readings from `TxUpdatedMeasurands`), LogStatusNotification / FirmwareStatusNotification (status `Idle`); other requested messages answer `NotImplemented`. All but BootNotification are `Rejected` before a BootNotification answer and served while Accepted or Pending. Unknown EVSE → `Rejected` |
 | UnlockConnector | Supported | `Unlocked`; `OngoingAuthorizedTransaction` while the EVSE has a transaction (it is not stopped); `UnknownConnector` for an unknown EVSE or a connector other than 1 |
 | UnpublishFirmware | Not supported |  |
 | UpdateFirmware | Not supported |  |

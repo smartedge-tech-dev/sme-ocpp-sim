@@ -23,8 +23,12 @@ TX = "6f1c2d3e-0000-4000-8000-000000000001"
 
 
 def _p(limit, purpose=P.tx_default_profile, pid=1, stack=0, unit=ChargingRateUnit.w, tx=None, periods=None, **kw):
-    sched = ChargingSchedule(1, unit, periods or (SchedulePeriod(0, limit),))
-    return ChargingProfile(pid, stack, purpose, ChargingProfileKind.relative, sched, transaction_id=tx, **kw)
+    # A ChargingStationMaxProfile cannot be Relative (K01.FR.38): Absolute from a day before T0.
+    absolute = purpose is P.charging_station_max_profile
+    sched = ChargingSchedule(1, unit, periods or (SchedulePeriod(0, limit),),
+                             start_schedule=T0 - timedelta(days=1) if absolute else None)
+    kind = ChargingProfileKind.absolute if absolute else ChargingProfileKind.relative
+    return ChargingProfile(pid, stack, purpose, kind, sched, transaction_id=tx, **kw)
 
 
 def _lim(store, evse, txs=None):
@@ -174,11 +178,12 @@ def test_evse_zero_sum_is_unconstrained_when_one_evse_is():
     assert _lim(s, 0) is None and _lim(s, 1) == 1000 and _lim(s, 2) is None
 
 
-def test_only_the_first_schedule_is_evaluated_and_composite_in_amps():
+def test_more_than_one_schedule_is_rejected_and_composite_in_amps():
     s = ProfileStore(1)
     second = (ChargingSchedule(2, ChargingRateUnit.w, (SchedulePeriod(0, 100),)),)
-    s.install(0, _p(16, unit=ChargingRateUnit.a, periods=(SchedulePeriod(0, 16), SchedulePeriod(30, 8)),
-                    other_schedules=second))
+    periods = (SchedulePeriod(0, 16), SchedulePeriod(30, 8))
+    assert s.install(0, _p(16, unit=ChargingRateUnit.a, periods=periods, other_schedules=second)) is NO  # K01.FR.34
+    assert s.install(0, _p(16, unit=ChargingRateUnit.a, periods=periods)) is OK
     cs = composite_schedule(s, 1, T0, 60, ChargingRateUnit.a, number_phases=1, voltage=200)
     assert [(p.start_period, p.limit, p.number_phases) for p in cs.periods] == [(0, 16, 1), (30, 8, 1)]
     assert cs.evse_id == 1 and cs.unit is ChargingRateUnit.a
@@ -227,3 +232,67 @@ def test_web_external_limit_201_and_not_supported_for_16(tmp_path):
         assert client.post("/api/chargers/A/external-limit", json={"limit_w": -1}).status_code == 400
         r = client.post("/api/chargers/B/external-limit", json={"connector": 1, "limit_w": 3000})
         assert r.status_code == 400 and "not supported by OCPP 1.6" in r.text
+
+
+# --------------------------------------------------------------------------------------------- batch B rules (#42)
+
+
+def test_tx_default_on_evse_zero_and_an_evse_with_the_same_stack_level_is_a_duplicate():
+    """K01.FR.52 / FR.53; the same id still replaces (K01.FR.05)."""
+    s = ProfileStore(2)
+    assert s.install(1, _p(1, pid=1)) is OK
+    assert s.reject_reason(0, _p(1, pid=2)) == "DuplicateProfile"  # K01.FR.52
+    assert s.install(0, _p(1, pid=2, stack=1)) is OK
+    assert s.reject_reason(2, _p(1, pid=3, stack=1)) == "DuplicateProfile"  # K01.FR.53
+    assert s.install(2, _p(1, pid=2, stack=1)) is OK  # same id: moves from evseId 0 to EVSE 2
+    assert sorted((ip.evse_id, ip.profile.profile_id) for ip in s.profiles()) == [(1, 1), (2, 2)]
+
+
+def test_evse_and_station_tx_defaults_are_stacked_by_stack_level():
+    """K01.FR.14 / FR.15: with different stackLevels both apply to the EVSE, the higher one prevails."""
+    s = ProfileStore(1)
+    s.install(1, _p(3000, pid=1, stack=0))
+    s.install(0, _p(2000, pid=2, stack=1))
+    assert _lim(s, 1) == 2000
+    s.clear(profile_id=2)
+    assert _lim(s, 1) == 3000
+
+
+def test_tx_profile_conflict_ignores_the_validity_period():
+    """K01.FR.39 (TxProfile: stackLevel + transactionId) vs K01.FR.06 (others: overlapping validity)."""
+    s = ProfileStore(1)
+    assert s.install(1, _p(1, P.tx_profile, pid=1, tx=TX, valid_to=T0), active_transaction=TX) is OK
+    later = _p(1, P.tx_profile, pid=2, tx=TX, valid_from=T0)
+    assert s.reject_reason(1, later, active_transaction=TX) == "DuplicateProfile"
+
+
+def test_station_max_cannot_be_relative():
+    s = ProfileStore(1)
+    relative = replace(_p(1, P.charging_station_max_profile), kind=ChargingProfileKind.relative,
+                       schedule=ChargingSchedule(1, ChargingRateUnit.w, (SchedulePeriod(0, 1),)))
+    assert s.validate(0, relative) is NO  # K01.FR.38
+    assert s.validate(0, _p(1, P.charging_station_max_profile)) is OK
+
+
+def test_start_schedule_presence_follows_the_kind():
+    """K01.FR.40 (Absolute / Recurring need startSchedule), K01.FR.41 (Relative must not have one)."""
+    s = ProfileStore(1)
+    base = _p(1)
+    with_start = replace(base.schedule, start_schedule=T0)
+    assert s.validate(0, replace(base, kind=ChargingProfileKind.absolute)) is NO
+    assert s.validate(0, replace(base, kind=ChargingProfileKind.absolute, schedule=with_start)) is OK
+    assert s.validate(0, replace(base, kind=ChargingProfileKind.recurring, recurrency_kind=RecurrencyKind.daily)) is NO
+    assert s.validate(0, replace(base, kind=ChargingProfileKind.recurring, recurrency_kind=RecurrencyKind.daily,
+                                 schedule=with_start)) is OK
+    assert s.validate(0, replace(base, schedule=with_start)) is NO  # Relative with startSchedule
+
+
+def test_reason_codes():
+    s = ProfileStore(1)
+    ext = _p(1, P.charging_station_external_constraints)
+    assert s.reject_reason(0, ext) == "UnsupportedPurpose"  # errata K01.FR.62
+    assert s.reject_reason(0, _p(1), limits=Limits(units=frozenset({ChargingRateUnit.a}))) == "UnsupportedRateUnit"
+    assert s.reject_reason(1, _p(1, P.tx_profile, tx=TX)) == "TxNotFound"  # K01.FR.09
+    assert s.reject_reason(0, _p(1, P.tx_profile, tx=TX), active_transaction=TX) == "InvalidProfile"  # K01.FR.16
+    assert s.reject_reason(0, _p(1, stack=-1)) == "InvalidProfile"
+    assert s.reject_reason(0, _p(1)) is None

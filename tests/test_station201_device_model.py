@@ -200,13 +200,13 @@ def test_authorize_remote_start():
             _sv("AuthCtrlr", "AuthorizeRemoteStart", "true")]))
         assert _statuses(r.set_variable_result) == ["Accepted"]
         r = await peer.request(CP, call.RequestStartTransaction(
-            id_token={"id_token": "BAD", "type": "Central"}, remote_start_id=1, evse_id=1))
+            id_token={"id_token": "BAD", "type": "ISO14443"}, remote_start_id=1, evse_id=1))
         assert r.status == "Accepted"
         await _until(lambda: len(s.authorizes) == 1)
         await _until(lambda: rt.snapshot()["connectors"][0]["pending_tag"] is None)
         assert not rt.has_transaction(1) and s.transaction_events == []
         r = await peer.request(CP, call.RequestStartTransaction(
-            id_token={"id_token": "OK", "type": "Central"}, remote_start_id=2, evse_id=2))
+            id_token={"id_token": "OK", "type": "ISO14443"}, remote_start_id=2, evse_id=2))
         await _until(lambda: len(s.transaction_events) == 1)
         assert len(s.authorizes) == 2 and s.transaction_events[0]["trigger_reason"] == "RemoteStart"
         assert rt.has_transaction(2)
@@ -218,9 +218,16 @@ def test_stop_tx_on_invalid_id_false_keeps_the_transaction():
         s = await _online(peer, rt)
         await rt.plug(1)
         assert await rt.swipe(1, "BAD") == AuthResult.ACCEPTED
-        await _until(lambda: len(s.transaction_events) == 1)
+        # E05.FR.02: the energy transfer stops at once, the transaction goes on.
+        await _until(lambda: len(s.transaction_events) >= 2)
+        ev = s.transaction_events[1]
+        assert (ev["event_type"], ev["trigger_reason"], ev["transaction_info"]["charging_state"]) == \
+            ("Updated", "ChargingStateChanged", "SuspendedEVSE")
+        assert "evse" not in ev  # E01.FR.16: only in the first event
         await asyncio.sleep(0.3)
-        assert rt.has_transaction(1) and len(s.transaction_events) == 1
+        assert rt.has_transaction(1) and len(s.transaction_events) == 2
+        snap = rt.snapshot()["connectors"][0]
+        assert snap["status"] == "SuspendedEVSE" and snap["power_w"] == 0
     _scenario(body, {"token_statuses": {"BAD": "Invalid"}},
               {"auth_mode": "accept_all", "meter_sample_interval_s": 0,
                "variables": [{"component": "TxCtrlr", "variable": "StopTxOnInvalidId", "value": False}]})
@@ -240,7 +247,7 @@ def test_authorize_remote_start_a_plug_waits_for_the_authorization():
         gate = peer.gates["Authorize"] = asyncio.Event()
         await peer.request(CP, call.SetVariables(set_variable_data=[_sv("AuthCtrlr", "AuthorizeRemoteStart", "true")]))
         r = await peer.request(CP, call.RequestStartTransaction(
-            id_token={"id_token": "BAD", "type": "Central"}, remote_start_id=1, evse_id=1))
+            id_token={"id_token": "BAD", "type": "ISO14443"}, remote_start_id=1, evse_id=1))
         assert r.status == "Accepted"
         await _until(lambda: rt.snapshot()["connectors"][0]["pending_tag"] == "BAD")
         await rt.plug(1)  # while the token is being authorized

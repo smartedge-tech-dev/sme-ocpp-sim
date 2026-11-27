@@ -89,19 +89,22 @@ RequestStartTransaction (installed bound to the transaction it starts).
 
 | Topic | Behaviour (interpretation where the schemas are silent) |
 |---|---|
-| Purposes | ChargingStationMaxProfile (evseId 0 only), TxDefaultProfile, TxProfile (needs the `transactionId` of the EVSE's running transaction), ChargingStationExternalConstraints (never from the CSMS: Rejected) |
+| Purposes | ChargingStationMaxProfile (evseId 0 only, never Relative: K01.FR.38), TxDefaultProfile, TxProfile (evseId > 0, needs the `transactionId` of the EVSE's running transaction: else `TxNotFound`, K01.FR.09), ChargingStationExternalConstraints (never from the CSMS: Rejected with `UnsupportedPurpose`, errata K01.FR.62) |
 | Limit of an EVSE | min(ChargingStationMax, external constraints of evseId 0 and of the EVSE, TxProfile else TxDefaultProfile) |
 | evseId 0 | min(ChargingStationMax, external constraints of evseId 0, sum of the EVSE limits); unconstrained if one EVSE is |
-| Stack level conflict | another profile with the same EVSE, purpose and stackLevel and an overlapping validity period is Rejected (a same-id profile replaces) |
-| `chargingSchedule` array | every schedule is validated and reported; only the first is evaluated (no ISO 15118 EV is simulated) |
+| Stack level conflict | another profile with the same EVSE, purpose and stackLevel and an overlapping validity period (K01.FR.06), a TxProfile with the same stackLevel and `transactionId` whatever its validity (K01.FR.39), or a TxDefaultProfile with the stackLevel of one on evseId 0 / on an EVSE (K01.FR.52 / FR.53) is Rejected with `DuplicateProfile` (a same-id profile replaces) |
+| `chargingSchedule` array | exactly one schedule; more are Rejected (K01.FR.34: only with ISO 15118, which is not simulated). `startSchedule` is required for Absolute / Recurring and forbidden for Relative (K01.FR.40 / FR.41) |
 | ClearChargingProfile | `chargingProfileId` wins over the criteria; the criteria are ANDed; external constraints are never cleared by the CSMS |
-| Device Model | SmartChargingCtrlr ProfileStackLevel (100), PeriodsPerSchedule (1024) and RateUnit (`A,W`) are enforced; ExternalControlSignalsEnabled `false` refuses the external limit; NotifyChargingLimitWithSchedules decides whether NotifyChargingLimit carries the schedule |
+| Device Model | SmartChargingCtrlr ProfileStackLevel (100), PeriodsPerSchedule (1024) and RateUnit (`A,W`; another unit: `UnsupportedRateUnit`, also for GetCompositeSchedule, K08.FR.07) are enforced; ExternalControlSignalsEnabled `false` refuses the external limit; NotifyChargingLimitWithSchedules decides whether NotifyChargingLimit carries the schedule |
 
 **External limit.** `POST /api/chargers/{id}/external-limit` stands in for an energy management system: it
 installs a ChargingStationExternalConstraints profile (stackLevel 0, one period in W, negative profile id) on the
 EVSE or the station and sends NotifyChargingLimit (`chargingLimitSource` `EMS`); removing it sends
 ClearedChargingLimit. Both are sent only while the boot is accepted (a limit set offline applies but is not
 reported later). GetChargingProfiles reports these profiles with source `EMS`, the CSMS ones with `CSO`.
+While a transaction runs, a change of the external limit that changes the rate the EVSE may charge at also
+queues a TransactionEvent `Updated` with `ChargingRateChanged` (K11.FR.04 / K13.FR.03).
+
 OCPP 1.6 has no external limits and answers 400.
 
 In the web UI the Smart Charging panel of a 2.0.1 charger has an **External limit (EMS)** row: pick the whole
@@ -110,6 +113,5 @@ appears in the profile list, and the composite limit in the chart includes it.
 
 ![Smart Charging panel of an OCPP 2.0.1 charger with an external limit](../assets/screenshots/en/smart-charging.png)
 
-The 2.0.1 rules recalled from the specification text (TxProfile needs a `transactionId`, the stack level
-conflict, external constraints not settable by the CSMS) were not verified against the spec document; see the
-module docstrings.
+The 2.0.1 rules are checked against OCPP 2.0.1 Edition 4 (Part 2 K01 / K08 / K10 / K11 / K13, errata
+2026-09); the requirement ids are in the docstrings of `protocol/v201/profiles.py` and `composite.py`.

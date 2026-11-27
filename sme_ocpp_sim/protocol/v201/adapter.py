@@ -121,7 +121,8 @@ def charging_schedule(wire: m.ChargingScheduleType) -> ChargingSchedule:
 
 
 def charging_profile(wire: m.ChargingProfileType) -> ChargingProfile:
-    """The domain profile of a 2.0.1 ``ChargingProfileType`` (the first schedule is the evaluated one)."""
+    """The domain profile of a 2.0.1 ``ChargingProfileType`` (a 2nd / 3rd schedule is kept so that the store
+    can reject it, K01.FR.34)."""
     first, *others = [charging_schedule(s) for s in wire.charging_schedule]
     return ChargingProfile(
         profile_id=wire.id, stack_level=wire.stack_level, purpose=wire.charging_profile_purpose,
@@ -256,6 +257,14 @@ class Adapter201(d.VersionAdapter):
     async def send_cleared_charging_limit(
             self, req: m.ClearedChargingLimitRequest) -> m.ClearedChargingLimitResponse:
         return await self._send("ClearedChargingLimit", req)
+
+    async def send_log_status_notification(
+            self, req: m.LogStatusNotificationRequest) -> m.LogStatusNotificationResponse:
+        return await self._send("LogStatusNotification", req)
+
+    async def send_firmware_status_notification(
+            self, req: m.FirmwareStatusNotificationRequest) -> m.FirmwareStatusNotificationResponse:
+        return await self._send("FirmwareStatusNotification", req)
 
     async def send_data_transfer(self, cmd: d.DataTransfer) -> d.DataTransferResult:
         res: m.DataTransferResponse = await self._send(

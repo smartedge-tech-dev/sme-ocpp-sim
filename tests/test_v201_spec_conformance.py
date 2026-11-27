@@ -150,7 +150,6 @@ REQUIRED = {
     ("OCPPCommCtrlr", "ResetRetries", None, None, None): ("integer", "ReadOnly", None),
     ("OCPPCommCtrlr", "UnlockOnEVSideDisconnect", None, None, None): ("boolean", "ReadOnly", None),
     ("SampledDataCtrlr", "TxEndedInterval", None, None, None): ("integer", "ReadOnly", "s"),
-    ("TxCtrlr", "EVConnectionTimeOut", None, None, None): ("integer", "ReadOnly", "s"),
     ("TxCtrlr", "StopTxOnEVSideDisconnect", None, None, None): ("boolean", "ReadOnly", None),
     ("SecurityCtrlr", "CertificateEntries", None, None, None): ("integer", "ReadOnly", None),
     ("SmartChargingCtrlr", "Entries", "ChargingProfiles", None, None): ("integer", "ReadOnly", None),

@@ -85,13 +85,13 @@ GetChargingProfiles（EVSE と `chargingLimitSource` ごとに 1 通の ReportCh
 
 | 項目 | 動作（スキーマで決まらない部分は本実装の解釈） |
 |---|---|
-| Purpose | ChargingStationMaxProfile（evseId 0 のみ）、TxDefaultProfile、TxProfile（その EVSE の実行中トランザクションの `transactionId` が必要）、ChargingStationExternalConstraints（CSMS からは不可: Rejected） |
+| Purpose | ChargingStationMaxProfile（evseId 0 のみ、Relative 不可: K01.FR.38）、TxDefaultProfile、TxProfile（evseId > 0、その EVSE の実行中トランザクションの `transactionId` が必要。なければ `TxNotFound`、K01.FR.09）、ChargingStationExternalConstraints（CSMS からは不可: `UnsupportedPurpose` で Rejected、errata K01.FR.62） |
 | EVSE の制限値 | min(ChargingStationMax、evseId 0 と当該 EVSE の外部制約、TxProfile なければ TxDefaultProfile) |
 | evseId 0 | min(ChargingStationMax、evseId 0 の外部制約、各 EVSE 制限値の合計)。制限のない EVSE があれば無制限 |
-| stackLevel の衝突 | 同じ EVSE・purpose・stackLevel で有効期間が重なる別プロファイルは Rejected（同じ id は置き換え） |
-| `chargingSchedule` 配列 | すべて検証・報告し、評価するのは先頭のみ（ISO 15118 の EV は模擬しない） |
+| stackLevel の衝突 | 同じ EVSE・purpose・stackLevel で有効期間が重なる別プロファイル（K01.FR.06）、有効期間に関係なく stackLevel と `transactionId` が同じ TxProfile（K01.FR.39）、evseId 0 と個別 EVSE で同じ stackLevel の TxDefaultProfile（K01.FR.52 / FR.53）は `DuplicateProfile` で Rejected（同じ id は置き換え） |
+| `chargingSchedule` 配列 | スケジュールは 1 つだけ。複数は Rejected（K01.FR.34: ISO 15118 の場合のみ。模擬しない）。`startSchedule` は Absolute / Recurring で必須、Relative では不可（K01.FR.40 / FR.41） |
 | ClearChargingProfile | `chargingProfileId` が条件より優先。条件は AND。外部制約は CSMS から削除されない |
-| Device Model | SmartChargingCtrlr ProfileStackLevel（100）、PeriodsPerSchedule（1024）、RateUnit（`A,W`）を適用。ExternalControlSignalsEnabled が `false` なら外部制限値を拒否。NotifyChargingLimitWithSchedules で NotifyChargingLimit にスケジュールを含めるか決定 |
+| Device Model | SmartChargingCtrlr ProfileStackLevel（100）、PeriodsPerSchedule（1024）、RateUnit（`A,W`。それ以外の単位は `UnsupportedRateUnit`、GetCompositeSchedule でも同様、K08.FR.07）を適用。ExternalControlSignalsEnabled が `false` なら外部制限値を拒否。NotifyChargingLimitWithSchedules で NotifyChargingLimit にスケジュールを含めるか決定 |
 
 **外部制限値。** `POST /api/chargers/{id}/external-limit` はエネルギーマネジメントシステムの代わりです。EVSE または
 ステーションに ChargingStationExternalConstraints プロファイル（stackLevel 0、W の 1 期間、負のプロファイル id）を
@@ -100,8 +100,11 @@ GetChargingProfiles（EVSE と `chargingLimitSource` ごとに 1 通の ReportCh
 GetChargingProfiles はこれらを source `EMS`、CSMS のものを `CSO` として報告します。OCPP 1.6 には外部制限値がなく
 400 を返します。
 
-仕様本文の記憶に基づく 2.0.1 のルール（TxProfile には `transactionId` が必要、stackLevel の衝突、CSMS は外部制約を
-設定できない）は仕様書で未検証です。各モジュールの docstring を参照してください。
+トランザクション中に外部制限値の変更で EVSE の充電レートが変わると、TransactionEvent `Updated`（`ChargingRateChanged`）
+も送信キューに入ります（K11.FR.04 / K13.FR.03）。
+
+2.0.1 の規則は OCPP 2.0.1 Edition 4（Part 2 K01 / K08 / K10 / K11 / K13、errata 2026-09）で確認済みです。
+要件 ID は `protocol/v201/profiles.py` と `composite.py` の docstring にあります。
 
 Web UI では、2.0.1 の充電器の Smart Charging パネルに **外部制限値（EMS）** の行があります。ステーション全体（0）
 または EVSE を選び、W 単位の制限値を入力して「設定」、または「解除」を押します。外部制約プロファイルはプロファイル

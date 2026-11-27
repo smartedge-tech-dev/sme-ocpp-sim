@@ -62,6 +62,8 @@ class Session:
     profile_reports: list = field(default_factory=list)    # dict per ReportChargingProfiles
     charging_limits: list = field(default_factory=list)    # dict per NotifyChargingLimit
     cleared_limits: list = field(default_factory=list)     # dict per ClearedChargingLimit
+    log_statuses: list = field(default_factory=list)       # status per LogStatusNotification
+    firmware_statuses: list = field(default_factory=list)  # status per FirmwareStatusNotification
     cs: object = None
 
 
@@ -152,6 +154,16 @@ class PeerCS(OcppCP201):
     async def on_cleared_charging_limit(self, charging_limit_source, **kw):
         self.session.cleared_limits.append({"charging_limit_source": charging_limit_source, **kw})
         return call_result.ClearedChargingLimit()
+
+    @on("LogStatusNotification")
+    async def on_log_status(self, status, **_):
+        self.session.log_statuses.append(status)
+        return call_result.LogStatusNotification()
+
+    @on("FirmwareStatusNotification")
+    async def on_firmware_status(self, status, **_):
+        self.session.firmware_statuses.append(status)
+        return call_result.FirmwareStatusNotification()
 
     @on("DataTransfer")
     async def on_data_transfer(self, vendor_id, **kw):

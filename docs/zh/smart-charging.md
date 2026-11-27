@@ -78,13 +78,13 @@ ReportChargingProfiles，除最后一条外带 `tbc`）、NotifyChargingLimit、
 
 | 项目 | 行为（schema 未规定之处为本实现的解释） |
 |---|---|
-| Purpose | ChargingStationMaxProfile（仅 evseId 0）、TxDefaultProfile、TxProfile（需要该 EVSE 正在进行的交易的 `transactionId`）、ChargingStationExternalConstraints（CSMS 不可设置：Rejected） |
+| Purpose | ChargingStationMaxProfile（仅 evseId 0，不能是 Relative：K01.FR.38）、TxDefaultProfile、TxProfile（evseId > 0，需要该 EVSE 正在进行的交易的 `transactionId`，否则 `TxNotFound`，K01.FR.09）、ChargingStationExternalConstraints（CSMS 不可设置：以 `UnsupportedPurpose` Rejected，errata K01.FR.62） |
 | EVSE 的限值 | min(ChargingStationMax、evseId 0 与该 EVSE 的外部约束、TxProfile 否则 TxDefaultProfile) |
 | evseId 0 | min(ChargingStationMax、evseId 0 的外部约束、各 EVSE 限值之和)；任一 EVSE 无约束则无约束 |
-| stackLevel 冲突 | 相同 EVSE、purpose、stackLevel 且有效期重叠的另一 profile 被 Rejected（相同 id 则替换） |
-| `chargingSchedule` 数组 | 全部校验并上报，只评估第一个（不模拟 ISO 15118 EV） |
+| stackLevel 冲突 | 相同 EVSE、purpose、stackLevel 且有效期重叠的另一 profile（K01.FR.06）、不论有效期 stackLevel 与 `transactionId` 相同的 TxProfile（K01.FR.39）、evseId 0 与单个 EVSE 上 stackLevel 相同的 TxDefaultProfile（K01.FR.52 / FR.53）以 `DuplicateProfile` Rejected（相同 id 则替换） |
+| `chargingSchedule` 数组 | 只能有一个 schedule，多于一个 Rejected（K01.FR.34：仅 ISO 15118 时允许，不模拟）。Absolute / Recurring 必须带 `startSchedule`，Relative 不能带（K01.FR.40 / FR.41） |
 | ClearChargingProfile | `chargingProfileId` 优先于条件；条件为 AND；外部约束不会被 CSMS 清除 |
-| Device Model | 执行 SmartChargingCtrlr ProfileStackLevel（100）、PeriodsPerSchedule（1024）、RateUnit（`A,W`）；ExternalControlSignalsEnabled 为 `false` 时拒绝外部限值；NotifyChargingLimitWithSchedules 决定 NotifyChargingLimit 是否携带 schedule |
+| Device Model | 执行 SmartChargingCtrlr ProfileStackLevel（100）、PeriodsPerSchedule（1024）、RateUnit（`A,W`；其他单位为 `UnsupportedRateUnit`，GetCompositeSchedule 同样，K08.FR.07）；ExternalControlSignalsEnabled 为 `false` 时拒绝外部限值；NotifyChargingLimitWithSchedules 决定 NotifyChargingLimit 是否携带 schedule |
 
 **外部限值。** `POST /api/chargers/{id}/external-limit` 代替能源管理系统：在 EVSE 或整站上安装
 ChargingStationExternalConstraints profile（stackLevel 0、单个 W 时段、负数 profile id），并发送 NotifyChargingLimit
@@ -92,8 +92,11 @@ ChargingStationExternalConstraints profile（stackLevel 0、单个 W 时段、�
 但之后不再补报）。GetChargingProfiles 以 source `EMS` 上报这些 profile，CSMS 设置的以 `CSO` 上报。OCPP 1.6 没有外部限值，
 返回 400。
 
-依据对规格正文的记忆实现的 2.0.1 规则（TxProfile 需要 `transactionId`、stackLevel 冲突、CSMS 不能设置外部约束）尚未对照规格书
-核实；详见各模块的 docstring。
+交易进行中，若外部限值的变更改变了 EVSE 可充电的速率，还会把 TransactionEvent `Updated`（`ChargingRateChanged`）
+放入发送队列（K11.FR.04 / K13.FR.03）。
+
+2.0.1 规则已对照 OCPP 2.0.1 Edition 4（Part 2 K01 / K08 / K10 / K11 / K13，errata 2026-09）核对；
+需求 id 见 `protocol/v201/profiles.py` 与 `composite.py` 的 docstring。
 
 在 Web UI 中，2.0.1 充电桩的 Smart Charging 面板有一行 **外部限值（EMS）**：选择整个充电站（0）或某个 EVSE，
 输入以 W 为单位的限值后点“设置”，或点“解除”。外部约束 profile 随即出现在 profile 列表中，图表中的合成限值也会包含它。

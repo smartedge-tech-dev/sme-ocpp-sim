@@ -5,11 +5,13 @@ A copy of ``protocol/v16/composite.py`` adapted to 2.0.1 (the versions share no 
 each tick and is literally the first period of a one-second composite schedule, so the schedule reported to the
 CSMS and the power actually drawn cannot diverge.
 
-Rules kept from the 1.6 evaluator (the 2.0.1 spec text was not available locally; UNVERIFIED that 2.0.1 states
-them the same way): per purpose the prevailing profile is the valid one with the highest stackLevel, falling back
-to the next lower stackLevel while its schedule is not running; TxProfile overrules TxDefaultProfile for the
-current transaction; Absolute starts at ``startSchedule``, Relative (and Absolute without ``startSchedule``) at the
-transaction start, Recurring restarts every day / week with ``duration`` cut to the recurrence; W = A x phase
+Rules (OCPP 2.0.1 Part 2 K01 / K08): per purpose the prevailing profile is the valid one with the highest
+stackLevel (K01.FR.17), falling back to the next lower stackLevel while its schedule is not running (as 1.6);
+TxProfile overrules TxDefaultProfile for the current transaction; a TxDefaultProfile of evseId 0 applies to every
+EVSE, one of an EVSE to that EVSE only (K01.FR.14 / FR.15; the same stackLevel on both is Rejected, K01.FR.52 /
+FR.53, so they never meet here); Absolute and Recurring start at ``startSchedule`` (always present, K01.FR.40),
+Relative at the transaction start (K01.FR.41), Recurring restarts every day / week with ``duration`` cut to the
+recurrence; the schedule runs from the moment of the request for ``duration`` seconds (K08.FR.04); W = A x phase
 voltage x phases, phases = ``numberPhases`` or 3, capped at the phases the station has.
 
 Interpretations (not defined by the schemas)
@@ -21,26 +23,25 @@ Interpretations (not defined by the schemas)
   without the station-level parts); if any EVSE is unconstrained the sum is unconstrained. Idle EVSEs are
   included, so the value is the most the station *may* draw, not what it draws now. A single EVSE gets the full
   ChargingStationMax value (no sharing between EVSEs is modelled here).
-- An EVSE-specific TxDefaultProfile replaces the evseId-0 one with the same stackLevel for that EVSE only.
-- Relative schedules (and Absolute without startSchedule) with no transaction on the EVSE use the start of the
-  requested window as origin; station-level purposes always use the window start. Hence :func:`limit_at` without
-  a transaction always sees the first period of a Relative schedule.
-- Recurring without ``startSchedule`` is anchored at 00:00 UTC (Daily) or Monday 00:00 UTC (Weekly); the
-  recurrence also extends before ``startSchedule`` (which only fixes the time of day / week).
+- Relative schedules with no transaction on the EVSE use the start of the requested window as origin;
+  station-level purposes always use the window start. Hence :func:`limit_at` without a transaction always sees
+  the first period of a Relative schedule.
+- The recurrence of a Recurring profile also extends before ``startSchedule`` (which only fixes the time of day /
+  week).
 - validFrom is inclusive, validTo is exclusive.
-- ``minChargingRate`` and ``phaseToUse`` do not alter the limit (the EV model does not refuse low rates and does
-  not model which phase is used).
+- ``minChargingRate`` (K01.FR.31: "MAY be used") and ``phaseToUse`` do not alter the limit (the EV model does
+  not refuse low rates and does not model which phase is used).
 - An unconstrained interval is reported as ``limit=None``; the station decides how to encode it. No unit given
   -> W. Limits are returned unrounded except for float noise (6 decimals).
 - Period boundaries falling between whole seconds start at the next whole second (startPeriod is an integer).
-- Only the first ``chargingSchedule`` of a profile is evaluated (see ``profiles``).
+- A profile has exactly one ``chargingSchedule`` (K01.FR.34, see ``profiles``).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, cast
 
 from .profiles import (
@@ -59,10 +60,6 @@ DEFAULT_PHASES = 3  # numberPhases absent -> 3
 EXTERNAL = ChargingProfilePurpose.charging_station_external_constraints
 _ZERO = timedelta(0)
 _RECURRENCE = {RecurrencyKind.daily: timedelta(days=1), RecurrencyKind.weekly: timedelta(weeks=1)}
-_ANCHOR = {
-    RecurrencyKind.daily: datetime(1970, 1, 1, tzinfo=timezone.utc),
-    RecurrencyKind.weekly: datetime(1970, 1, 5, tzinfo=timezone.utc),  # a Monday
-}
 
 _Limit = Tuple[float, int]  # (watts, effective phases)
 
@@ -119,12 +116,7 @@ class _Context:
                 tx = self.transactions.get(evse_id)
                 own = [p for p in own if tx and p.transaction_id in (None, tx.transaction_id)]
             elif purpose is ChargingProfilePurpose.tx_default_profile and evse_id != 0:
-                levels = {p.stack_level for p in own}
-                own += [
-                    ip.profile
-                    for ip in self.store.profiles(0)
-                    if ip.profile.purpose is purpose and ip.profile.stack_level not in levels
-                ]
+                own += [ip.profile for ip in self.store.profiles(0) if ip.profile.purpose is purpose]
             self._cache[key] = sorted(own, key=lambda p: p.stack_level, reverse=True)
         return self._cache[key]
 
@@ -133,15 +125,14 @@ def _origin(profile: ChargingProfile, t: datetime, rel_origin: datetime) -> Tupl
     """Schedule origin in force at ``t`` and the effective schedule duration."""
     sched = profile.schedule
     duration = timedelta(seconds=sched.duration) if sched.duration is not None else None
+    if profile.kind is ChargingProfileKind.relative:
+        return rel_origin, duration
+    start = cast(datetime, sched.start_schedule)  # K01.FR.40: validated by the store
     if profile.kind is ChargingProfileKind.recurring:
-        kind = profile.recurrency_kind or RecurrencyKind.daily
-        period = _RECURRENCE[kind]
-        anchor = sched.start_schedule or _ANCHOR[kind]
-        origin = anchor + ((t - anchor) // period) * period
+        period = _RECURRENCE[cast(RecurrencyKind, profile.recurrency_kind)]  # K01.FR.60
+        origin = start + ((t - start) // period) * period
         return origin, min(duration, period) if duration is not None else period
-    if profile.kind is ChargingProfileKind.absolute and sched.start_schedule is not None:
-        return sched.start_schedule, duration
-    return rel_origin, duration
+    return start, duration
 
 
 def _period_at(profile: ChargingProfile, t: datetime, rel_origin: datetime) -> Optional[SchedulePeriod]:
@@ -214,7 +205,7 @@ def _boundaries(
     offsets = [timedelta(seconds=p.start_period) for p in profile.schedule.periods]
     if profile.kind is ChargingProfileKind.recurring:
         origin, duration = _origin(profile, start, start)
-        recurrence = _RECURRENCE[profile.recurrency_kind or RecurrencyKind.daily]
+        recurrence = _RECURRENCE[cast(RecurrencyKind, profile.recurrency_kind)]
         while origin < end:
             yield from (origin + o for o in offsets if duration is None or o < duration)
             if duration is not None:

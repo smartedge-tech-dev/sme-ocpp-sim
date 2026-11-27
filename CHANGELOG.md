@@ -75,6 +75,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - OCPP 2.0.1 B use cases: SetVariables of SecurityCtrlr.BasicAuthPassword is `Accepted` and the station
   reconnects with the new password (A01; in memory only); GetBaseReport never answers `EmptyResultSet` (B07) but
   `Accepted` with one empty NotifyReport.
+- OCPP 2.0.1 spec conformance, functional rules (Part 2 B / E / F / G / K, #42): while Pending,
+  RequestStart/StopTransaction are `Rejected` (B02.FR.05) and triggered Heartbeat / StatusNotification /
+  MeterValues / TransactionEvent are `Accepted` (B02.FR.02); while Rejected every CSMS CALL is answered
+  CALLERROR `SecurityError` (B03). `StopTxOnInvalidId` false stops the energy transfer (`SuspendedEVSE`,
+  E05.FR.02); `evse` is only in the first TransactionEvent (E01.FR.16). A remote-start token that waits for the
+  cable starts with `RemoteStart` (F02.FR.21); `Central` / `NoAuthorization` tokens are never authorized
+  (F01.FR.02); a waiting token is dropped after `TxCtrlr.EVConnectionTimeOut` (now ReadWrite). Triggered
+  MeterValues use the new `AlignedDataCtrlr.Measurands`, a triggered TransactionEvent `TxUpdatedMeasurands`
+  (F06.FR.06 / FR.07); TriggerMessage LogStatusNotification / FirmwareStatusNotification send status `Idle`
+  (F06.FR.14 / FR.16). The station availability is kept apart from the EVSEs' (G03 / G04). Smart charging: one
+  `chargingSchedule` only (K01.FR.34), ChargingStationMaxProfile never Relative (K01.FR.38), `startSchedule`
+  required for Absolute / Recurring and forbidden for Relative (K01.FR.40 / FR.41), TxProfile conflicts ignore
+  the validity period (K01.FR.39), a TxDefaultProfile with the stackLevel of one on evseId 0 / an EVSE is
+  `DuplicateProfile` (K01.FR.52 / FR.53), Rejected profiles carry `DuplicateProfile` / `UnsupportedPurpose` /
+  `UnsupportedRateUnit` / `TxNotFound`, GetCompositeSchedule rejects a unit outside `RateUnit` (K08.FR.07), and
+  an external limit change during a transaction queues `ChargingRateChanged` (K11.FR.04 / K13.FR.03).
 
 ## [0.1.0] - 2026-11-27
 
