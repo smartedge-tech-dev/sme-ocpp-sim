@@ -112,7 +112,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `serial` | なし | `chargePointSerialNumber`（最大 25 文字） |
 | `firmware` | `"0.1.0"` | `firmwareVersion`（最大 50 文字） |
 | `connectors` | `1` | コネクター数（1〜32）。すべてのコネクターが以下の電源設定と `max_power_w` を共有します。OCPP 2.0.1 では EVSE の数（各 1 コネクター） |
-| `config_keys` | `{}` | OCPP 1.6: 設定キーの初期値（例: `HeartbeatInterval: 300`）。数値と真偽値は引用符なしで書けます。2.0.1 の充電器では使いません（`variables` を参照） |
+| `config_keys` | `{}` | OCPP 1.6: 設定キーの初期値（例: `HeartbeatInterval: 300`）。数値と真偽値は引用符なしで書けます。2.0.1 の充電器では使いません（`variables` を参照）。`AuthorizationKey` はここでは設定できません（`password` を使います）。Security Whitepaper のキー `SecurityProfile`（読取専用、使用中のプロファイル）、`CpoName`（既定は `vendor`）、`CertificateStoreMaxLength`、`AdditionalRootCertificateCheck`（`false`）もあります |
 | `auth_mode` | `local_then_csms` | `local_only`（`id_tags` のみ）、`csms_only`（常に Authorize）、`local_then_csms`（まず `id_tags`、次に Authorize）、`accept_all` |
 | `id_tags` | `[]` | ローカルで受け付ける ID タグ（各最大 20 文字、重複不可） |
 | `boot_retry_s` | `60.0` | CSMS が interval 0 で Pending / Rejected を返したときの Boot 再送間隔 |

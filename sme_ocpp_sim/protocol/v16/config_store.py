@@ -72,15 +72,18 @@ class ConfigStore:
     def get(self, keys: Sequence[str] = ()) -> Tuple[List[ConfigEntry], List[str]]:
         """``(known, unknown)``; empty ``keys`` = every key."""
         if not keys:
-            return [ConfigEntry(k, d.readonly, self._values[k]) for k, d in self._defs.items()], []
+            return [self._entry(k, d) for k, d in self._defs.items()], []
         known, unknown = [], []
         for k in keys:
             d = self._defs.get(k)
             if d is None:
                 unknown.append(k)
             else:
-                known.append(ConfigEntry(k, d.readonly, self._values[k]))
+                known.append(self._entry(k, d))
         return known, unknown
+
+    def _entry(self, key: str, d: ConfigKeyDef) -> ConfigEntry:
+        return ConfigEntry(key, d.readonly, None if d.write_only else self._values[key])
 
     def get_int(self, key: str) -> int:
         self._expect(key, KeyType.INT)
@@ -120,6 +123,14 @@ class ConfigStore:
                 except Exception:  # noqa: BLE001 - the value is already stored; one listener must not undo set()
                     log.exception("configuration listener failed for %s", key)
         return ConfigStatus.REBOOT_REQUIRED if d.reboot_required else ConfigStatus.ACCEPTED
+
+    def put(self, key: str, value: str) -> None:
+        """Store a value the charger derives itself (also for a readonly key; no listener is called)."""
+        d = self._defs[key]
+        norm = normalize(d, value)
+        if norm is None:
+            raise ValueError(f"configuration key {key!r}: {value!r} is not a valid {d.type.value}")
+        self._values[key] = norm
 
     def add_listener(self, cb: Listener) -> None:
         self._listeners.append(cb)

@@ -115,7 +115,7 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `serial` | none | `chargePointSerialNumber` (max. 25) |
 | `firmware` | `"0.1.0"` | `firmwareVersion` (max. 50) |
 | `connectors` | `1` | Number of connectors (1–32); all share the supply settings and `max_power_w` below. OCPP 2.0.1: the number of EVSEs, each with one connector |
-| `config_keys` | `{}` | OCPP 1.6: initial configuration keys, e.g. `HeartbeatInterval: 300`; numbers and booleans may be unquoted. Not used by a 2.0.1 charger (see `variables`) |
+| `config_keys` | `{}` | OCPP 1.6: initial configuration keys, e.g. `HeartbeatInterval: 300`; numbers and booleans may be unquoted. Not used by a 2.0.1 charger (see `variables`). `AuthorizationKey` cannot be set here (it is the `password`); the Security Whitepaper keys `SecurityProfile` (read-only, the profile in use), `CpoName` (default `vendor`), `CertificateStoreMaxLength` and `AdditionalRootCertificateCheck` (`false`) are |
 | `auth_mode` | `local_then_csms` | `local_only` (only `id_tags`), `csms_only` (always Authorize), `local_then_csms` (`id_tags` first, then Authorize), `accept_all` |
 | `id_tags` | `[]` | Locally accepted id tags (max. 20 characters each, no duplicates) |
 | `boot_retry_s` | `60.0` | Boot retry delay when the CSMS answers Pending / Rejected with interval 0 |

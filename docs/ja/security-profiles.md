@@ -27,6 +27,13 @@ chargers:
     ca_file: "certs/test-ca.pem"
 ```
 
+OCPP 1.6（Security Whitepaper 第 4 版、A01）：CSMS は ChangeConfiguration `AuthorizationKey` で Basic 認証パスワードを
+変更できます（16〜40 文字。プロファイル 3 では `Rejected`）。充電器は `Accepted` と応答し、新しいパスワードで再接続して
+ReconfigurationOfSecurityParameters を記録します（パスワードは記録しません）。新しいパスワードはメモリ上のみに保持されます
+（YAML は `password` のまま）。`AuthorizationKey` は書込専用で、GetConfiguration では値なしで返します。`SecurityProfile`
+はここでは読取専用で、使用中のプロファイルを返します。Whitepaper では CSMS が ChangeConfiguration で上げられます（A05）が、
+シミュレーターは実行中にプロファイルを切り替えられません。
+
 プロファイル 3（v0.2 から）：充電器は TLS ハンドシェイクで `client_cert_file`（PEM、チェーン可）と
 `client_key_file`（PEM、暗号化なし）を提示し、`Authorization` ヘッダーは送りません。クライアント証明書を理由に
 CSMS が拒否したハンドシェイクは `client_cert_rejected` と表示されます。証明書は CSMS から更新できます

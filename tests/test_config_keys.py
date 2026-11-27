@@ -131,8 +131,8 @@ def test_listener_exception_does_not_escape_set(caplog):
     assert "listener failed" in caplog.text
 
 
-#: Security Whitepaper keys (M8): the whitepaper is not in the local spec folder, so they are not verified.
-UNVERIFIED_SECURITY_KEYS = {"SecurityProfile", "CpoName", "CertificateStoreMaxLength", "AdditionalRootCertificateCheck"}
+#: Security Whitepaper ed.4 §7.6 has SecurityProfile RW; the simulator serves it R (see config_keys).
+UNVERIFIED_SECURITY_KEYS = {"SecurityProfile"}
 
 
 def test_keys_table_is_a_tuple_and_verified():

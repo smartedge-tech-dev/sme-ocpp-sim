@@ -103,15 +103,22 @@ KEYS: Tuple[ConfigKeyDef, ...] = (
     _k("ChargingScheduleMaxPeriods", _INT, True, "48"),  # §9.4.3 p.107
     _k("ConnectorSwitch3to1PhaseSupported", _BOOL, True, "false"),  # §9.4.4 p.107, errata 4.28
     _k("MaxChargingProfilesInstalled", _INT, True, "10"),  # §9.4.5 p.108
-    # ---- Security Whitepaper (M8). The whitepaper is not in the local spec folder: names from the ``ocpp``
-    # library's 1.6 ConfigurationKey enum, so ``verified=False``. SecurityProfile is RW in the whitepaper; the
-    # simulator cannot switch profiles at run time (the url scheme and credentials come from the YAML), so it is
-    # R here and derived from the connection. CpoName sets the O RDN of a CSR; CertificateStoreMaxLength bounds
-    # InstallCertificate (runtime.security.CERT_MAX); AdditionalRootCertificateCheck is not supported.
+    # ---- Security Whitepaper ed.4 §7 (M8; all optional there). AdditionalRootCertificateCheck is required
+    # unless only profile 1 is implemented and AuthorizationKey unless only profile 3 is (§7.1 / §7.2): both are
+    # served. AdditionalRootCertificateCheck is not supported (always false, §7.1 / M05.FR.08 do not apply).
+    # AuthorizationKey (W, A01) is the Basic Auth password: GetConfiguration lists it without a value, a change
+    # reconnects with it (v16.station); its default is the charger's ``password``. CpoName sets the O RDN of a
+    # CSR (A02.FR.29). CertificateStoreMaxLength bounds InstallCertificate (M05.FR.03, runtime.security.CERT_MAX).
+    # Not served (optional): CertificateSignedMaxChainSize, AllowCentralSystemTLSWildcards,
+    # AllowSecurityProfileDowngrade, CertSigningWaitMinimum, CertSigningRepeatTimes.
+    _k("AdditionalRootCertificateCheck", _BOOL, True, "false"),  # WP ed.4 §7.1
+    _k("AuthorizationKey", KeyType.STR, False, "", write_only=True),  # WP ed.4 §7.2, write-only
+    _k("CertificateStoreMaxLength", _INT, True, "20"),  # WP ed.4 §7.4
+    _k("CpoName", KeyType.STR, False, ""),  # WP ed.4 §7.5
+    # WP ed.4 §7.6 has SecurityProfile RW (A05: ChangeConfiguration upgrades the profile and reconnects). The
+    # simulator cannot switch profiles at run time (url scheme, certificates and password come from the YAML), so
+    # it serves the key R, derived from the connection: a deliberate deviation, hence ``verified=False``.
     ConfigKeyDef("SecurityProfile", _INT, True, "0"),
-    ConfigKeyDef("CpoName", KeyType.STR, False, ""),
-    ConfigKeyDef("CertificateStoreMaxLength", _INT, True, "20"),
-    ConfigKeyDef("AdditionalRootCertificateCheck", _BOOL, True, "false"),
 )
 
 KEYS_BY_NAME: Dict[str, ConfigKeyDef] = {k.name: k for k in KEYS}

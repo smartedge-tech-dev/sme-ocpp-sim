@@ -602,7 +602,8 @@ ACTIONS = (
     "SecurityEventNotification",
     "ExtendedTriggerMessage",
 )
-#: Security Whitepaper actions: their schemas are not in the OCA 1.6 JSON set (``ocpp`` library's 1.6 schemas).
+#: Security Whitepaper actions: their schemas are not in the OCA 1.6 JSON set (whitepaper ed.4 JSON_schemas.zip,
+#: identical to the ``ocpp`` library's 1.6 schemas).
 SECURITY_ACTIONS = ACTIONS[ACTIONS.index("SignCertificate"):]
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

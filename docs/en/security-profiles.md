@@ -28,6 +28,13 @@ chargers:
     ca_file: "certs/test-ca.pem"
 ```
 
+OCPP 1.6 (Security Whitepaper edition 4, A01): the CSMS can change the Basic Auth password with
+ChangeConfiguration `AuthorizationKey` (16 to 40 characters; `Rejected` with profile 3). The charger answers
+`Accepted`, reconnects with the new password and logs ReconfigurationOfSecurityParameters (without the password);
+the new password lives in memory only (the YAML keeps `password`). `AuthorizationKey` is write-only: GetConfiguration
+lists it without a value. `SecurityProfile` is read-only here and reports the profile in use: the whitepaper lets
+the CSMS raise it with ChangeConfiguration (A05), but the simulator cannot switch profiles at run time.
+
 Profile 3 (since v0.2): the charger presents `client_cert_file` (PEM, a chain is allowed) with
 `client_key_file` (PEM, not encrypted) in the TLS handshake and sends no `Authorization` header. A handshake
 the CSMS refuses because of the client certificate is shown as `client_cert_rejected`. Certificates can be

@@ -8,6 +8,7 @@ otherwise. The version-neutral parts of ``runtime.security`` are tested directly
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import datetime as dt
 from pathlib import Path
@@ -314,6 +315,59 @@ def test_201_basic_auth_password_change_raises_reconfiguration():
         name = SecurityEventKind.RECONFIGURATION_OF_SECURITY_PARAMETERS.value
         await _until(lambda: name in _events(peer))
     _scenario(body, version="2.0.1", cfg_kw={"password": "the-old-password-01"})
+
+
+def test_16_authorization_key_change_reconnects_with_the_new_password():
+    """WP ed.4 A01 / §7.2: AuthorizationKey is write-only, 16 - 40 characters; a change reconnects with it and
+    logs ReconfigurationOfSecurityParameters (the password itself is not logged)."""
+    new = "a-new-password-0123"
+
+    async def body(peer, rt):
+        await _until(lambda: rt.online and peer.history and peer.history[-1].booted.is_set())
+        r = await peer.request(CP, call16.GetConfiguration(key=["AuthorizationKey"]))
+        assert r.configuration_key[0]["readonly"] is False and r.configuration_key[0].get("value") is None
+        r = await peer.request(CP, call16.GetConfiguration())
+        assert all(k.get("value") is None for k in r.configuration_key if k["key"] == "AuthorizationKey")
+        for bad in ("too-short-01234", "x" * 41):
+            r = await peer.request(CP, call16.ChangeConfiguration(key="AuthorizationKey", value=bad))
+            assert r.status == "Rejected"
+        assert len(peer.history) == 1
+        r = await peer.request(CP, call16.ChangeConfiguration(key="AuthorizationKey", value=new))
+        assert r.status == "Accepted"
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+        user_pw = base64.b64decode(peer.history[-1].authorization.split()[1]).decode()
+        assert user_pw == f"{CP}:{new}"
+        name = SecurityEventKind.RECONFIGURATION_OF_SECURITY_PARAMETERS.value
+        await _until(lambda: name in _events(peer))
+        assert all(new not in (info or "") for s in peer.history for _, info in s.security_events)
+    _scenario(body, version="1.6", cfg_kw={"password": "the-old-password-01"})
+
+
+def test_16_authorization_key_is_rejected_with_profile_3(tmp_path):
+    """A01 prerequisite: profile 1 or 2 (profile 3 sends no Basic Auth)."""
+    async def body(peer, rt, pki):
+        await _online(peer, rt)
+        r = await peer.request(CP, call16.ChangeConfiguration(key="AuthorizationKey", value="a-new-password-0123"))
+        assert r.status == "Rejected"
+    _p3(body, "1.6", tmp_path)
+
+
+def test_16_extended_trigger_firmware_status_is_not_implemented():
+    """WP ed.4 §6.16: it triggers SignedFirmwareStatusNotification, which is not implemented."""
+    async def body(peer, rt):
+        await _until(lambda: rt.online and peer.history and peer.history[-1].booted.is_set())
+        r = await peer.request(CP, call16.ExtendedTriggerMessage(requested_message="FirmwareStatusNotification"))
+        assert r.status == "NotImplemented"
+        r = await peer.request(CP, call16.TriggerMessage(requested_message="FirmwareStatusNotification"))
+        assert r.status == "Accepted"
+    _scenario(body, version="1.6")
+
+
+def test_16_authorization_key_in_config_keys_is_refused():
+    with pytest.raises(ValueError, match="AuthorizationKey"):
+        async def body(peer, rt):
+            pass
+        _scenario(body, version="1.6", cfg_kw={"config_keys": {"AuthorizationKey": "x" * 16}})
 
 
 # --------------------------------------------------------------------------------------------- config

@@ -391,3 +391,11 @@ def test_reserve_now_connector_out_of_range(cid):
 def test_cancel_reservation(st, wire):
     out, cmds = _call("CancelReservation", {"reservationId": 4}, st)
     assert out == {"status": wire} and cmds == [d.CancelReservation(4)]
+
+
+def test_extended_trigger_connector_must_be_positive():
+    """WP ed.4 §5.5: ExtendedTriggerMessage connectorId > 0 (the schema allows any integer)."""
+    for cid in (0, 3):
+        assert _error("ExtendedTriggerMessage", {"requestedMessage": "StatusNotification", "connectorId": cid}, A) == PCV
+    _, cmds = _call("ExtendedTriggerMessage", {"requestedMessage": "StatusNotification", "connectorId": 2}, A)
+    assert cmds == [d.Trigger(d.TriggerWhat.STATUS, 2, extended=True)]

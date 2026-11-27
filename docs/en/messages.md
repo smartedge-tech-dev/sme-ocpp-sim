@@ -36,8 +36,8 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 |---|---|
 | RemoteStartTransaction | May carry a `chargingProfile` (TxProfile without `transactionId`). Rejected before the boot is accepted |
 | RemoteStopTransaction | |
-| GetConfiguration | An empty `key` list returns all keys; unknown keys go to `unknownKey`. Answered even before the boot is accepted |
-| ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
+| GetConfiguration | An empty `key` list returns all keys; unknown keys go to `unknownKey`. Answered even before the boot is accepted. The write-only `AuthorizationKey` is listed without a value |
+| ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported. `AuthorizationKey` (Security Whitepaper A01): 16 - 40 characters, then a reconnect with the new Basic Auth password; `Rejected` with profile 3 |
 | Reset | Soft / Hard: ends transactions, disconnects, reconnects and boots again |
 | TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification / FirmwareStatusNotification / DiagnosticsStatusNotification (the current step while an update / upload runs, else `Idle`) |
 | UnlockConnector | Always answers `Unlocked` (other answers are not configurable yet); a running transaction on the connector ends with reason `UnlockCommand` |
@@ -53,7 +53,7 @@ messages are retried `TransactionMessageAttempts` times at `TransactionMessageRe
 | CancelReservation | `Accepted` for a known reservation, else `Rejected` |
 | UpdateFirmware | Simulated, nothing is downloaded: waits for `retrieveDate`, `retries` / `retryInterval` on a download failure; connectors without a transaction are `Unavailable` until no transaction is left, then it installs and reboots (as a Hard Reset). Step durations and failure injection: `maintenance` per charger (`download_s`, `install_s`, `upload_s`, `retry_interval_s`, `fail_download`, `fail_install`, `fail_upload`). A new request replaces one that is not installing yet; one received while installing is ignored |
 | GetDiagnostics | Answers `fileName` `<id>-diagnostics-<time>.log` and simulates the upload (nothing is uploaded); a new request replaces a running upload |
-| ExtendedTriggerMessage | Security Whitepaper: the TriggerMessage messages plus `SignChargePointCertificate`; `LogStatusNotification` is `NotImplemented` |
+| ExtendedTriggerMessage | Security Whitepaper: BootNotification / Heartbeat / MeterValues / StatusNotification as TriggerMessage, plus `SignChargePointCertificate`; `FirmwareStatusNotification` (it means SignedFirmwareStatusNotification) and `LogStatusNotification` are `NotImplemented`; `connectorId` 0 is CALLERROR `PropertyConstraintViolation` (the whitepaper requires `connectorId` > 0) |
 | CertificateSigned | Security Whitepaper; as 2.0.1: `Accepted` for a chain matching the outstanding CSR, then (profile 3) reconnect with it |
 | InstallCertificate / DeleteCertificate / GetInstalledCertificateIds | Security Whitepaper; CentralSystemRootCertificate / ManufacturerRootCertificate, as 2.0.1 |
 

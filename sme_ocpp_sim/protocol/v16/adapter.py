@@ -22,7 +22,8 @@ the same name; the station runs the update / upload (``runtime.maintenance``) an
 DiagnosticsStatusNotification with :meth:`Adapter16.send_firmware_status` / :meth:`Adapter16.send_diagnostics_status`.
 TriggerMessage for both is handed to the station like the other triggers.
 
-Security (M8, OCPP 1.6 Security Whitepaper; message shapes of the ``ocpp`` library's 1.6 security schemas):
+Security (M8, OCPP 1.6 Security Whitepaper edition 4 §5 / §6; the ``ocpp`` library's 1.6 security schemas are
+identical to the whitepaper's JSON schemas):
 CertificateSigned / InstallCertificate / DeleteCertificate / GetInstalledCertificateIds become the domain commands
 of the same name, ExtendedTriggerMessage a :class:`~..base.Trigger` with ``extended``; SignCertificate and
 SecurityEventNotification go out with :meth:`Adapter16.send_sign_certificate` / :meth:`Adapter16.send_security_event`.
@@ -147,9 +148,8 @@ def _schedule(res: d.GetCompositeResult) -> m.ChargingSchedule:
 #: 1.6 Security ``CertificateUseEnumType`` -> domain certificate kind.
 _USE = {"CentralSystemRootCertificate": d.CertUse.CSMS_ROOT, "ManufacturerRootCertificate": d.CertUse.MANUFACTURER_ROOT}
 
-#: Domain security event -> 1.6 Security Whitepaper event name (UNVERIFIED: the whitepaper's event table is not
-#: in the local spec folder; it renames the 2.0.1 "Csms" / "ChargingStation" events to "CentralSystem" /
-#: "ChargePoint"). Events not listed keep the 2.0.1 name.
+#: Domain security event -> 1.6 Security Whitepaper event name (WP ed.4 §8: the 2.0.1 "Csms" / "ChargingStation"
+#: events are named "CentralSystem" / "ChargePoint"). Events not listed keep the 2.0.1 name (the same in §8).
 SECURITY_EVENT_NAMES: Dict[d.SecurityEventKind, str] = {
     d.SecurityEventKind.FAILED_TO_AUTHENTICATE_AT_CSMS: "FailedToAuthenticateAtCentralSystem",
     d.SecurityEventKind.INVALID_CSMS_CERTIFICATE: "InvalidCentralSystemCertificate",
@@ -356,8 +356,8 @@ class Adapter16(d.VersionAdapter):
 
     async def _extended_trigger(self, runtime: d.CommandSink, payload: dict) -> dict:
         req = self._parse("ExtendedTriggerMessage", payload)
-        if req.connector_id is not None:
-            _check_connector(req.connector_id, runtime, allow_zero=True)
+        if req.connector_id is not None:  # WP ed.4 §5.5: "connectorId > 0" (the schema allows any integer)
+            _check_connector(req.connector_id, runtime, allow_zero=False)
         st = await runtime.handle(d.Trigger(d.TriggerWhat(req.requested_message.value), req.connector_id,
                                             extended=True))
         status = {d.CommandStatus.ACCEPTED: "Accepted", d.CommandStatus.REJECTED: "Rejected"}.get(

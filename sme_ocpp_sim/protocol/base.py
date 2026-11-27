@@ -56,6 +56,8 @@ class ConfigKeyDef:
     allowed: Optional[frozenset] = None
     #: True when name and readonly flag were confirmed by a local source document (see the table module).
     verified: bool = False
+    #: Write-only (1.6 Security Whitepaper AuthorizationKey): GetConfiguration reports the key without a value.
+    write_only: bool = False
 
 
 class ConfigStatus(str, Enum):

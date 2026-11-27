@@ -1,15 +1,15 @@
 """Version-neutral security support (v0.2 M8): security event log / queue, CA certificate store, CSR and the
 Charging Station (client) certificate.
 
-1.6 Security (the OCPP 1.6 Security Whitepaper edition 2+, whose messages the ``ocpp`` library's 1.6 schemas
-carry) and 2.0.1 (Part 2 A02 / A03 / A04, M03 / M04 / M05) define the same mechanics under different wire names.
+1.6 Security (the OCPP 1.6 Security Whitepaper edition 4, "WP", whose JSON schemas the ``ocpp`` library's 1.6
+schemas are identical to) and 2.0.1 (Part 2 A02 / A03 / A04, M03 / M04 / M05) define the same mechanics under different wire names.
 Only the mechanics live here; the wire messages, the name of each event and every response belong to the version
 station. This module imports nothing of the shell or of a version package (like ``runtime.maintenance``).
 
 Spec source: OCPP 2.0.1 Edition 4 Part 2 (A00 Security Profile 3 / Certificate Properties, A02, A04, M03 - M05)
-and Appendices CSV ``security_events.csv`` (which events are critical). The 1.6 Security Whitepaper is not in the
-local spec folder: the 1.6 side follows the ``ocpp`` library's 1.6 security schemas and assumes the 2.0.1 rules
-(UNVERIFIED against the whitepaper text).
+and Appendices CSV ``security_events.csv`` (which events are critical). The WP takes over the same use cases
+(A01 - A05, M03 - M05, §2.6 certificate properties, §6.1 CertificateHashDataType) and its §8 event table has the
+same critical flags for every event raised here; the rules below were checked against it.
 
 Interpretations (not defined by the spec)
 -----------------------------------------
@@ -59,8 +59,13 @@ Interpretations (not defined by the spec)
   key is unknown and the certificate's own key stands in, so such an issuerKeyHash differs from the CSMS's
   (AuthorityKeyIdentifier cannot replace it: it is no SHA-256 of the issuer key). A
   DeleteCertificate matches with the algorithm it names; the serial number is compared case-insensitively.
-- DeleteCertificate of the client certificate is ``Failed`` (M04.FR.06); CertificateEntries counts the
-  installed CA certificates plus the client certificate.
+- DeleteCertificate of the client certificate is ``Failed`` (M04.FR.06; WP M04.FR.05). CertificateEntries
+  counts the installed CA certificates plus the client certificate. WP ed.4 M04.FR.06 says a DeleteCertificate
+  of "the CentralSystemRootCertificate" is ``Failed``, but its M04 remarks allow deleting every installed
+  CentralSystemRootCertificate (2.0.1 M04.FR.06 names the station certificate there): the simulator follows the
+  remarks and 2.0.1 and deletes it.
+- Hash data serial number: lower case; the WP §6.1 example is upper case ("FFF"), the field is a CiString
+  (case-insensitive).
 """
 
 from __future__ import annotations
@@ -85,7 +90,7 @@ from ..protocol.base import CertificateHashData, CertStatus, CertUse, SecurityEv
 log = logging.getLogger(__name__)
 
 K = SecurityEventKind
-#: Events marked "Critical: Yes" in OCPP 2.0.1 Part 2 Appendices ``security_events.csv``.
+#: Events marked "Critical: Yes" in OCPP 2.0.1 Part 2 Appendices ``security_events.csv`` (and in WP ed.4 §8).
 CRITICAL = frozenset({K.FIRMWARE_UPDATED, K.STARTUP_OF_THE_DEVICE, K.RESET_OR_REBOOT, K.INVALID_CSMS_CERTIFICATE,
                       K.INVALID_CHARGING_STATION_CERTIFICATE, K.DISCARDED_RENEWED_CLIENT_CERTIFICATE,
                       K.INVALID_TLS_VERSION})
