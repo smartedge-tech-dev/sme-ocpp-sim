@@ -34,6 +34,18 @@ Built-in templates (AC only; DC charging is not modelled):
 When the configuration is saved, a templated charger keeps only its own overrides (values equal to the template's
 are left out). So a later change of the template applies to every charger that uses it.
 
+The comparison is with the template's value: a value equal to the model default is still written when it differs
+from the template (e.g. `phases: 1` on `eu-ac-11kw`, `connectors: 1` on `jp-ac-6kw-dual`). `config_keys`,
+`session` and `maintenance` are compared key by key: a charger that sets one key keeps only that key, the
+template's other keys still follow the template.
+
+!!! warning "Deleting a user template that chargers use"
+    If a user template file is deleted (and the templates reloaded) while chargers still refer to it, the running
+    chargers keep their values, but the configuration can no longer be loaded: start, config reload and Excel
+    import fail with `charger 'CP1': unknown template 'my-wallbox' (known: ...); restore the user template file,
+    or remove 'template' from the charger and set its fields`. Restore the file, or remove `template:` (and
+    `params:`) from those chargers.
+
 ### User templates
 
 User templates are YAML files in `~/.sme-ocpp-sim/templates/` (or the directory in the environment variable
@@ -87,6 +99,9 @@ Rules:
   needs its real password.
 * Text stays text: an ID `0123` or `1e5` stored as a text cell is read unchanged. A cell Excel stores as a number
   is converted (`778` → `"778"`), so type leading zeros as text.
+* No formulas: exported texts are always text cells, also a text starting with `=`, `+`, `-` or `@` (it gets
+  Excel's quote prefix and is read back unchanged). An upload is limited to 10 MB and 5000 charger rows
+  (50000 rows on the other sheets).
 * An import is all or nothing. Errors name the sheet, row and column, e.g.
   `chargers row 4, column 'ocpp_version': unknown OCPP version '3.0'` or
   `chargers row 6, column 'id': duplicate charger id 'CP-0001' (also row 3)`.

@@ -173,3 +173,44 @@ def test_template_values_cache_follows_reload(user_dir):
     (user_dir / "t1.yaml").write_text("model: TWO\n", encoding="utf-8")
     REGISTRY.load_user_templates(user_dir)
     assert templates_builtin.template_values("t1", {})["model"] == "TWO"
+
+
+# ------------------------------------------------------------------ review fixes (M10)
+
+def test_next_ids_width_overflow_and_prefix():
+    assert next_ids("CP09", 12) == [f"CP{i:02d}" for i in range(9, 21)]
+    assert next_ids("CP9", 3) == ["CP9", "CP10", "CP11"]
+    assert next_ids("CP", 3) == ["CP1", "CP2", "CP3"]  # no trailing digits: a prefix
+    assert next_ids("CP", 1) == ["CP"]
+
+
+def test_bulk_create_ids_passwords_and_bad_fields(client):
+    c, engine = client
+    r = c.post("/api/chargers/bulk/create", json={"id": "CP09", "count": 12, "password": "pw9"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ids"] == [f"CP{i:02d}" for i in range(9, 21)]
+    got = {ch.id: ch.password for ch in engine.config.chargers}
+    assert (got["CP09"], got["CP10"], got["CP20"]) == ("pw9", "pw10", "pw20")
+    r = c.post("/api/chargers/bulk/create", json={"id": "X", "count": 3, "password": "p"})
+    assert r.status_code == 200 and r.json()["ids"] == ["X1", "X2", "X3"]
+    assert {ch.password for ch in engine.config.chargers if ch.id.startswith("X")} == {"p"}
+    n = len(engine.config.chargers)
+    r = c.post("/api/chargers/bulk/create", json={"id": "N1", "password": "p", "fields": {"nonsense": 1}})
+    assert r.status_code == 400 and "nonsense" in r.json()["error"]
+    r = c.post("/api/chargers/bulk/create", json={"id": "X3", "count": 2, "password": "p"})  # X3 exists
+    assert r.status_code == 409 and "X3" in r.json()["error"]
+    r = c.post("/api/chargers/bulk/create", json={"id": "N1", "count": 2, "password": "********"})
+    assert r.status_code == 400 and "mask" in r.json()["error"]
+    assert len(engine.config.chargers) == n
+
+
+def test_deleted_user_template_fails_with_clear_error(user_dir):
+    (user_dir / "gone.yaml").write_text("model: GONE\nphases: 3\n", encoding="utf-8")
+    REGISTRY.load_user_templates(user_dir)
+    cfg = _cfg({"id": "CPG", "template": "gone"})
+    (user_dir / "gone.yaml").unlink()
+    REGISTRY.load_user_templates(user_dir)
+    dumped = cfg.chargers[0].model_dump(mode="json", exclude_defaults=True)
+    assert dumped["model"] == "GONE" and dumped["phases"] == 3  # nothing to compare with: written in full
+    with pytest.raises(ValueError, match=r"charger 'CPG': unknown template 'gone'.*restore the user template"):
+        parse_text(write_back("", cfg))

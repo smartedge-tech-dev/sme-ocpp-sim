@@ -129,6 +129,8 @@ FAULT_CODES = tuple(dict.fromkeys(code for v in list_versions() if v.available
 FaultCode = Literal[FAULT_CODES]  # type: ignore[valid-type]
 MAX_FRAMES = 5000
 MAX_BULK_CREATE = 1000
+#: Largest accepted ``POST /api/config/import`` body (bytes); a bigger upload is 413 before openpyxl sees it.
+MAX_IMPORT_BYTES = 10 * 1024 * 1024
 NDJSON = "application/x-ndjson"
 JSONL_CHUNK = 500  # frame log entries per streamed chunk
 #: What :func:`mask_text` returns for text that is not valid YAML (it cannot be masked reliably).
@@ -277,6 +279,36 @@ def _masked(endpoint):
         if "json" in media:
             return JSONResponse(mask_obj(json.loads(resp.body)), status_code=resp.status_code)
         return resp
+    return wrapper
+
+
+def _size_capped(endpoint, limit: int = MAX_IMPORT_BYTES):
+    """Wrap the base ``POST /api/config/import`` route: a body over ``limit`` bytes is 413 (checked on the
+    ``Content-Length`` header and again while reading, for chunked uploads without one)."""
+    too_big = f"upload too large: at most {limit // (1024 * 1024)} MB"
+
+    async def wrapper(request: Request):
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            raise bad(400, "invalid Content-Length header") from None
+        if declared > limit:
+            raise bad(413, too_big)
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > limit:
+                raise bad(413, too_big)
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return await request.receive()
+            sent = True
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+        return await endpoint(Request(request.scope, receive))
     return wrapper
 
 
@@ -538,6 +570,8 @@ def _router(engine: OcppEngine) -> APIRouter:
         clash = sorted({"id", "password", "template", "params"} & set(body.fields))
         if clash:
             raise bad(400, f"fields: {clash} are request fields of their own")
+        if body.password == PASSWORD_MASK:
+            raise bad(400, f"password: {PASSWORD_MASK} is the mask of a stored password; enter the real password")
         ids = templates_builtin.next_ids(body.id, body.count)
         taken = sorted(set(ids) & {c.id for c in engine.config.chargers})
         if taken:
@@ -746,6 +780,8 @@ def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> 
             routes[i] = Route(rt.path, config_save, methods=methods, name=rt.name)
         elif rt.path == "/api/devices/{device}/config" and "PUT" in methods:
             routes[i] = Route(rt.path, _masked(_device_put(rt.endpoint, engine)), methods=methods, name=rt.name)
+        elif rt.path == "/api/config/import":
+            routes[i] = Route(rt.path, _size_capped(_masked(rt.endpoint)), methods=methods, name=rt.name)
         elif rt.path.startswith(("/api/config", "/api/devices")):
             routes[i] = Route(rt.path, _masked(rt.endpoint), methods=methods, name=rt.name)
 

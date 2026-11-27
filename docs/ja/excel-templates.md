@@ -34,6 +34,17 @@ chargers:
 設定を保存すると、テンプレートを使う充電器には自身の上書き値だけが残ります（テンプレートと同じ値は書き出されません）。
 そのため、後からテンプレートを変えると、それを使うすべての充電器に反映されます。
 
+比較の相手はテンプレートの値です。モデルの既定値と同じ値でも、テンプレートと異なれば書き出されます（例: `eu-ac-11kw`
+の `phases: 1`、`jp-ac-6kw-dual` の `connectors: 1`）。`config_keys` / `session` / `maintenance` はキー単位で比較し、
+充電器が設定したキーだけが残ります（テンプレートのほかのキーは引き続きテンプレートに従います）。
+
+!!! warning "充電器が使っているユーザーテンプレートの削除"
+    充電器が参照しているユーザーテンプレートのファイルを削除（してテンプレートを再読み込み）すると、動作中の充電器は
+    値を保ちますが、設定を読み込めなくなります。起動・設定の再読み込み・Excel 取り込みは
+    `charger 'CP1': unknown template 'my-wallbox' (known: ...); restore the user template file, or remove
+    'template' from the charger and set its fields` で失敗します。ファイルを戻すか、該当する充電器から `template:`
+    （と `params:`）を外してください。
+
 ### ユーザーテンプレート
 
 ユーザーテンプレートは `~/.sme-ocpp-sim/templates/`（または環境変数 `SME_OCPP_SIM_TEMPLATES` のディレクトリ）に置く
@@ -87,6 +98,8 @@ config_keys: {MeterValueSampleInterval: "60"}
   新しい充電器には実際のパスワードが必要です。
 * 文字列は文字列のまま：文字列セルの ID `0123` や `1e5` はそのまま読み込まれます。Excel が数値として保存したセルは
   変換されます（`778` → `"778"`）。先頭のゼロは文字列として入力してください。
+* 数式は書き出しません：`=`・`+`・`-`・`@` で始まる文字列も文字列セルとして出力し（Excel の引用符プレフィックス付き）、
+  そのまま読み戻されます。アップロードは 10 MB・充電器 5000 行（ほかのシートは 50000 行）までです。
 * インポートは全か無かです。エラーにはシート・行・列が付きます。例：
   `chargers row 4, column 'ocpp_version': ...`、
   `chargers row 6, column 'id': duplicate charger id 'CP-0001' (also row 3)`。

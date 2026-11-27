@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Secret values are masked as `********` in the frame log (charger simulator and Mini CSMS) and in the Mini
   CSMS's recorded calls: 1.6 ChangeConfiguration `AuthorizationKey`, 2.0.1 SetVariables `BasicAuthPassword` and
   2.0.1 SetNetworkProfile VPN / APN credentials (#54). The frame sent on the wire is unchanged.
+- Excel export writes no formula cells: a text such as `=1+1` (vendor, id tag, config key value ...) is a text
+  cell with Excel's quote prefix and imports back unchanged (#21). `POST /api/config/import` rejects a body over
+  10 MB with 413 and a workbook with more than 5000 charger rows (50000 on the other sheets) with 400.
 
 ### Added
 
@@ -27,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   keeps only a charger's own overrides. The Add charger dialog adds N chargers from a template at once (IDs and
   passwords count up), new route `POST /api/chargers/bulk/create`; `GET /api/templates`,
   `POST /api/templates/reload` and `POST /api/templates/from-device/{id}` (save a charger as user template).
+  A templated charger's dump is compared with the template, not the model default (`phases: 1` on a 3-phase
+  template is kept on save and Excel round trip), and `config_keys` / `session` / `maintenance` keep only the
+  keys the charger sets. A charger whose (deleted) user template is unknown fails to load with an error naming
+  the charger and the template; the bulk create rejects the password mask `********`.
 - Mini CSMS: a simple built-in OCPP 1.6J / 2.0.1 CSMS (WebSocket server, default port 9000) in the same process,
   with a new web UI panel (Simulation → Mini CSMS). Subprotocol negotiation, Security Profile 0 / 1 (optional
   Basic Auth), configurable BootNotification answer (Accepted / Pending / Rejected + interval) and authorization

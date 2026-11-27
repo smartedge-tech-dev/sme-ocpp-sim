@@ -5,8 +5,15 @@ charger refers to one with ``template: <name>`` (and may pass ``params:``); ever
 not set itself comes from the template (``config.ChargerConfig`` expands it while validating, a dict field such as
 ``config_keys`` / ``session`` is merged with the charger's keys winning). Dumps of a templated charger leave out
 the fields whose value equals the template's, so the YAML write-back, ``GET /api/devices/{id}/config`` and the
-Excel export keep only the charger's own overrides. Consequence: a field explicitly set to the template's value
-follows the template when the template changes.
+Excel export keep only the charger's own overrides. The comparison is with the template's value, not the model
+default (``phases: 1`` on a 3-phase template is written even under ``exclude_defaults``), and dict fields are
+compared per key: a charger that sets one ``config_keys`` / ``session`` key writes only that key, the template's
+other keys keep following the template. Consequence: a field explicitly set to the template's value follows the
+template when the template changes.
+
+A user template that is gone (file deleted, then reloaded) while chargers still refer to it: the running chargers
+keep their values, and a dump writes them in full (nothing to compare with), but loading such a config (start,
+config reload, Excel import) fails with ``charger 'CP1': unknown template 'name' ...``.
 
 Connection and security fields (``id``, ``csms_url``, ``ocpp_version``, ``password``, certificate files ...) are
 never part of a template, so every template fits both OCPP 1.6 and 2.0.1 chargers (``config_keys`` in a user
@@ -131,7 +138,11 @@ def expand_charger(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(params, dict):
         return data
     own = {k: data[k] for k in TEMPLATE_FIELDS if k in data}
-    return {**data, **registry().expand_extras(str(data.get("id", "?")), name, params, own)}
+    if registry().get(name) is None:  # e.g. a user template file deleted while chargers still refer to it
+        raise ValueError(f"charger {str(data.get('id', '?'))!r}: unknown template {name!r} (known: "
+                         f"{', '.join(registry().names())}); restore the user template file, or remove "
+                         f"'template' from the charger and set its fields")
+    return {**data, **registry().expand_extras(f"charger {str(data.get('id', '?'))!r}", name, params, own)}
 
 
 def template_values(name: str, params: Dict[str, Any]) -> Dict[str, Any]:

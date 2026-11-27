@@ -32,6 +32,16 @@ OCPP 1.6 和 2.0.1 充电桩。
 
 保存配置时，使用模板的充电桩只保留自己的覆盖值（与模板相同的值不写出）。因此之后修改模板，会作用于所有使用它的充电桩。
 
+比较的对象是模板的值：即使等于模型默认值，只要与模板不同也会写出（例如 `eu-ac-11kw` 上的 `phases: 1`、
+`jp-ac-6kw-dual` 上的 `connectors: 1`）。`config_keys` / `session` / `maintenance` 按键比较：充电桩只保留自己设置的键，
+模板的其他键仍跟随模板。
+
+!!! warning "删除充电桩正在使用的用户模板"
+    若删除了充电桩仍在引用的用户模板文件（并重新加载模板），运行中的充电桩保持原值，但配置将无法再加载：启动、
+    重新加载配置和 Excel 导入都会以 `charger 'CP1': unknown template 'my-wallbox' (known: ...); restore the user
+    template file, or remove 'template' from the charger and set its fields` 失败。请恢复该文件，或从这些充电桩上
+    去掉 `template:`（及 `params:`）。
+
 ### 用户模板
 
 用户模板是放在 `~/.sme-ocpp-sim/templates/`（或环境变量 `SME_OCPP_SIM_TEMPLATES` 指定的目录）下的 YAML 文件。
@@ -81,6 +91,8 @@ config_keys: {MeterValueSampleInterval: "60"}
 * 密码导出为 `********`。导入 `********` 保留已保存的密码；新充电桩需要填写真实密码。
 * 文本保持文本：文本单元格中的 ID `0123` 或 `1e5` 原样读入。Excel 存为数字的单元格会被转换（`778` → `"778"`），
   因此前导零请以文本输入。
+* 不写出公式：以 `=`、`+`、`-`、`@` 开头的文本也导出为文本单元格（带 Excel 的引号前缀），读回时不变。
+  上传上限为 10 MB、充电桩 5000 行（其他工作表 50000 行）。
 * 导入要么全部生效，要么全部不生效。错误信息包含工作表、行和列，例如
   `chargers row 4, column 'ocpp_version': ...`、
   `chargers row 6, column 'id': duplicate charger id 'CP-0001' (also row 3)`。

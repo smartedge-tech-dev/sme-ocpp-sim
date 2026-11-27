@@ -4,6 +4,7 @@ passwords, the web routes and the per-charger reload."""
 import io
 
 import openpyxl
+import yaml
 import pytest
 from fastapi.testclient import TestClient
 
@@ -191,3 +192,136 @@ def test_web_import_errors_and_template(client):
     assert engine.config.chargers[0].phases == 1
     r = c.get("/api/config/xlsx-template")
     assert r.status_code == 200 and _book(r.content)["chargers"].max_row == 2
+
+
+# ------------------------------------------------------------------ review fixes (M10)
+
+@pytest.fixture
+def user_template(tmp_path):
+    from sme_ocpp_sim.templates_builtin import REGISTRY
+
+    (tmp_path / "delta.yaml").write_text("name: delta\nphases: 3\nline_to_line: true\nvoltage_v: 200\n"
+                                         "config_keys: {HeartbeatInterval: '300', ClockAlignedDataInterval: '900'}\n"
+                                         "session: {initial_soc: 50}\n", encoding="utf-8")
+    REGISTRY.load_user_templates(tmp_path)
+    yield tmp_path
+    REGISTRY.clear_user_templates()
+    REGISTRY._user_dir = None
+
+
+def _overrides():
+    return SimConfig.model_validate({"csms_defaults": {"url": DEAD_URL}, "chargers": [
+        {"id": "A", "template": "eu-ac-11kw", "phases": 1},
+        {"id": "B", "template": "jp-ac-6kw-dual", "connectors": 1},
+        {"id": "C", "template": "delta", "line_to_line": False, "config_keys": {"HeartbeatInterval": "60"},
+         "session": {"target_soc": 80}},
+    ]})
+
+
+def _effective(cfg):
+    return {c.id: (c.phases, c.connectors, c.line_to_line, c.config_keys, c.session.model_dump())
+            for c in cfg.chargers}
+
+
+def test_override_with_model_default_survives_yaml_and_excel(user_template):
+    from sme_ocpp_sim.config import parse_text, write_back
+
+    cfg = _overrides()
+    want = _effective(cfg)
+    assert want["A"][0] == 1 and want["B"][1] == 1 and want["C"][2] is False
+    assert want["C"][3] == {"HeartbeatInterval": "60", "ClockAlignedDataInterval": "900"}
+    assert _effective(parse_text(write_back("", cfg))) == want
+    got, msgs = import_xlsx(export_xlsx(cfg)[0], cfg)
+    assert got is not None, msgs
+    assert _effective(got) == want
+    c = cfg.chargers[2].model_dump(mode="json", exclude_defaults=True)
+    # dict fields: only the charger's own keys are written, the others keep following the template
+    assert c["config_keys"] == {"HeartbeatInterval": "60"} and c["session"] == {"target_soc": 80.0}
+    assert c["line_to_line"] is False and "phases" not in c
+
+
+def test_override_with_model_default_in_device_config_get(user_template):
+    engine = OcppEngine(_overrides())
+    engine.stop_grace_s = 0.2
+    with TestClient(create_app(engine)) as c:
+        for cid, key in (("A", "phases"), ("B", "connectors"), ("C", "line_to_line")):
+            r = c.get(f"/api/devices/{cid}/config")
+            assert r.status_code == 200, r.text
+            body = yaml.safe_load(r.text)
+            body = body.get("config", body) if isinstance(body, dict) else body
+            assert key in body, body
+        assert yaml.safe_load(c.get("/api/devices/C/config").text).get("line_to_line", False) is False
+
+
+def test_export_writes_no_formula_cells():
+    cfg = SimConfig.model_validate({"csms_defaults": {"url": DEAD_URL}, "chargers": [
+        {"id": "F1", "vendor": "=1+1", "id_tags": ["=1+1", "@SUM(A1)"], "config_keys": {"K": "=1+1", "L": "+5"}}]})
+    data, _ = export_xlsx(cfg)
+    wb = _book(data)
+    texts = [c for ws in wb.worksheets for row in ws.iter_rows(min_row=3) for c in row
+             if isinstance(c.value, str) and c.value[:1] in "=+-@"]
+    assert texts and all(c.data_type == "s" and c.quotePrefix for c in texts)
+    assert {c.value for c in texts} >= {"=1+1", "+5"}
+    got, msgs = import_xlsx(data, cfg)
+    assert got is not None, msgs
+    ch = got.chargers[0]
+    assert ch.vendor == "=1+1" and ch.id_tags == ["=1+1", "@SUM(A1)"] and ch.config_keys == {"K": "=1+1", "L": "+5"}
+
+
+def test_import_row_cap():
+    from sme_ocpp_sim.xlsx_io import MAX_IMPORT_ROWS
+
+    wb = _book(SCHEMA.blank_template())
+    for i in range(MAX_IMPORT_ROWS + 1):
+        wb["chargers"].append([f"R{i}"])
+    cfg, errors = import_xlsx(_bytes(wb))
+    assert cfg is None and errors == [f"chargers: {MAX_IMPORT_ROWS + 1} rows, at most {MAX_IMPORT_ROWS} are accepted"]
+
+
+def test_web_import_size_cap(client):
+    from sme_ocpp_sim.web import MAX_IMPORT_BYTES
+
+    c, engine = client
+    r = c.post("/api/config/import", files={"file": ("big.xlsx", b"x" * (MAX_IMPORT_BYTES + 1))})
+    assert r.status_code == 413 and "too large" in r.text
+    assert [ch.id for ch in engine.config.chargers] == ["0123", "1e5", "V2"]
+
+
+def test_web_import_password_mask(client):
+    c, engine = client
+    wb = _book(c.get("/api/config/xlsx").content)
+    _set(wb["chargers"], 3, "max_power_w", 5000)  # a change, so the stored passwords must be carried over
+    r = c.post("/api/config/import", files={"file": ("ok.xlsx", _bytes(wb))})
+    assert r.status_code == 200, r.text
+    assert [ch.password for ch in engine.config.chargers] == ["pw1", "pw2", "pw3"]
+    wb = _book(c.get("/api/config/xlsx").content)
+    wb["chargers"].append(["NEW", None, None, None, PASSWORD_MASK])  # unknown id with the mask
+    assert wb["chargers"].cell(1, 5).value == "password"
+    r = c.post("/api/config/import", files={"file": ("m.xlsx", _bytes(wb))})
+    assert r.status_code == 400
+    assert any("column 'password'" in e and "'NEW' has none" in e for e in r.json()["errors"])
+    assert [ch.id for ch in engine.config.chargers] == ["0123", "1e5", "V2"]
+
+
+def test_web_import_mask_without_stored_password():
+    engine = OcppEngine(SimConfig.model_validate({"csms_defaults": {"url": DEAD_URL}, "chargers": [{"id": "P0"}]}))
+    engine.stop_grace_s = 0.2
+    with TestClient(create_app(engine)) as c:
+        wb = _book(c.get("/api/config/xlsx").content)
+        _set(wb["chargers"], 3, "password", PASSWORD_MASK)
+        r = c.post("/api/config/import", files={"file": ("m.xlsx", _bytes(wb))})
+        assert r.status_code == 400 and "'P0' has none" in r.text
+        assert engine.config.chargers[0].password is None
+
+
+def test_web_failed_import_leaves_config_untouched(client):
+    c, engine = client
+    before = engine.config.model_dump()
+    runs = {cid: run.runtime for cid, run in engine._runs.items()}
+    wb = _book(c.get("/api/config/xlsx").content)
+    _set(wb["chargers"], 3, "max_power_w", 1234)  # a valid change ...
+    wb["config_keys"].append(["nope", "HeartbeatInterval", "1"])  # ... and an error in another sheet
+    r = c.post("/api/config/import", files={"file": ("bad.xlsx", _bytes(wb))})
+    assert r.status_code == 400 and any("unknown charger 'nope'" in e for e in r.json()["errors"])
+    assert engine.config.model_dump() == before
+    assert {cid: run.runtime for cid, run in engine._runs.items()} == runs
