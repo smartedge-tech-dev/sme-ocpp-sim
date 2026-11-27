@@ -19,7 +19,18 @@ Interpretations (not defined by the spec)
   is not valid, then the oldest valid one (1.6 §3.5.1, C10.FR.07). "Oldest" is the least recently updated.
 - A cache entry whose expiry has passed (1.6 ``expiryDate``, 2.0.1 ``cacheExpiryDateTime``, C10.FR.13), or that
   was last updated more than ``lifetime_s`` ago (2.0.1 AuthCacheLifeTime, C10.FR.10), is changed to ``Expired``
-  (both versions allow that instead of removing it).
+  (both versions allow that instead of removing it). Part 2 §2.4.3 gives AuthCacheLifeTime no special value;
+  ``lifetime_s`` ``None`` or <= 0 means "no lifetime limit" (the 2.0.1 variable has minLimit 1, so 0 only comes
+  from a direct caller). A cache with ``max_entries`` <= 0 stores nothing.
+- Reservation matching (1.6 §5.13 "the incoming idTag or the parent idTag match the idTag or parent idTag of the
+  reservation", read pairwise; H03.FR.01 - FR.06 "matches the specific idToken ... or when the associated
+  groupIdToken matches"): the presented token equals the reserved token, or the presented token's parent / group
+  equals the reservation's parent / group when the reservation has one. Cross matches (a presented parent equal
+  to the reserved token, or a presented token equal to the reserved parent) do not count.
+- A reservation is *claimed* by a connector while a token that matched it waits there (for the cable, or a
+  RequestStart / RemoteStart being authorized). A claimed reservation stays stored (its expiry still runs) but no
+  longer holds a connector of its own; it is consumed when the transaction starts and becomes unclaimed again
+  when the waiting token is dropped.
 """
 
 from __future__ import annotations
@@ -108,6 +119,8 @@ class AuthCache:
         return list(self._entries)
 
     def update(self, token: str, entry: IdTokenInfo, now: datetime) -> None:
+        if self.max_entries <= 0:
+            return
         if token in self._entries:
             del self._entries[token]
         elif len(self._entries) >= self.max_entries:
@@ -121,7 +134,7 @@ class AuthCache:
         if item is None:
             return None
         entry, updated = item
-        too_old = lifetime_s is not None and (now - updated).total_seconds() > lifetime_s
+        too_old = lifetime_s is not None and lifetime_s > 0 and (now - updated).total_seconds() > lifetime_s
         if entry.status is AuthResult.ACCEPTED and (entry.expired(now) or too_old):
             entry = replace(entry, status=AuthResult.EXPIRED)
             self._entries[token] = (entry, updated)
@@ -140,15 +153,18 @@ class Reservation:
     connector: int
     id_token: str
     expiry: datetime
-    #: 1.6 ``parentIdTag`` / 2.0.1 ``groupIdToken.idToken``.
-    parent: Optional[str] = None
+    #: 1.6 ``parentIdTag`` / 2.0.1 ``groupIdToken.idToken`` (named as in ``IdTokenInfo``).
+    parent_id_token: Optional[str] = None
     #: Expiry timer (``loop.call_later``), owned by the station.
     timer: Optional[asyncio.TimerHandle] = None
+    #: Connector / EVSE whose waiting token claimed this reservation (module docstring), ``None`` = unclaimed.
+    claimed_by: Optional[int] = None
 
-    def matches(self, token: str, parent: Optional[str] = None) -> bool:
-        """The incoming token or its parent matches the reserved token or parent (1.6 §5.13, H03.FR.01 - 06)."""
-        mine = {self.id_token, self.parent} - {None}
-        return bool({token, parent} & mine)
+    def matches(self, token: str, parent_id_token: Optional[str] = None) -> bool:
+        """The presented token is the reserved one, or its parent / group is the reservation's (module docstring)."""
+        if token == self.id_token:
+            return True
+        return self.parent_id_token is not None and parent_id_token == self.parent_id_token
 
     def cancel_timer(self) -> None:
         if self.timer is not None:

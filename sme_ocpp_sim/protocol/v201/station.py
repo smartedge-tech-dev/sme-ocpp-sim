@@ -205,11 +205,18 @@ Interpretations (not defined by the spec)
   reports ``Reserved`` (H01.FR.23) and starts only for the reserved ``idToken`` or a token whose group matches
   the reservation's ``idToken`` / ``groupIdToken`` (H03; the group comes from the authorization, the list or the
   cache, else an AuthorizeRequest, H03.FR.07 / FR.08); any other token is refused (``Reserved``), also a
-  RequestStartTransaction (``Rejected``, reasonCode ``Reserved``; its ``groupIdToken`` is compared). Without
-  ``evseId`` one EVSE is kept free (H01.FR.07): while the free EVSEs are no more than those reservations they
-  report ``Reserved`` (H01.FR.20). A reservation is used when its token is accepted for an EVSE (H03.FR.09; the
-  EVSE goes ``Available`` or ``Occupied``, H03.FR.10) and its id goes with the ``Started`` event
-  (``reservationId``, H01.FR.15). It ends at ``expiryDateTime`` (ReservationStatusUpdate ``Expired``, H04), by
+  RequestStartTransaction (``Rejected``, reasonCode ``Reserved``; its ``groupIdToken`` is compared). Matching is
+  pairwise (token = reserved token, or group = reservation group; see ``runtime.local_auth``). Without ``evseId``
+  one EVSE is kept free (H01.FR.07): while the free EVSEs are no more than those reservations they report
+  ``Reserved`` (H01.FR.20), and a non-matching token is refused when its start would leave fewer free EVSEs than
+  those reservations. "Free" = no fault, operative, no transaction, no waiting token, not reserved; a plugged
+  cable does not make an EVSE unavailable for the reservation (it authorizes nothing), but ReserveNow for a
+  plugged EVSE is ``Occupied``. A matching token that waits (for the cable, or an AuthorizeRemoteStart
+  authorization) claims the reservation (H03.FR.09; the EVSE goes ``Available`` / ``Occupied``, H03.FR.10): it
+  stays stored but holds no EVSE, ends when the transaction starts (``reservationId`` in the ``Started`` event,
+  H01.FR.15) and holds its EVSE again when the token is dropped (failed authorization, EVConnectionTimeOut,
+  unplug, Reset, availability change; no ReservationStatusUpdate, the reservation did not end). Stopping the
+  charger cancels the expiry timers; the next accepted boot re-arms them. It ends at ``expiryDateTime`` (ReservationStatusUpdate ``Expired``, H04), by
   CancelReservation (H02, no ReservationStatusUpdate) or when its EVSE (no ``evseId``: the station) becomes
   Faulted / Unavailable (``Removed``, H01.FR.16 / FR.17). A ReservationStatusUpdate goes through the outbox like
   a StatusNotification (dropped at the end of a session, never resent). The expiry timer runs on the wall clock.
@@ -310,7 +317,7 @@ TRIGGERABLE = frozenset({MT.boot_notification, MT.heartbeat, MT.status_notificat
 NOT_AUTHORIZED_TYPES = frozenset({IdTokenEnumType.central, IdTokenEnumType.no_authorization})
 _ACCEPTED, _PENDING = d.BootStatus.ACCEPTED.value, d.BootStatus.PENDING.value
 def _reservation_view(r: Reservation) -> Dict[str, Any]:
-    return {"id": r.id, "connector": r.connector, "id_tag": r.id_token, "parent_id_tag": r.parent,
+    return {"id": r.id, "connector": r.connector, "id_tag": r.id_token, "parent_id_token": r.parent_id_token,
             "expiry": r.expiry.isoformat()}
 
 
@@ -468,6 +475,9 @@ class Station201(VersionStation):
             if e.tx is not None:
                 self._start_meter(e)
         self._maybe_idle_reset()  # an OnIdle Reset whose last transaction ended while offline
+        for r in list(self.reservations.values()):
+            if r.timer is None:  # cancelled by close(): the charger was stopped and started again
+                self._arm(r)
 
     def on_session_ended(self) -> None:
         for e in self.evses.values():
@@ -770,8 +780,8 @@ class Station201(VersionStation):
         """Start a transaction on a plugged, operative EVSE for an authorized ``tag`` (synchronous); ``profile``
         is the RequestStartTransaction TxProfile, installed bound to the new transaction; ``reservation`` the one
         the token uses now (a waiting token brings its ``pending_reservation``)."""
-        self._use_reservation(e, reservation)
-        reservation_id = e.pending_reservation
+        self._claim(e, reservation)
+        reservation_id = self._consume(e)
         self._clear_pending(e)
         e.finishing = False
         tx = e.tx = _Tx(str(uuid.uuid4()), tag, int(round(e.meter_wh)), self.host.clock(), token_type=token_type,
@@ -903,7 +913,9 @@ class Station201(VersionStation):
 
     def _active(self) -> List[Reservation]:
         """The reservations in use (none while ReservationCtrlr.Enabled is false, Part 2 Controller note)."""
-        return list(self.reservations.values()) if self.dm.bool_value(dm.RESERVATION_ENABLED) else []
+        if not self.dm.bool_value(dm.RESERVATION_ENABLED):
+            return []
+        return [r for r in self.reservations.values() if r.claimed_by is None]  # a claimed one holds no EVSE
 
     def _specific(self, e: _Evse) -> Optional[Reservation]:
         return next((r for r in self._active() if r.connector == e.id), None)
@@ -913,8 +925,9 @@ class Station201(VersionStation):
         return [r for r in self._active() if r.connector == 0]
 
     def _free(self, e: _Evse) -> bool:
-        """``e`` could serve a reservation without ``evseId`` now (idle, operative, not reserved itself)."""
-        return (not e.fault and self._operative(e) and e.tx is None and not e.plugged and e.pending_tag is None
+        """``e`` could serve a reservation without ``evseId`` now: no fault, operative, no transaction, no waiting
+        token, not reserved itself. A plugged cable does not count (module docstring)."""
+        return (not e.fault and self._operative(e) and e.tx is None and e.pending_tag is None
                 and self._specific(e) is None)
 
     def _held_for_zero(self, e: _Evse) -> bool:
@@ -931,12 +944,13 @@ class Station201(VersionStation):
         mine = next((x for x in general if x.matches(tag, group)), None)
         if mine is not None:
             return True, mine
-        others = sum(1 for x in self.evses.values() if x is not e and self._free(x))
-        return others >= len(general), None
+        # H01.FR.07 "one EVSE remains available": refused only when this start takes the last free EVSE(s).
+        left = sum(1 for x in self.evses.values() if self._free(x)) - (1 if self._free(e) else 0)
+        return left >= len(general), None
 
     def _group_may_help(self, e: _Evse) -> bool:
         r = self._specific(e)
-        return any(x.parent for x in ([r] if r is not None else self._general()))
+        return any(x.parent_id_token for x in ([r] if r is not None else self._general()))
 
     async def _group_of(self, tag: str, info: d.IdTokenInfo, asked: bool) -> Optional[str]:
         """The token's groupIdToken: from its authorization, the list or the cache, else an AuthorizeRequest
@@ -955,14 +969,45 @@ class Station201(VersionStation):
         self._remember(tag, res)
         return res.parent_id_token if res is not None else None
 
-    def _use_reservation(self, e: _Evse, r: Optional[Reservation]) -> None:
-        """``e`` takes reservation ``r`` (H03.FR.09: it is consumed; the id goes with the Started event)."""
+    def _claim(self, e: _Evse, r: Optional[Reservation]) -> None:
+        """The token waiting on ``e`` claims ``r`` (H03.FR.09 / FR.10); consumed when the transaction starts
+        (:meth:`_consume`), released when the token is dropped (:meth:`_release`)."""
         if r is None or self.reservations.get(r.id) is not r:
             return
+        r.claimed_by, e.pending_reservation = e.id, r.id
+        self._refresh_all(skip=e)  # ``e`` itself is refreshed by the caller
+
+    def _release(self, e: _Evse) -> None:
+        """The waiting token of ``e`` is dropped: its reservation (if still there) holds its EVSE again."""
+        rid, e.pending_reservation = e.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is not None and r.claimed_by == e.id:
+            r.claimed_by = None
+
+    def _consume(self, e: _Evse) -> Optional[int]:
+        """The transaction on ``e`` starts: its claimed reservation ends; its id for the Started event."""
+        rid, e.pending_reservation = e.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is None or r.claimed_by != e.id:
+            return None  # expired / cancelled / removed meanwhile
         del self.reservations[r.id]
         r.cancel_timer()
-        e.pending_reservation = r.id
-        self._refresh_all(skip=e)  # ``e`` itself is refreshed by the caller
+        return rid
+
+    def _arm(self, r: Reservation) -> None:
+        r.cancel_timer()
+        delay = (r.expiry - self.host.clock()).total_seconds()
+        r.timer = asyncio.get_running_loop().call_later(max(0.0, delay), self._reservation_expired, r)
+
+    def close(self) -> None:
+        """The charger stops: cancel the reservation expiry and EVConnectionTimeOut timers (the reservation
+        timers are re-armed by :meth:`on_online`)."""
+        for r in self.reservations.values():
+            r.cancel_timer()
+        for e in self.evses.values():
+            if e.pending_timer is not None:
+                e.pending_timer.cancel()
+                e.pending_timer = None
 
     def _drop_reservation(self, r: Reservation, update: Optional[ReservationUpdateStatusEnumType]) -> None:
         """End ``r``; ``update`` = the ReservationStatusUpdate to send (before the StatusNotifications)."""
@@ -1014,8 +1059,7 @@ class Station201(VersionStation):
             old.cancel_timer()
         group = req.group_id_token.id_token if req.group_id_token is not None else None
         r = Reservation(req.id, connector, req.id_token.id_token, req.expiry_date_time, group)
-        delay = (req.expiry_date_time - self.host.clock()).total_seconds()
-        r.timer = asyncio.get_running_loop().call_later(max(0.0, delay), self._reservation_expired, r)
+        self._arm(r)
         self.reservations[r.id] = r
         self.host.after_reply(self._refresh_all)  # Reserved after the answer (H01.FR.20 / FR.23)
         return answer(RS.accepted)
@@ -1036,7 +1080,7 @@ class Station201(VersionStation):
             return RS.faulted
         if not self._operative(e):
             return RS.unavailable
-        if not self._free(e) or self._held_for_zero(e):
+        if e.plugged or not self._free(e) or self._held_for_zero(e):
             return RS.occupied
         return RS.accepted
 
@@ -1128,10 +1172,10 @@ class Station201(VersionStation):
             return REASON_RESERVED
         return None
 
-    @staticmethod
-    def _clear_pending(e: _Evse) -> None:
+    def _clear_pending(self, e: _Evse) -> None:
+        """Drop the waiting token; a reservation it claimed holds its EVSE again (the caller refreshes)."""
+        self._release(e)
         e.pending_tag, e.pending_type, e.pending_remote_id = None, LOCAL_TOKEN_TYPE, None
-        e.pending_reservation = None
         e.pending_authorizing, e.pending_profile = False, None
         if e.pending_timer is not None:
             e.pending_timer.cancel()
@@ -1193,7 +1237,7 @@ class Station201(VersionStation):
         e.pending_tag, e.pending_type = req.id_token.id_token, req.id_token.type
         e.pending_remote_id = req.remote_start_id
         e.pending_profile = (profile, wire) if profile is not None and wire is not None else None
-        self._use_reservation(e, self._reservation_for(e, token, group)[1])  # H03.FR.09
+        self._claim(e, self._reservation_for(e, token, group)[1])  # H03.FR.09, consumed by the start
         # AuthorizeRemoteStart: from now on a plug waits for the authorization (see _remote_authorize); a Central /
         # NoAuthorization token is never authorized (F01.FR.02).
         e.pending_authorizing = (self.dm.bool_value(dm.AUTHORIZE_REMOTE_START)
@@ -1207,10 +1251,12 @@ class Station201(VersionStation):
             return  # replaced, started or dropped meanwhile
         if e.fault or not self._operative(e) or self._resetting:
             self._clear_pending(e)
+            self._refresh(e)
             return
         if e.pending_authorizing:
             if self.host.spawn(self._remote_authorize(e, remote_start_id)) is None:
                 self._clear_pending(e)  # the session ended meanwhile
+                self._refresh(e)
             return
         self._remote_start_now(e)
 
@@ -1231,6 +1277,7 @@ class Station201(VersionStation):
         if status is not A.ACCEPTED or e.fault or not self._operative(e) or self._resetting:
             log.info("%s: EVSE %d remote start token %s not started (%s)", self.cfg.id, e.id, tag, status.value)
             self._clear_pending(e)
+            self._refresh(e)  # a claimed reservation holds its EVSE again
             return
         e.pending_authorizing = False
         self._remote_start_now(e)
@@ -1650,7 +1697,7 @@ class Station201(VersionStation):
         if not e.plugged:
             self._clear_pending(e)
             e.pending_tag = id_tag
-            self._use_reservation(e, r)
+            self._claim(e, r)
             self._arm_connection_timeout(e)
             self._refresh(e)
             return A.ACCEPTED

@@ -187,10 +187,12 @@ def test_local_list_full_differential_and_version_numbers(version):
         assert await _send_list(peer, version, 4, True) == "Accepted"
         assert st.local_list.entries() == {} and await _list_version(peer, version) == 4
         assert rt.snapshot()["local_list_version"] == 4
-        # Disabled: refused; 2.0.1 reports version 0 then (D02.FR.03), 1.6 the stored version.
+        # Disabled: refused; the version is 0 then (2.0.1 D02.FR.03; 1.6: used as an empty list, not -1).
         _set(rt, version, "list", False)
         assert await _send_list(peer, version, 7, True) == ("NotSupported" if _v16(version) else "Failed")
-        assert await _list_version(peer, version) == (4 if _v16(version) else 0)
+        assert await _list_version(peer, version) == 0
+        _set(rt, version, "list", True)
+        assert await _list_version(peer, version) == 4  # the stored list is kept
     _run(body, version)
 
 
@@ -503,10 +505,106 @@ def test_cache_expiry_and_lifetime():
     assert cache.get("Y", T0 + timedelta(seconds=30), lifetime_s=60).status is A.ACCEPTED
     assert cache.get("Y", T0 + timedelta(seconds=61), lifetime_s=60).status is A.EXPIRED  # C10.FR.10
     assert cache.get("nope", T0) is None
+    cache.update("W", IdTokenInfo(A.ACCEPTED), T0)
+    assert cache.get("W", T0 + timedelta(days=9), lifetime_s=0).status is A.ACCEPTED  # 0 = no lifetime limit
+
+
+def test_cache_without_capacity_stores_nothing():
+    cache = AuthCache(max_entries=0)
+    cache.update("A", IdTokenInfo(A.ACCEPTED), T0)
+    assert len(cache) == 0 and cache.get("A", T0) is None
 
 
 def test_reservation_matching():
-    r = Reservation(1, 0, "R", T0, parent="G")
-    assert r.matches("R") and r.matches("X", "G") and r.matches("G") and r.matches("X", "R")
+    r = Reservation(1, 0, "R", T0, parent_id_token="G")
+    assert r.matches("R") and r.matches("R", "H") and r.matches("X", "G")
     assert not r.matches("X") and not r.matches("X", "H")
+    assert not r.matches("G") and not r.matches("X", "R")  # no cross matches (pairwise reading)
     assert not Reservation(2, 1, "R", T0).matches("X", None)
+
+
+@VERSIONS
+def test_reserved_tag_waiting_for_the_cable_keeps_its_reservation(version):
+    async def body(peer, rt):
+        s = await _online(peer, rt, version)
+        assert await _reserve(peer, version, 21, 1, "R") == "Accepted"
+        assert await rt.swipe(1, "R") == A.ACCEPTED  # waits for the cable: the reservation is claimed, not gone
+        r = rt.station.reservations[21]
+        assert r.claimed_by == 1 and r.timer is not None
+        await rt.plug(1)
+        await _until(lambda: len(_starts(s, version)) == 1)
+        assert _starts(s, version)[0] == (1, "R", 21) and rt.station.reservations == {}
+    _run(body, version)
+
+
+@VERSIONS
+def test_failed_remote_start_keeps_the_reservation(version):
+    """The RemoteStart token is refused by the CSMS after the answer: the reservation it claimed is kept."""
+    async def body(peer, rt):
+        s = await _online(peer, rt, version)
+        if _v16(version):
+            assert rt.station.store.set("AuthorizeRemoteTxRequests", "true").value == "Accepted"
+        else:
+            rt.station.dm.put(dm.AUTHORIZE_REMOTE_START, "true")
+        assert await _reserve(peer, version, 31, 1, "R") == "Accepted"
+        await _until(lambda: _statuses(s, version, 1)[-1:] == ["Reserved"])
+        if _v16(version):
+            assert (await peer.remote_start(CP, "R", 1)).status == "Accepted"
+        else:
+            r = await peer.request(CP, call201.RequestStartTransaction(
+                id_token={"id_token": "R", "type": "ISO14443"}, remote_start_id=1, evse_id=1))
+            assert r.status == "Accepted"
+        await _until(lambda: _authorizes(s, version) == ["R"] and rt.snapshot()["connectors"][0]["pending_tag"] is None)
+        res = rt.station.reservations[31]
+        assert res.claimed_by is None and res.timer is not None
+        await _until(lambda: rt.snapshot()["connectors"][0]["status"] == "Reserved")
+        await rt.plug(1)
+        assert await rt.swipe(1, "X") == A.RESERVED  # still held for R
+        if not _v16(version):
+            assert s.reservation_updates == []
+    statuses = {"R": "Blocked"}
+    _run(body, version, peer_kw={"tag_statuses": statuses} if _v16(version) else {"token_statuses": statuses})
+
+
+def test_201_ev_connection_timeout_releases_the_claimed_reservation():
+    async def body(peer, rt):
+        s = await _online(peer, rt, "2.0.1")
+        rt.station.dm.put(dm.EV_CONNECTION_TIMEOUT, "1")
+        assert await _reserve(peer, "2.0.1", 41, 1, "R") == "Accepted"
+        await _until(lambda: _statuses(s, "2.0.1", 1)[-1:] == ["Reserved"])
+        assert await rt.swipe(1, "R") == A.ACCEPTED
+        await _until(lambda: _statuses(s, "2.0.1", 1)[-1:] == ["Available"])  # H03.FR.10: claimed
+        await _until(lambda: _statuses(s, "2.0.1", 1)[-1:] == ["Reserved"], timeout=4)  # no cable: held again
+        assert rt.station.reservations[41].claimed_by is None and s.reservation_updates == []
+    _run(body, "2.0.1")
+
+
+@VERSIONS
+def test_connector_zero_reservation_with_plugged_connectors(version):
+    """A plugged cable does not take a connector from a connector-0 reservation; a start does."""
+    async def body(peer, rt):
+        s = await _online(peer, rt, version)
+        assert await _reserve(peer, version, 51, 0, "R") == "Accepted"
+        for c in (1, 2, 3):
+            await rt.plug(c)
+        assert await rt.swipe(1, "X") == A.ACCEPTED  # 2 free connectors left
+        assert await rt.swipe(2, "Y") == A.ACCEPTED  # 1 left: still enough for R
+        assert await rt.swipe(3, "Z") == A.RESERVED  # would take the last one
+        assert await rt.swipe(3, "R") == A.ACCEPTED
+        await _until(lambda: len(_starts(s, version)) == 3)
+        assert _starts(s, version)[2] == (3, "R", 51)
+    _run(body, version, connectors=3)
+
+
+@VERSIONS
+def test_stopping_the_charger_cancels_reservation_timers(version):
+    seen = {}
+
+    async def body(peer, rt):
+        await _online(peer, rt, version)
+        assert await _reserve(peer, version, 61, 1, "R", seconds=300) == "Accepted"
+        assert rt.station.reservations[61].timer is not None
+        seen["rt"] = rt
+    _run(body, version)
+    r = seen["rt"].station.reservations[61]
+    assert r.timer is None  # cancelled by close() when the run loop ended

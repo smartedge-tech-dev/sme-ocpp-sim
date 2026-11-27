@@ -129,6 +129,10 @@ class VersionStation(ABC):
     def on_session_ended(self) -> None:
         """The session tasks are cancelled and the connection is closing: drop per-session state."""
 
+    def close(self) -> None:
+        """The shell's run loop has ended (the charger is stopped): cancel the station's own timers. The station
+        object may run again afterwards (``on_online`` re-arms what it needs). Default: nothing."""
+
     @abstractmethod
     async def wait_heartbeat(self) -> bool:
         """Wait one heartbeat interval; ``True`` when the interval was changed meanwhile (wait again)."""

@@ -66,24 +66,30 @@ List (§3.5.1, §3.5.3).
 Reservations (M6, §3.11, §5.1, §5.13): ReserveNow answers Faulted / Unavailable / Occupied for a faulted,
 inoperative or occupied (transaction, cable plugged, tag waiting, reserved) connector, Rejected for connector 0
 while ReserveConnectorZeroSupported is false, else Accepted; a reservation with the same id is replaced. A
-reserved connector reports Reserved; it only starts for the reserved idTag or a tag whose parent matches the
-reservation's idTag / parentIdTag (§5.13; the parent comes from the authorization, the Local Authorization List
-or the cache, else from an Authorize.req). Any other tag is refused (``Reserved``). A connector-0 reservation
-keeps one connector free: while the free connectors are no more than the connector-0 reservations they report
-Reserved and only a matching tag may take one. A reservation ends when it is used (the StartTransaction carries
-its ``reservationId``), when ``expiryDate`` is reached (StatusNotification Available), when CancelReservation
-names it, or when its connector (connector 0: the charge point) becomes Faulted or Unavailable.
+reserved connector reports Reserved; it only starts for the reserved idTag or a tag whose parent is the
+reservation's parentIdTag (§5.13 read pairwise, see ``runtime.local_auth``; the parent comes from the
+authorization, the Local Authorization List or the cache, else from an Authorize.req). Any other tag is refused
+(``Reserved``). A connector-0 reservation keeps one connector free: while the free connectors are no more than
+the connector-0 reservations they report Reserved, and a non-matching tag is refused when its start would leave
+fewer free connectors than connector-0 reservations. "Free" = no fault, operative, no transaction, no waiting tag,
+not reserved; a plugged cable does not make a connector unavailable for the reservation (it authorizes nothing),
+but a specific ReserveNow on a plugged connector is Occupied. A matching tag that waits (for the cable, or a
+RemoteStart being authorized) claims the reservation: it stays stored but holds no connector; it ends when the
+transaction starts (the StartTransaction carries its ``reservationId``) and holds its connector again when the
+tag is dropped (failed authorization, Reset, availability change). A reservation ends when it is used, when
+``expiryDate`` is reached (StatusNotification Available), when CancelReservation names it, or when its connector
+(connector 0: the charge point) becomes Faulted or Unavailable. Stopping the charger cancels the expiry timers;
+the next accepted boot re-arms them (an expired reservation then ends at once).
 
 Interpretations (M6, not defined by the spec): SendLocalList while LocalAuthListEnabled is false is answered
 NotSupported; one with more entries than SendLocalListMaxLength, duplicate tags, a Full entry without idTagInfo or
 a result longer than LocalAuthListMaxLength is Failed (the list is unchanged); a Full update may set any version
 > 0, a Differential one must raise it (VersionMismatch). GetLocalListVersion reports the stored version (0 = no
-list received yet), also while the list is disabled. ClearCache is Rejected while AuthorizationCacheEnabled is
+list received yet); while LocalAuthListEnabled is false it reports 0 (§5.10: 0 = the list is empty, -1 = Local
+Authorization Lists not supported; the profile is supported, a disabled list is used as an empty one, as 2.0.1
+D02.FR.03). ClearCache is Rejected while AuthorizationCacheEnabled is
 false (as 2.0.1 C11.FR.04). ReserveNow with an expiryDate that is not in the future is Rejected. A replacing
-ReserveNow is checked as if the old reservation did not exist; when it is refused, the old one stays. A
-reservation is used when its tag is accepted for the connector: a tag that then waits for the cable (or a
-RemoteStart for it) holds the connector as before, and the reservationId goes with the StartTransaction that
-follows. RemoteStartTransaction on a reserved connector compares the request's idTag with the reservation's
+ReserveNow is checked as if the old reservation did not exist; when it is refused, the old one stays. RemoteStartTransaction on a reserved connector compares the request's idTag with the reservation's
 idTag / parentIdTag only (no parent lookup). The expiry timer runs on the wall clock (not scaled, not paused).
 TODO(spec): the LocalListConflict StatusNotification (§3.5.2) and the cache update "upon receipt of a
 ReserveNow.conf" (§5.13, which reads like an Authorize.conf) are not sent / done.
@@ -157,7 +163,7 @@ RESERVE_ZERO_KEY = "ReserveConnectorZeroSupported"
 
 
 def _reservation_view(r: Reservation) -> Dict[str, Any]:
-    return {"id": r.id, "connector": r.connector, "id_tag": r.id_token, "parent_id_tag": r.parent,
+    return {"id": r.id, "connector": r.connector, "id_tag": r.id_token, "parent_id_token": r.parent_id_token,
             "expiry": r.expiry.isoformat()}
 
 
@@ -287,7 +293,8 @@ class Station16(VersionStation):
             d.ClearProfiles: self._clear_profiles,
             d.GetComposite: self._get_composite,
             d.SendLocalList: self._send_local_list,
-            d.GetLocalListVersion: lambda cmd: self.local_list.version,
+            d.GetLocalListVersion: lambda cmd: (self.local_list.version if self.store.get_bool(LIST_ENABLED_KEY)
+                                                else 0),
             d.ClearCache: self._clear_cache,
             d.ReserveNow: self._reserve_now,
             d.CancelReservation: self._cancel_reservation,
@@ -316,6 +323,9 @@ class Station16(VersionStation):
         for c in self.conns.values():
             if c.tx is not None and c.tx.tx_id is not None:
                 self._start_meter(c)
+        for r in list(self.reservations.values()):
+            if r.timer is None:  # cancelled by close(): the charger was stopped and started again
+                self._arm(r)
 
     def on_session_ended(self) -> None:
         for c in self.conns.values():
@@ -589,16 +599,21 @@ class Station16(VersionStation):
 
     # ================================================================== reservations (M6)
 
+    def _active(self) -> List[Reservation]:
+        """Reservations that hold a connector: not claimed by a waiting tag (``runtime.local_auth``)."""
+        return [r for r in self.reservations.values() if r.claimed_by is None]
+
     def _specific(self, c: _Conn) -> Optional[Reservation]:
-        return next((r for r in self.reservations.values() if r.connector == c.id), None)
+        return next((r for r in self._active() if r.connector == c.id), None)
 
     def _general(self) -> List[Reservation]:
         """Connector-0 reservations."""
-        return [r for r in self.reservations.values() if r.connector == 0]
+        return [r for r in self._active() if r.connector == 0]
 
     def _free(self, c: _Conn) -> bool:
-        """``c`` could serve a connector-0 reservation now (idle, operative, not reserved itself)."""
-        return (not c.fault and c.operative and c.tx is None and not c.plugged and c.pending_tag is None
+        """``c`` could serve a connector-0 reservation now: no fault, operative, no transaction, no waiting tag,
+        not reserved itself. A plugged cable does not count (it authorizes nothing; module docstring)."""
+        return (not c.fault and c.operative and c.tx is None and c.pending_tag is None
                 and self._specific(c) is None)
 
     def _held_for_zero(self, c: _Conn) -> bool:
@@ -615,13 +630,14 @@ class Station16(VersionStation):
         mine = next((x for x in general if x.matches(tag, parent)), None)
         if mine is not None:
             return True, mine
-        others = sum(1 for x in self.conns.values() if x is not c and self._free(x))
-        return others >= len(general), None
+        # §5.13 "one connector remains available": refused only when this start takes the last free connector(s).
+        left = sum(1 for x in self.conns.values() if self._free(x)) - (1 if self._free(c) else 0)
+        return left >= len(general), None
 
     def _parent_may_help(self, c: _Conn, tag: str) -> bool:
         """The reservations relevant for ``c`` refuse ``tag`` by itself, but one has a parentIdTag."""
         r = self._specific(c)
-        return any(x.parent for x in ([r] if r is not None else self._general()))
+        return any(x.parent_id_token for x in ([r] if r is not None else self._general()))
 
     async def _parent_of(self, tag: str, info: d.IdTokenInfo, asked: bool) -> Optional[str]:
         """The tag's parent: from its authorization, the Local Authorization List or the cache, else from an
@@ -638,14 +654,40 @@ class Station16(VersionStation):
         self._remember(tag, res)
         return res.parent_id_token if res is not None else None
 
-    def _use_reservation(self, c: _Conn, r: Optional[Reservation]) -> None:
-        """``c`` takes reservation ``r`` (it ends; the reservationId goes with the StartTransaction)."""
+    def _claim(self, c: _Conn, r: Optional[Reservation]) -> None:
+        """The tag waiting on ``c`` claims reservation ``r``; it is consumed when the transaction starts
+        (:meth:`_consume`) and released when the tag is dropped (:meth:`_release`)."""
         if r is None or self.reservations.get(r.id) is not r:
             return
+        r.claimed_by, c.pending_reservation = c.id, r.id
+        self._refresh_all(skip=c)  # ``c`` itself is refreshed by the caller
+
+    def _release(self, c: _Conn) -> None:
+        """The waiting tag of ``c`` is dropped: its reservation (if still there) holds its connector again."""
+        rid, c.pending_reservation = c.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is not None and r.claimed_by == c.id:
+            r.claimed_by = None
+
+    def _consume(self, c: _Conn) -> Optional[int]:
+        """The transaction on ``c`` starts: its claimed reservation ends; its id for StartTransaction.req."""
+        rid, c.pending_reservation = c.pending_reservation, None
+        r = self.reservations.get(rid) if rid is not None else None
+        if r is None or r.claimed_by != c.id:
+            return None  # expired / cancelled meanwhile
         del self.reservations[r.id]
         r.cancel_timer()
-        c.pending_reservation = r.id
-        self._refresh_all(skip=c)  # ``c`` itself is refreshed by the caller
+        return rid
+
+    def _arm(self, r: Reservation) -> None:
+        r.cancel_timer()
+        delay = (r.expiry - self.host.clock()).total_seconds()
+        r.timer = asyncio.get_running_loop().call_later(max(0.0, delay), self._reservation_expired, r)
+
+    def close(self) -> None:
+        """The charger stops: cancel the reservation expiry timers (re-armed by :meth:`on_online`)."""
+        for r in self.reservations.values():
+            r.cancel_timer()
 
     def _drop_reservation(self, r: Reservation, why: str) -> None:
         if self.reservations.get(r.id) is not r:
@@ -680,8 +722,7 @@ class Station16(VersionStation):
         if old is not None:
             old.cancel_timer()
         r = Reservation(cmd.reservation_id, cmd.evse_id, cmd.id_token, cmd.expiry, cmd.parent_id_token)
-        delay = (cmd.expiry - self.host.clock()).total_seconds()
-        r.timer = asyncio.get_running_loop().call_later(max(0.0, delay), self._reservation_expired, r)
+        self._arm(r)
         self.reservations[r.id] = r
         self.host.after_reply(self._refresh_all)  # Reserved after the answer
         return RS.ACCEPTED
@@ -701,7 +742,7 @@ class Station16(VersionStation):
             return RS.FAULTED
         if not c.operative:
             return RS.UNAVAILABLE
-        if not self._free(c) or self._held_for_zero(c):
+        if c.plugged or not self._free(c) or self._held_for_zero(c):
             return RS.OCCUPIED
         return RS.ACCEPTED
 
@@ -822,9 +863,9 @@ class Station16(VersionStation):
         c.finishing = False
         if not c.plugged:
             if c.pending_tag != tag:
-                c.pending_reservation = None  # another tag's reservation does not carry over
+                self._release(c)  # another tag's claim does not carry over
             c.pending_tag, c.pending_profile = tag, profile
-            self._use_reservation(c, reservation)
+            self._claim(c, reservation)
             self._refresh(c)
             return A.ACCEPTED
         if not self.host.online:
@@ -833,8 +874,8 @@ class Station16(VersionStation):
             self._clear_pending(c)
             self._refresh(c)
             return A.OFFLINE
-        self._use_reservation(c, reservation)
-        reservation_id = c.pending_reservation
+        self._claim(c, reservation)
+        reservation_id = self._consume(c)
         self._clear_pending(c)
         tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self.host.clock(), profile=profile,
                         reservation_id=reservation_id)
@@ -1018,7 +1059,7 @@ class Station16(VersionStation):
         # Reserve until the follow-up runs; the profile travels with the tag, so a cable plugged in meanwhile
         # (plug -> _start_tx) starts the transaction with it (§5.16.2).
         c.pending_tag, c.pending_profile = cmd.id_token, cmd.profile
-        self._use_reservation(c, self._reservation_for(c, cmd.id_token, None)[1])
+        self._claim(c, self._reservation_for(c, cmd.id_token, None)[1])  # consumed when the transaction starts
         self.host.after_reply(functools.partial(self._remote_start_go, c, cmd.id_token, cmd.profile))
         return d.CommandStatus.ACCEPTED
 
@@ -1130,9 +1171,10 @@ class Station16(VersionStation):
 
     # ================================================================== public API (Web API, M6)
 
-    @staticmethod
-    def _clear_pending(c: _Conn) -> None:
-        c.pending_tag, c.pending_profile, c.pending_reservation = None, None, None
+    def _clear_pending(self, c: _Conn) -> None:
+        """Drop the waiting tag; a reservation it claimed holds its connector again (the caller refreshes)."""
+        self._release(c)
+        c.pending_tag, c.pending_profile = None, None
 
     def _conn(self, connector: int) -> _Conn:
         try:
