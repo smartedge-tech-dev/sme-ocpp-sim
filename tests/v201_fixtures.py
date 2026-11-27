@@ -70,6 +70,56 @@ TRANSACTION_EVENT_MIN = {
     "transactionInfo": {"transactionId": "0001"},
 }
 
+# --- M3 remote control -----------------------------------------------------------------------
+
+CHARGING_PROFILE_MIN = {
+    "id": 1,
+    "stackLevel": 0,
+    "chargingProfilePurpose": "TxProfile",
+    "chargingProfileKind": "Relative",
+    "chargingSchedule": [{"id": 1, "chargingRateUnit": "A",
+                          "chargingSchedulePeriod": [{"startPeriod": 0, "limit": 16.0}]}],
+}
+CHARGING_PROFILE_FULL = {
+    "customData": CUSTOM,
+    "id": 7,
+    "stackLevel": 2,
+    "chargingProfilePurpose": "TxProfile",
+    "chargingProfileKind": "Recurring",
+    "recurrencyKind": "Daily",
+    "validFrom": T1,
+    "validTo": T2,
+    "chargingSchedule": [{
+        "customData": CUSTOM,
+        "id": 3,
+        "startSchedule": T1,
+        "duration": 3600,
+        "chargingRateUnit": "W",
+        "chargingSchedulePeriod": [
+            {"customData": CUSTOM, "startPeriod": 0, "limit": 7400.0, "numberPhases": 1, "phaseToUse": 1},
+            {"startPeriod": 1800, "limit": 3700.5},
+        ],
+        "minChargingRate": 1380.0,
+        "salesTariff": {
+            "customData": CUSTOM,
+            "id": 9,
+            "salesTariffDescription": "Night tariff",
+            "numEPriceLevels": 2,
+            "salesTariffEntry": [{
+                "customData": CUSTOM,
+                "relativeTimeInterval": {"customData": CUSTOM, "start": 0, "duration": 1800},
+                "ePriceLevel": 1,
+                "consumptionCost": [{"customData": CUSTOM, "startValue": 0.0, "cost": [
+                    {"customData": CUSTOM, "costKind": "RelativePricePercentage", "amount": 80,
+                     "amountMultiplier": 0}]}],
+            }],
+        },
+    }],
+    "transactionId": "T" * 36,
+}
+EVSE_FULL = {"customData": CUSTOM, "id": 1, "connectorId": 1}
+
+
 FIXTURES: dict = {
     ("BootNotification", "request"): {
         "min": {"chargingStation": {"model": "SME-AC22", "vendorName": "SME"}, "reason": "PowerUp"},
@@ -177,5 +227,57 @@ FIXTURES: dict = {
     ("DataTransfer", "response"): {
         "min": {"status": "UnknownVendorId"},
         "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL, "data": "pong"},
+    },
+    ("RequestStartTransaction", "request"): {
+        "min": {"idToken": ID_TOKEN_MIN, "remoteStartId": 1},
+        "profile": {"idToken": {"idToken": "R1", "type": "Central"}, "remoteStartId": 2,
+                    "chargingProfile": CHARGING_PROFILE_MIN},
+        "full": {"customData": CUSTOM, "evseId": 1, "groupIdToken": {"idToken": "GROUP01", "type": "Central"},
+                 "idToken": ID_TOKEN_FULL, "remoteStartId": 42, "chargingProfile": CHARGING_PROFILE_FULL},
+    },
+    ("RequestStartTransaction", "response"): {
+        "min": {"status": "Rejected"},
+        "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL,
+                 "transactionId": "T" * 36},
+    },
+    ("RequestStopTransaction", "request"): {
+        "min": {"transactionId": "tx-1"},
+        "full": {"customData": CUSTOM, "transactionId": "T" * 36},
+    },
+    ("RequestStopTransaction", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Rejected", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("UnlockConnector", "request"): {
+        "min": {"evseId": 1, "connectorId": 1},
+        "full": {"customData": CUSTOM, "evseId": 2, "connectorId": 1},
+    },
+    ("UnlockConnector", "response"): {
+        "min": {"status": "Unlocked"},
+        "full": {"customData": CUSTOM, "status": "OngoingAuthorizedTransaction", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("Reset", "request"): {
+        "min": {"type": "Immediate"},
+        "full": {"customData": CUSTOM, "type": "OnIdle", "evseId": 1},
+    },
+    ("Reset", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Scheduled", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("ChangeAvailability", "request"): {
+        "min": {"operationalStatus": "Inoperative"},
+        "full": {"customData": CUSTOM, "evse": EVSE_FULL, "operationalStatus": "Operative"},
+    },
+    ("ChangeAvailability", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Scheduled", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("TriggerMessage", "request"): {
+        "min": {"requestedMessage": "Heartbeat"},
+        "full": {"customData": CUSTOM, "evse": EVSE_FULL, "requestedMessage": "StatusNotification"},
+    },
+    ("TriggerMessage", "response"): {
+        "min": {"status": "NotImplemented"},
+        "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL},
     },
 }

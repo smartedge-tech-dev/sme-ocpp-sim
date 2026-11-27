@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   each), Authorize with every `auth_mode`, the TransactionEvent flow Started -> Updated -> Ended with
   station-generated transaction ids, continuous `seqNo` and offline queueing (`offline: true`), MeterValues and
   DataTransfer. Every other 2.0.1 action, including the ISO 15118 messages, is answered `NotImplemented`.
+- OCPP 2.0.1 remote control: RequestStartTransaction (with `remoteStartId` and an optional `TxProfile`, not
+  applied before smart charging), RequestStopTransaction, UnlockConnector, Reset (`Immediate` / `OnIdle`, with
+  `Scheduled` while a transaction runs and BootNotification reason `RemoteReset`), ChangeAvailability (station
+  or EVSE level, `Scheduled` while a transaction runs) and TriggerMessage (BootNotification, Heartbeat,
+  StatusNotification, MeterValues, TransactionEvent; the other messages answer `NotImplemented`).
 
 ### Changed
 

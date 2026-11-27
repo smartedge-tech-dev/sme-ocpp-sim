@@ -8,6 +8,7 @@ import json
 import pytest
 from rpc_fakes import FakeWs
 
+from sme_ocpp_sim.protocol.v201.adapter import REMOTE_ACTIONS
 from sme_ocpp_sim.protocol.v201.codec import dump, parse
 from sme_ocpp_sim.rpc import OCPP16_ERRORS, OCPP201_ERRORS, RpcConnection, framer
 
@@ -159,8 +160,9 @@ def test_dev_peer_accepts_every_core_request_and_its_answers_parse():
         try:
             async with connect(f"{peer.url}/CS001", subprotocols=[peer_mod.SUBPROTOCOL]) as ws:
                 assert ws.subprotocol == "ocpp2.0.1"
-                calls = [(a, v, p) for (a, k), variants in sorted(FIXTURES.items()) if k == "request"
-                         for v, p in variants.items()]
+                # CS -> CSMS only: the remote-control messages (M3) go the other way.
+                calls = [(a, v, p) for (a, k), variants in sorted(FIXTURES.items())
+                         if k == "request" and a not in REMOTE_ACTIONS for v, p in variants.items()]
                 calls.append(("Authorize", "blocked", {"idToken": dict(ID_TOKEN_MIN, idToken="BLOCKED1")}))
                 for n, (action, variant, payload) in enumerate(calls):
                     model, _ = parse(action, payload, strict=True)
