@@ -47,7 +47,7 @@ def test_error_table_wire_names():
         "security_error": "SecurityError",
         "format_violation": "FormatViolation",
         "property_constraint_violation": "PropertyConstraintViolation",
-        "occurrence_constraint_violation": "OccurenceConstraintViolation",
+        "occurrence_constraint_violation": "OccurrenceConstraintViolation",
         "type_constraint_violation": "TypeConstraintViolation",
         "generic_error": "GenericError",
         "rpc_framework_error": "RpcFrameworkError",

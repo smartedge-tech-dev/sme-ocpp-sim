@@ -73,6 +73,12 @@ class StationHost(Protocol):
     def end_session_for_reset(self) -> None:
         """Close the session because of a Reset (reconnect without back-off)."""
 
+    def reconnect_with_password(self, password: str) -> None:
+        """Use ``password`` for Basic Auth from now on (at once) and close the session after the answer to the
+        current CSMS CALL went out; the shell reconnects with it without back-off (2.0.1 A01). The password is
+        kept in memory only (not written to the YAML). There is no rollback: a CSMS that did not adopt the
+        password refuses every later connection, as it would refuse a real station."""
+
     def kick_boot(self) -> None:
         """Wake the boot loop (send the next BootNotification now)."""
 

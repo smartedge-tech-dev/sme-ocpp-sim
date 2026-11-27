@@ -230,7 +230,9 @@ def test_external_limit_notifies_and_the_power_follows():
         assert s.cleared_limits == [{"charging_limit_source": "EMS"}, {"charging_limit_source": "EMS", "evse_id": 1}]
         await rt.set_external_limit(1, None)  # nothing to clear: nothing sent
         assert rt.installed_profiles() == ()
-    _scenario(body, cfg_kw={"auth_mode": "accept_all"}, rt_kw={"tick_s": 0.05})
+    _scenario(body, cfg_kw={"auth_mode": "accept_all", "variables": [
+        {"component": "SmartChargingCtrlr", "variable": "NotifyChargingLimitWithSchedules", "value": True}]},
+              rt_kw={"tick_s": 0.05})
 
 
 def test_external_limit_refused_when_external_control_is_disabled():

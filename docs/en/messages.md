@@ -116,7 +116,7 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | Use GetBaseReport |
 | GetTransactionStatus | Not supported |  |
-| GetVariables | Supported | Attribute types Actual / Target / MinSet / MaxSet; `UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`; a WriteOnly variable is `Rejected`. More items than `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurenceConstraintViolation` |
+| GetVariables | Supported | Attribute types Actual / Target / MinSet / MaxSet; `UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`; a WriteOnly variable is `Rejected`. More items than `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurrenceConstraintViolation` |
 | InstallCertificate | Not supported |  |
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | Supported | `remoteStartId` and an optional `chargingProfile` (a TxProfile without `transactionId`, installed bound to the new transaction). Without `evseId` the first startable EVSE with a plugged cable is used. With `AuthCtrlr.AuthorizeRemoteStart` true the token is authorized like a presented one |

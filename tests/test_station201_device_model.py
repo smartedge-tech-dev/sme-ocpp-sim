@@ -77,12 +77,12 @@ def test_set_variables_statuses_and_heartbeat_interval():
             _sv("OCPPCommCtrlr", "HeartbeatInterval", "1"),
             _sv("TxCtrlr", "TxStartPoint", "EVConnected"),
             _sv("OCPPCommCtrlr", "HeartbeatInterval", "soon"),
-            _sv("SecurityCtrlr", "BasicAuthPassword", "0123456789abcdef"),
+            _sv("SecurityCtrlr", "BasicAuthPassword", "short"),
             _sv("Nope", "X", "1"),
             _sv("OCPPCommCtrlr", "Nope", "1"),
         ]))
         res = r.set_variable_result
-        assert _statuses(res) == ["Accepted", "Rejected", "Rejected", "RebootRequired", "UnknownComponent",
+        assert _statuses(res) == ["Accepted", "Rejected", "Rejected", "Rejected", "UnknownComponent",
                                   "UnknownVariable"]
         assert res[1]["attribute_status_info"]["reason_code"] == "ReadOnly"
         assert res[2]["attribute_status_info"]["reason_code"] == "InvalidValue"
@@ -98,10 +98,10 @@ def test_items_per_message_exceeded_is_a_callerror():
     async def body(peer, rt):
         s = await _online(peer, rt)
         await peer.request(CP, call.GetVariables(get_variable_data=[_gv("OCPPCommCtrlr", "HeartbeatInterval")] * 3))
-        assert _last_error(s) == "OccurenceConstraintViolation"  # the 2.0.1 spelling
+        assert _last_error(s) == "OccurrenceConstraintViolation"  # Part 4 Table 8 spelling
         await peer.request(CP, call.SetVariables(set_variable_data=[_sv("OCPPCommCtrlr", "HeartbeatInterval", "9")]
                                                  * 2))
-        assert _last_error(s) == "OccurenceConstraintViolation"  # the 2.0.1 spelling
+        assert _last_error(s) == "OccurrenceConstraintViolation"  # Part 4 Table 8 spelling
         assert rt.station.heartbeat_interval_s == 30  # nothing applied
     _scenario(body, cfg_kw={"variables": [
         {"component": "DeviceDataCtrlr", "variable": "ItemsPerMessage", "variable_instance": "GetVariables",
@@ -150,7 +150,9 @@ def test_get_base_report_is_split_into_notify_report_parts():
         r = await peer.request(CP, call.GetBaseReport(request_id=9, report_base="SummaryInventory"))
         await _until(lambda: s.reports and not s.reports[-1].get("tbc", False))
         names = sorted((i["component"]["name"], i["variable"]["name"]) for i in _report_items(s.reports))
-        assert names == [("AuthCtrlr", "Enabled"), ("EVSE", "AvailabilityState"), ("EVSE", "AvailabilityState")]
+        # B07.FR.09: the station's and each EVSE's AvailabilityState
+        assert names == [("ChargingStation", "AvailabilityState"), ("EVSE", "AvailabilityState"),
+                         ("EVSE", "AvailabilityState")]
     _scenario(body, cfg_kw={"connectors": 2, "variables": [
         {"component": "DeviceDataCtrlr", "variable": "ItemsPerMessage", "variable_instance": "GetReport",
          "value": 4}]})

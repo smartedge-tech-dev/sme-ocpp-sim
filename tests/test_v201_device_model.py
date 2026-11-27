@@ -78,7 +78,7 @@ def test_standard_set_names_and_defaults():
 def test_standard_names_are_the_ocpp_library_names():
     """Component / variable / instance names of the standard set exist in ``ocpp.v201.enums`` (Appendix 3)."""
     enums = pytest.importorskip("ocpp.v201.enums")
-    components = {c.value for c in enums.ControllerComponentName} | {"EVSE"}
+    components = {c.value for c in enums.ControllerComponentName} | {"EVSE", "ChargingStation", "Connector"}
     for v in _model().variables():
         assert v.component in components
         if v.component == "EVSE":
@@ -188,7 +188,7 @@ def test_set_write_only_and_reboot_required():
     model = _model(variables=USER_VARS)
     assert _set(model, "VendorCtrlr", "Secret", "new").attribute_status.value == "Accepted"
     r = _set(model, "SecurityCtrlr", "BasicAuthPassword", "x" * 20)
-    assert r.attribute_status.value == "RebootRequired"
+    assert r.attribute_status.value == "Accepted"  # A01: the station reconnects with it (not RebootRequired)
     r = _set(model, "VendorCtrlr", "Mode2", "FALSE")
     assert r.attribute_status.value == "RebootRequired" and model.lookup("VendorCtrlr", "Mode2").value() == "false"
     # An invalid value is still Rejected, not RebootRequired.
@@ -252,7 +252,7 @@ def test_report_bases():
     assert conf and all(r.variable_attribute[0].mutability is not MutabilityEnumType.read_only for r in conf)
     assert len(conf) < len(full)
     summary = {(r.component.name, r.variable.name) for r in model.report(ReportBaseEnumType.summary_inventory)}
-    assert summary == {("AuthCtrlr", "Enabled"), ("EVSE", "AvailabilityState"), ("VendorCtrlr", "Mode")}
+    assert summary == {("ChargingStation", "AvailabilityState"), ("EVSE", "AvailabilityState"), ("VendorCtrlr", "Mode")}
     by_name = {(r.component.name, r.variable.name, r.variable.instance): r for r in full}
     mode = by_name[("VendorCtrlr", "Mode", None)]
     assert [(a.type.value, a.value) for a in mode.variable_attribute] == [("Actual", "Eco"), ("Target", "Fast")]
@@ -260,7 +260,7 @@ def test_report_bases():
     assert by_name[("VendorCtrlr", "Limit", None)].variable_characteristics.unit == "kW"
     secret = by_name[("VendorCtrlr", "Secret", None)].variable_attribute[0]
     assert secret.value is None and secret.mutability is MutabilityEnumType.write_only
-    evse = [r for r in full if r.component.name == "EVSE"]
+    evse = [r for r in full if r.component.name == "EVSE" and r.variable.name == "AvailabilityState"]
     assert [r.component.evse.id for r in evse] == [1, 2]
     connector = by_name[("Connector", "Type", None)].component.evse
     assert (connector.id, connector.connector_id) == (1, 1)

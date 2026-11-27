@@ -112,7 +112,7 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | 请使用 GetBaseReport |
 | GetTransactionStatus | Not supported |  |
-| GetVariables | 支持 | 属性类型 Actual / Target / MinSet / MaxSet；`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`；WriteOnly 变量 `Rejected`。条目数超过 `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurenceConstraintViolation` |
+| GetVariables | 支持 | 属性类型 Actual / Target / MinSet / MaxSet；`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`；WriteOnly 变量 `Rejected`。条目数超过 `DeviceDataCtrlr.ItemsPerMessage[GetVariables]` → CALLERROR `OccurrenceConstraintViolation` |
 | InstallCertificate | Not supported |  |
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | 支持 | `remoteStartId` 与可选的 `chargingProfile`（不带 `transactionId` 的 TxProfile，安装后绑定到新交易）。无 `evseId` 时使用第一个已插枪且可启动的 EVSE。`AuthCtrlr.AuthorizeRemoteStart` 为 true 时，令牌与现场出示一样进行授权 |
