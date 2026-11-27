@@ -9,7 +9,8 @@ Security profiles:
 Profile 3 (OCPP 2.0.1 Part 2 A00.FR.401 - FR.403, Table 18): the Charging Station authenticates itself with its
 certificate as the TLS client certificate; Basic Auth is not part of the profile, so no Authorization header is
 sent (``password`` must be ``None``; the config refuses a password with profile 3). The 1.6 Security Whitepaper
-defines the same profile (UNVERIFIED: the whitepaper is not in the local spec folder).
+edition 4 §2.5 defines the same profile (A00.FR.401 / FR.402; no Basic Auth requirement), profiles 1 / 2 with
+the Basic Auth username = the charger identity (A00.FR.204 / FR.303) in §2.3 / §2.4.
 
 A CSMS that refuses the client certificate aborts the TLS handshake with an alert; with TLS 1.3 the client only
 sees it while reading the HTTP upgrade response. Such failures are classified ``client_cert_rejected``: a

@@ -111,7 +111,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `serial` | 无 | `chargePointSerialNumber`（最多 25） |
 | `firmware` | `"0.1.0"` | `firmwareVersion`（最多 50） |
 | `connectors` | `1` | connector 数量（1–32）；所有 connector 共用下面的供电设置和 `max_power_w`。OCPP 2.0.1：EVSE 数量（每个一个 connector） |
-| `config_keys` | `{}` | OCPP 1.6：配置键初始值，例如 `HeartbeatInterval: 300`；数字和布尔值可以不加引号。2.0.1 充电桩不使用（见 `variables`） |
+| `config_keys` | `{}` | OCPP 1.6：配置键初始值，例如 `HeartbeatInterval: 300`；数字和布尔值可以不加引号。2.0.1 充电桩不使用（见 `variables`）。`AuthorizationKey` 不能在这里设置（使用 `password`）；Security Whitepaper 的键 `SecurityProfile`（只读，当前使用的 Profile）、`CpoName`（默认 `vendor`）、`CertificateStoreMaxLength`、`AdditionalRootCertificateCheck`（`false`）也在其中 |
 | `auth_mode` | `local_then_csms` | `local_only`（仅 `id_tags`）、`csms_only`（始终 Authorize）、`local_then_csms`（先查 `id_tags`，再 Authorize）、`accept_all` |
 | `id_tags` | `[]` | 本地接受的 ID 标签（每个最多 20 个字符，不可重复） |
 | `boot_retry_s` | `60.0` | CSMS 以 interval 0 应答 Pending / Rejected 时的 Boot 重试间隔 |

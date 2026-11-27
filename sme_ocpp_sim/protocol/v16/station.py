@@ -109,25 +109,31 @@ The update survives reconnects but not a stop of the charger. A Reset during an 
 While an update waits for its retrieveDate nothing has been reported yet (1.6 has no DownloadScheduled), so a
 triggered FirmwareStatusNotification sends Idle.
 
-Security (M8, OCPP 1.6 Security Whitepaper; ``runtime.security`` has the shared interpretations; the whitepaper is
-not in the local spec folder, so the 1.6 rules below follow OCPP 2.0.1 A02 / A04 / M03 - M05, UNVERIFIED):
-ExtendedTriggerMessage serves BootNotification / Heartbeat / MeterValues / StatusNotification /
-FirmwareStatusNotification like TriggerMessage (FirmwareStatusNotification is the core message: SignedUpdateFirmware
-is not implemented) and SignChargePointCertificate: Accepted, then a new key pair and a SignCertificate with its
-CSR (CN = ``serial`` or the charger id, O = CpoName, default ``vendor``); LogStatusNotification is NotImplemented
-(GetLog is not implemented). CertificateSigned is Accepted for a chain matching the outstanding CSR (else Rejected
-with an InvalidChargePointCertificate event); with security profile 3 the charger then reconnects with the new
-certificate, with profile 0 - 2 it is only stored (those profiles send no client certificate).
+Security (M8, OCPP 1.6 Security Whitepaper edition 4, "WP"; ``runtime.security`` has the shared interpretations):
+ExtendedTriggerMessage (WP §5.5, §6.16) serves BootNotification / Heartbeat / MeterValues / StatusNotification
+like TriggerMessage and SignChargePointCertificate (A02): Accepted, then a new key pair and a SignCertificate with
+its CSR (CN = ``serial`` or the charger id, A00.FR.511; O = CpoName, A02.FR.29, default ``vendor``).
+FirmwareStatusNotification there triggers a SignedFirmwareStatusNotification (WP §6.16) and LogStatusNotification
+a LogStatusNotification: both are NotImplemented (SignedUpdateFirmware / GetLog are not implemented). A
+``connectorId`` of 0 is CALLERROR PropertyConstraintViolation (WP §5.5: "connectorId > 0"). CertificateSigned is
+Accepted for a chain matching the outstanding CSR (else Rejected with an InvalidChargePointCertificate event,
+A02.FR.07); with security profile 3 the charger then reconnects with the new certificate (A02.FR.08), with
+profile 0 - 2 it is only stored (those profiles send no client certificate).
 InstallCertificate / DeleteCertificate / GetInstalledCertificateIds manage CentralSystemRootCertificate /
 ManufacturerRootCertificate entries; installed central system roots are trusted for the next TLS connection.
 SecurityEventNotification: StartupOfTheDevice (the station is created), ResetOrReboot (a Reset or the firmware
 reboot), FirmwareUpdated (Installed), InvalidCentralSystemCertificate (TLS server check failed),
 FailedToAuthenticateAtCentralSystem (HTTP 401 / client certificate refused), InvalidChargePointCertificate,
-ReconfigurationOfSecurityParameters (a new client certificate), DiscardedRenewedClientCertificate. The
-security keys (SecurityProfile R, derived; CpoName RW; CertificateStoreMaxLength R;
-AdditionalRootCertificateCheck R false) are in ``config_keys``. SignedUpdateFirmware, GetLog,
-LogStatusNotification and SignedFirmwareStatusNotification are not implemented (CALLERROR NotImplemented): they
-need a per-request message set in ``runtime.maintenance`` and the whitepaper's status tables, left for later.
+ReconfigurationOfSecurityParameters (a new client certificate or AuthorizationKey), DiscardedRenewedClientCertificate
+(names and the critical flag as in WP §8). The security keys (WP §7: SecurityProfile R, derived; AuthorizationKey
+W; CpoName RW; CertificateStoreMaxLength R; AdditionalRootCertificateCheck R false) are in ``config_keys``.
+ChangeConfiguration of AuthorizationKey (A01) is Accepted for 16 - 40 characters (WP §7.2: at least 16 bytes, at
+most 40 hexadecimal digits; the characters are not checked) while profile 0 - 2 is in use, else Rejected (A01
+prerequisite: profile 1 or 2; profile 3 sends no Basic Auth); the charger then reconnects with the new password
+(A01 steps 3 - 4) and logs ReconfigurationOfSecurityParameters without the password (A01: "log the change of
+AuthorizationKey in the Security log", not its content). SignedUpdateFirmware, GetLog, LogStatusNotification and
+SignedFirmwareStatusNotification (WP §4, N01) are not implemented (CALLERROR NotImplemented): they need a
+per-request message set in ``runtime.maintenance``, left for later.
 
 Concurrency invariant: there is no lock around connector state. Every state check and the mutation that depends
 on it run without an ``await`` in between (single-threaded asyncio), so they are atomic.
@@ -207,6 +213,9 @@ RESERVE_ZERO_KEY = "ReserveConnectorZeroSupported"
 SECURITY_PROFILE_KEY = "SecurityProfile"
 CPO_NAME_KEY = "CpoName"
 CERT_STORE_MAX_KEY = "CertificateStoreMaxLength"
+AUTH_KEY_KEY = "AuthorizationKey"
+#: AuthorizationKey length (WP ed.4 §7.2 / A00.FR.205: minimal 16 bytes, at most 40 hexadecimal digits).
+AUTH_KEY_MIN, AUTH_KEY_MAX = 16, 40
 SE = d.SecurityEventKind
 
 
@@ -301,7 +310,10 @@ class Station16(VersionStation):
         names = {k.name for k in self._adapter.config_keys}
         url = getattr(host, "csms_url", "") or ""
         profile = derived_security_profile(cfg.password, url, cfg.client_cert_file is not None)
-        derived = {CONNECTORS_KEY: str(cfg.connectors), SECURITY_PROFILE_KEY: str(profile), CPO_NAME_KEY: cfg.vendor}
+        derived = {CONNECTORS_KEY: str(cfg.connectors), SECURITY_PROFILE_KEY: str(profile), CPO_NAME_KEY: cfg.vendor,
+                   AUTH_KEY_KEY: cfg.password or ""}
+        if AUTH_KEY_KEY in cfg.config_keys:
+            raise ValueError(f"configuration key {AUTH_KEY_KEY!r}: set the charger's password instead")
         if cfg.meter_sample_interval_s is not None:
             derived[SAMPLE_KEY] = str(cfg.meter_sample_interval_s)
         overrides = {k: v for k, v in derived.items() if k in names}
@@ -346,7 +358,7 @@ class Station16(VersionStation):
             d.RequestStart: self._remote_start,
             d.RequestStop: self._remote_stop,
             d.GetConfig: self._get_config,
-            d.SetConfig: lambda cmd: self.store.set(cmd.key, cmd.value),
+            d.SetConfig: self._set_config,
             d.Reset: self._reset,
             d.Trigger: self._trigger,
             d.Unlock: self._unlock,
@@ -1111,6 +1123,21 @@ class Station16(VersionStation):
         known, unknown = self.store.get(cmd.keys)
         return d.GetConfigResult(known, unknown)
 
+    def _set_config(self, cmd: d.SetConfig) -> d.ConfigStatus:
+        if cmd.key != AUTH_KEY_KEY:
+            return self.store.set(cmd.key, cmd.value)
+        # A01 / WP ed.4 §7.2: see the module docstring.
+        if self.store.value(SECURITY_PROFILE_KEY) == "3" or not AUTH_KEY_MIN <= len(cmd.value) <= AUTH_KEY_MAX:
+            return d.ConfigStatus.REJECTED
+        st = self.store.set(cmd.key, cmd.value)
+        if st is d.ConfigStatus.ACCEPTED:
+            url = getattr(self.host, "csms_url", "") or ""
+            self.store.put(SECURITY_PROFILE_KEY, str(derived_security_profile(cmd.value, url)))
+            self.security.record(SE.RECONFIGURATION_OF_SECURITY_PARAMETERS, "AuthorizationKey changed",
+                                 connected=self.host.connected)
+            self.host.reconnect_with_password(cmd.value)
+        return st
+
     def _reset(self, cmd: d.Reset) -> d.CommandStatus:
         self.host.after_reply(functools.partial(self._do_reset, cmd.kind))
         return d.CommandStatus.ACCEPTED
@@ -1208,6 +1235,9 @@ class Station16(VersionStation):
             # TODO(spec): connectorId 0 / absent triggers a reading per connector (no main meter is simulated).
             targets = [c for c in self.conns.values() if cmd.evse_id in (None, 0, c.id)]
             self.host.after_reply(functools.partial(self._send_readings, targets))
+        elif what is d.TriggerWhat.FIRMWARE_STATUS and cmd.extended:
+            # WP ed.4 §6.16: it triggers a SignedFirmwareStatusNotification; SignedUpdateFirmware is not implemented.
+            return d.CommandStatus.NOT_IMPLEMENTED
         elif what is d.TriggerWhat.FIRMWARE_STATUS:
             # §4.5: Idle only when no update is running, else the current step.
             st = self.maint.firmware_status if self.maint.firmware_busy else None

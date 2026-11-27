@@ -36,8 +36,8 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 |---|---|
 | RemoteStartTransaction | `chargingProfile`（`transactionId` なしの TxProfile）を含められます。Boot 受理前は Rejected |
 | RemoteStopTransaction | |
-| GetConfiguration | `key` が空ならすべてのキーを返し、未知のキーは `unknownKey` に入れます。Boot 受理前でも応答します |
-| ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
+| GetConfiguration | `key` が空ならすべてのキーを返し、未知のキーは `unknownKey` に入れます。Boot 受理前でも応答します。書込専用の `AuthorizationKey` は値なしで返します |
+| ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported。`AuthorizationKey`（Security Whitepaper A01）は 16〜40 文字で、新しい Basic 認証パスワードで再接続します。プロファイル 3 では `Rejected` |
 | Reset | Soft / Hard: トランザクションを終了し、切断・再接続して再度 Boot します |
 | TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification / FirmwareStatusNotification / DiagnosticsStatusNotification（更新 / 送信の実行中は現在の段階、それ以外は `Idle`） |
 | UnlockConnector | 常に `Unlocked` を返します（他の応答はまだ設定できません）。コネクタで実行中のトランザクションは理由 `UnlockCommand` で終了します |
@@ -53,7 +53,7 @@ Boot 受理後に再送されるため、CSMS が同じメッセージを 2 回�
 | CancelReservation | 既知の予約なら `Accepted`、それ以外は `Rejected` |
 | UpdateFirmware | 模擬のみ（実際のダウンロードはしません）。`retrieveDate` まで待ち、ダウンロード失敗時は `retries` / `retryInterval` に従います。トランザクションのないコネクタはトランザクションがなくなるまで `Unavailable` にし、その後インストールして再起動します（Hard Reset と同じ）。各段階の時間と失敗注入は充電器ごとの `maintenance`（`download_s`、`install_s`、`upload_s`、`retry_interval_s`、`fail_download`、`fail_install`、`fail_upload`）。インストール前の更新は新しい要求で置き換え、インストール中に届いた要求は無視します |
 | GetDiagnostics | `fileName` `<id>-diagnostics-<時刻>.log` を返し、アップロードを模擬します（実際の送信はしません）。実行中の送信は新しい要求で置き換えます |
-| ExtendedTriggerMessage | Security Whitepaper。TriggerMessage のメッセージと `SignChargePointCertificate`。`LogStatusNotification` は `NotImplemented` |
+| ExtendedTriggerMessage | Security Whitepaper。BootNotification / Heartbeat / MeterValues / StatusNotification は TriggerMessage と同じ、加えて `SignChargePointCertificate`。`FirmwareStatusNotification`（SignedFirmwareStatusNotification を指す）と `LogStatusNotification` は `NotImplemented`。`connectorId` 0 は CALLERROR `PropertyConstraintViolation`（Whitepaper は `connectorId` > 0） |
 | CertificateSigned | Security Whitepaper。2.0.1 と同様に未処理の CSR と一致すれば `Accepted`、その後（プロファイル 3）新しい証明書で再接続 |
 | InstallCertificate / DeleteCertificate / GetInstalledCertificateIds | Security Whitepaper。CentralSystemRootCertificate / ManufacturerRootCertificate、2.0.1 と同様 |
 

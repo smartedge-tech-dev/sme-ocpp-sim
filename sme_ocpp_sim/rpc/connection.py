@@ -8,11 +8,14 @@ Rules (design §5, "pitfalls"):
   * malformed frames and unknown actions are answered with a standard CALLERROR
   * a late (after timeout) or unsolicited response is logged and dropped; it never
     poisons the next call
+  * :func:`after_this_reply` defers work until the answer to the inbound CALL being handled
+    has been handed to the socket, so a follow-up (a close, a reconnect) can never overtake it
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import uuid
 from dataclasses import dataclass
@@ -26,6 +29,32 @@ from .errors import OCPP16_ERRORS, CallError, ErrorCodes
 log = logging.getLogger(__name__)
 
 Handler = Callable[[dict], Awaitable[dict]]
+
+
+class _ReplyHooks:
+    """Follow-ups registered while one inbound CALL is handled; ``done`` once its answer went out (or never will)."""
+
+    def __init__(self) -> None:
+        self.fns: list[Callable[[], None]] = []
+        self.done = False
+
+
+# The hooks of the inbound CALL handled in this context; None outside a handler. A task the handler spawns copies
+# the context and so sees the same object: it may still register while the answer is pending, not after.
+_reply_hooks: contextvars.ContextVar[Optional[_ReplyHooks]] = contextvars.ContextVar("reply_hooks", default=None)
+
+
+def after_this_reply(fn: Callable[[], None]) -> bool:
+    """Run ``fn`` right after the CALLRESULT/CALLERROR of the inbound CALL being handled was handed to the socket.
+
+    Returns False (``fn`` not registered) outside a CALL handler or once its answer already went out; the caller
+    then decides itself. ``fn`` is dropped when the handling task is cancelled (the connection went away).
+    """
+    hooks = _reply_hooks.get()
+    if hooks is None or hooks.done:
+        return False
+    hooks.fns.append(fn)
+    return True
 
 
 @dataclass(frozen=True)
@@ -222,6 +251,19 @@ class RpcConnection:
         await self._send_error(e.uid, code, e.reason)
 
     async def _handle_call(self, frame: framer.Call) -> None:
+        hooks = _ReplyHooks()
+        _reply_hooks.set(hooks)  # this task's own context: the handler below runs in it
+        try:
+            await self._answer_call(frame)
+        finally:
+            hooks.done = True
+        for fn in hooks.fns:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - a broken follow-up must not break the RPC
+                log.exception("%s: after-reply hook for %s failed", self.name, frame.action)
+
+    async def _answer_call(self, frame: framer.Call) -> None:
         if self._call_guard is not None:
             try:
                 self._call_guard(frame.action)

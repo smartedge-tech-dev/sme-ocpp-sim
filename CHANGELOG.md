@@ -43,13 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - SecurityEventNotification for both versions: StartupOfTheDevice, ResetOrReboot, FirmwareUpdated, invalid
   CSMS / charging station certificate, TLS version, failed authentication, discarded renewed certificate and
   reconfiguration events; critical events are queued while offline. New 1.6 keys SecurityProfile, CpoName,
-  CertificateStoreMaxLength, AdditionalRootCertificateCheck; the 2.0.1 SecurityCtrlr.SecurityProfile reports 3,
+  CertificateStoreMaxLength, AdditionalRootCertificateCheck and the write-only AuthorizationKey (ChangeConfiguration
+  changes the Basic Auth password and reconnects with it, Security Whitepaper A01); the 2.0.1 SecurityCtrlr.SecurityProfile reports 3,
   CertificateEntries counts the installed certificates, AdditionalRootCertificateCheck is `false`.
 - Web UI: the charger detail shows the security profile and the client certificate subject; the settings
   dialog has profile 3 and the client certificate / key files.
 
 ### Changed
 
+- The 1.6 security support was checked against the OCPP 1.6 Security Whitepaper edition 4: ExtendedTriggerMessage
+  `FirmwareStatusNotification` (which means SignedFirmwareStatusNotification) is now `NotImplemented`, and
+  `connectorId` 0 is CALLERROR `PropertyConstraintViolation` (the whitepaper requires `connectorId` > 0).
 - `cryptography` is now a runtime dependency (CSR generation, certificate parsing); it is bundled in the exe
   and the Docker image.
 

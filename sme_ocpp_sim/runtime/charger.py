@@ -39,7 +39,8 @@ from ..config import ChargerConfig, ReconnectConfig
 from ..protocol import base as d
 from ..protocol.registry import get_station_class
 from ..protocol.station import VersionStation
-from ..rpc import Backoff, HandshakeError, RpcConnection, TransportConfig, open_connection, wait_event, wait_or_stop
+from ..rpc import (Backoff, HandshakeError, RpcConnection, TransportConfig, after_this_reply, open_connection,
+                   wait_event, wait_or_stop)
 
 log = logging.getLogger(__name__)
 
@@ -243,13 +244,18 @@ class ChargerRuntime:
 
     def _after_reply(self, fn: Callable[[], Any]) -> None:
         """Call ``fn`` (awaiting its result when it is awaitable) after the CALLRESULT of the current CSMS CALL
-        went out. Bind arguments now (``functools.partial``): state read at call time may have changed."""
+        went out. Bind arguments now (``functools.partial``): state read at call time may have changed.
+
+        Inside a CALL handler the follow-up is started only once the answer was handed to the socket
+        (``after_this_reply``), so it can never overtake it - a slow send must not let a session close drop the
+        answer. Outside one (no answer pending) it just starts after ``REPLY_DELAY_S``."""
         async def later() -> None:
             await asyncio.sleep(REPLY_DELAY_S)
             res = fn()
             if inspect.isawaitable(res):
                 await res
-        self._spawn(later())
+        if not after_this_reply(lambda: self._spawn(later())):
+            self._spawn(later())
 
     async def _safe(self, aw: Awaitable[Any], what: str) -> Any:
         try:

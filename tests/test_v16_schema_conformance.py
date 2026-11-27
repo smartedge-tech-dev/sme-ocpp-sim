@@ -40,7 +40,9 @@ KNOWN_STRICTER_MIN_ITEMS = {
 
 
 def _security_schema_dir():
-    """The Security Whitepaper schemas are not in the OCA 1.6 JSON set: use the copy of the dev dependency ``ocpp``."""
+    """The Security Whitepaper schemas are not in the OCA 1.6 JSON set: use the copy of the dev dependency ``ocpp``
+    (identical to the whitepaper edition 4 JSON_schemas.zip apart from ``$schema`` / ``id`` / ``title``, checked
+    2026-11-27; the zip is not downloadable, so CI keeps the library copy)."""
     ocpp = pytest.importorskip("ocpp")
     return Path(ocpp.__file__).parent / "v16" / "schemas"
 

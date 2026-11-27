@@ -35,8 +35,8 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 |---|---|
 | RemoteStartTransaction | 可携带 `chargingProfile`（不带 `transactionId` 的 TxProfile）。Boot 被接受之前应答 Rejected |
 | RemoteStopTransaction | |
-| GetConfiguration | `key` 为空时返回全部键；未知键放入 `unknownKey`。Boot 被接受之前也会应答 |
-| ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported |
+| GetConfiguration | `key` 为空时返回全部键；未知键放入 `unknownKey`。Boot 被接受之前也会应答。只写的 `AuthorizationKey` 不返回值 |
+| ChangeConfiguration | Accepted / Rejected / RebootRequired / NotSupported。`AuthorizationKey`（Security Whitepaper A01）：16〜40 个字符，之后用新的 Basic 认证密码重连；Profile 3 时为 `Rejected` |
 | Reset | Soft / Hard：结束交易、断开、重连并重新 Boot |
 | TriggerMessage | BootNotification / Heartbeat / MeterValues / StatusNotification / FirmwareStatusNotification / DiagnosticsStatusNotification（更新 / 上传进行中时为当前步骤，否则 `Idle`） |
 | UnlockConnector | 始终应答 `Unlocked`（其他应答暂不可配置）；该 connector 上进行中的 transaction 以 reason `UnlockCommand` 结束 |
@@ -52,7 +52,7 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | CancelReservation | 已知预约应答 `Accepted`，否则 `Rejected` |
 | UpdateFirmware | 仅模拟（不实际下载）：等到 `retrieveDate`，下载失败时按 `retries` / `retryInterval` 重试；没有交易的连接器在交易全部结束前为 `Unavailable`，之后安装并重启（同 Hard Reset）。各步骤时长与失败注入：每台充电桩的 `maintenance`（`download_s`、`install_s`、`upload_s`、`retry_interval_s`、`fail_download`、`fail_install`、`fail_upload`）。尚未安装的更新被新请求替换；安装中收到的请求被忽略 |
 | GetDiagnostics | 应答 `fileName` `<id>-diagnostics-<时间>.log` 并模拟上传（不实际上传）；进行中的上传被新请求替换 |
-| ExtendedTriggerMessage | Security Whitepaper：TriggerMessage 的消息加上 `SignChargePointCertificate`；`LogStatusNotification` 为 `NotImplemented` |
+| ExtendedTriggerMessage | Security Whitepaper：BootNotification / Heartbeat / MeterValues / StatusNotification 与 TriggerMessage 相同，另加 `SignChargePointCertificate`；`FirmwareStatusNotification`（指 SignedFirmwareStatusNotification）和 `LogStatusNotification` 为 `NotImplemented`；`connectorId` 0 为 CALLERROR `PropertyConstraintViolation`（Whitepaper 要求 `connectorId` > 0） |
 | CertificateSigned | Security Whitepaper；与 2.0.1 相同：与未完成的 CSR 一致时 `Accepted`，然后（Profile 3）用新证书重连 |
 | InstallCertificate / DeleteCertificate / GetInstalledCertificateIds | Security Whitepaper；CentralSystemRootCertificate / ManufacturerRootCertificate，与 2.0.1 相同 |
 

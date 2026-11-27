@@ -308,9 +308,9 @@ class DiagnosticsStatus(str, Enum):
     uploading = "Uploading"
 
 
-# --- Security (M8): OCPP 1.6 Security Whitepaper messages. Names and values are the type names / enums of the
-# 1.6 security schemas shipped with the ``ocpp`` library (``ocpp/v16/schemas``; the whitepaper itself is not in
-# the local spec folder).
+# --- Security (M8): OCPP 1.6 Security Whitepaper edition 4 messages (§6 datatypes). Names and values are the type
+# names / enums of the whitepaper's JSON schemas (identical to the 1.6 security schemas shipped with the ``ocpp``
+# library, ``ocpp/v16/schemas``).
 
 
 class CertificateSignedStatusEnumType(str, Enum):
