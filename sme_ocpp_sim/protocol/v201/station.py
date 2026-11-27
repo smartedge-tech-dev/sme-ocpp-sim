@@ -74,8 +74,8 @@ Interpretations (not defined by the spec)
   EVSE like a local one; the transaction starts at once when the cable is plugged (``triggerReason``
   ``RemoteStart``) or when it comes (``CablePluggedIn``). ``Started`` carries the token with the ``type`` the CSMS
   sent and ``remoteStartId`` in ``transactionInfo``; the answer has no ``transactionId`` (no transaction exists
-  before the request with these start points). ``groupIdToken`` is not used. A later RequestStartTransaction for
-  an EVSE whose token still waits replaces the waiting token.
+  before the request with these start points). ``groupIdToken`` is not used. An EVSE with a waiting token (local
+  or remote) is ``Rejected`` (``Occupied``) and not chosen without ``evseId``.
 - RequestStopTransaction: ``Accepted`` for a running transaction of this station (it ends with ``RemoteStop`` /
   ``Remote``), ``Rejected`` for any other ``transactionId``.
 - UnlockConnector: ``UnknownConnector`` for an unknown EVSE or a connector other than 1,
@@ -87,7 +87,8 @@ Interpretations (not defined by the spec)
   reboots: the session closes and reconnects without back-off, with BootNotification reason ``RemoteReset``.
   ``OnIdle`` does the same at once when no transaction runs, else answers ``Scheduled`` and resets when the last
   transaction has ended; new transactions may still start meanwhile. An ``Immediate`` Reset overrides a scheduled
-  one. Cable, fault and availability states survive the reboot; tokens waiting for a cable do not.
+  one. While a Reset runs no transaction can start (``Rejected`` / ``Unavailable``). Cable, fault and availability
+  states survive the reboot; tokens waiting for a cable do not.
 - ChangeAvailability: no ``evse`` or EVSE id 0 addresses the whole station, i.e. every EVSE (there is no separate
   station state); an unknown EVSE or a connector other than 1 is ``Rejected``. Going ``Inoperative`` while an
   addressed EVSE has a transaction is ``Scheduled`` for that EVSE and takes effect when its transaction ends;
@@ -95,7 +96,7 @@ Interpretations (not defined by the spec)
   cancels a scheduled change. Availability survives a Reset. A token waiting on an EVSE that becomes
   inoperative is dropped.
 - TriggerMessage: BootNotification is ``Accepted`` only while the registration is not ``Accepted`` (it wakes the
-  boot loop; reason ``Triggered``), else ``Rejected``. Heartbeat, StatusNotification, MeterValues and
+  boot loop; reason ``Triggered`` for the next BootNotification sent), else ``Rejected``. Heartbeat, StatusNotification, MeterValues and
   TransactionEvent are ``Rejected`` while the boot is not accepted (only BootNotification is sent then).
   StatusNotification and MeterValues (context ``Trigger``, :data:`TX_UPDATED_MEASURANDS`) are sent for the
   addressed EVSE, or every EVSE without ``evse``; TransactionEvent sends an ``Updated`` (``triggerReason``
@@ -260,7 +261,9 @@ class Station201(VersionStation):
         self._outq_busy: Optional[_Out] = None
         #: UnlockConnector answers UnlockFailed (an operator / test switch; no lock is modelled).
         self.unlock_fails = False
-        self._reset_scheduled = False  # an OnIdle Reset waits for the transactions to end
+        #: An OnIdle Reset waits for the transactions to end; kept across sessions (see ``on_online``).
+        self._reset_scheduled = False
+        #: A Reset is ending the transactions / draining the outbox; cleared when it closes the session.
         self._resetting = False
         self._remote: Dict[type, Callable[[Any], m.OcppModel]] = {
             m.RequestStartTransactionRequest: self._request_start,
@@ -611,22 +614,24 @@ class Station201(VersionStation):
         return m.StatusInfoType(reason_code=code) if code else None
 
     def _addressed(self, evse: Optional[m.EVSEType]) -> Optional[List[_Evse]]:
-        """EVSEs an optional ``evse`` field addresses (none / id 0 = all); ``None`` when it is unknown."""
-        if evse is None or evse.id == 0:
-            return list(self.evses.values()) if evse is None or evse.connector_id is None else None
+        """EVSEs an optional ``evse`` field addresses: no ``evse`` or EVSE id 0 = every EVSE. ``None`` when it is
+        unknown: an EVSE id not on this station, a connector other than 1, or any connector of EVSE 0."""
+        if evse is None:
+            return list(self.evses.values())
+        if evse.id == 0:
+            return list(self.evses.values()) if evse.connector_id is None else None
         e = self.evses.get(evse.id)
         if e is None or evse.connector_id not in (None, CONNECTOR_ID):
             return None
         return [e]
 
-    @staticmethod
-    def _start_blocker(e: _Evse) -> Optional[str]:
-        """Why no transaction can be started on ``e`` now (``None`` = it can)."""
+    def _start_blocker(self, e: _Evse) -> Optional[str]:
+        """Why a RequestStartTransaction cannot use ``e`` now (``None`` = it can)."""
         if e.fault:
             return REASON_FAULTED
-        if not e.operative:
+        if not e.operative or self._resetting:
             return REASON_UNAVAILABLE
-        if e.tx is not None:
+        if e.tx is not None or e.pending_tag is not None:  # a waiting token keeps the EVSE
             return REASON_OCCUPIED
         return None
 
@@ -660,7 +665,7 @@ class Station201(VersionStation):
             if not free:
                 return rejected(REASON_OCCUPIED)
             e = next((x for x in free if x.plugged), free[0])
-        # Claimed now, so that the EVSE is not handed out twice; the transaction starts after the answer.
+        # Claimed now (a waiting token blocks the next request); the transaction starts after the answer.
         e.pending_tag, e.pending_type = req.id_token.id_token, req.id_token.type
         e.pending_remote_id = req.remote_start_id
         self.host.after_reply(functools.partial(self._remote_start_go, e, req.remote_start_id))
@@ -669,14 +674,13 @@ class Station201(VersionStation):
     def _remote_start_go(self, e: _Evse, remote_start_id: int) -> None:
         if e.pending_remote_id != remote_start_id or e.pending_tag is None or e.tx is not None:
             return  # replaced, started or dropped meanwhile
-        if self._start_blocker(e) is not None:
+        if e.fault or not e.operative or self._resetting:
             self._clear_pending(e)
             return
         if e.plugged:
             self._start_tx(e, e.pending_tag, T.remote_start, token_type=e.pending_type,
                            remote_start_id=e.pending_remote_id)
-        else:
-            self._refresh(e)  # waits for the cable
+        # else the token waits for the cable (plug starts the transaction)
 
     def _request_stop(self, req: m.RequestStopTransactionRequest) -> m.RequestStopTransactionResponse:
         for e in self.evses.values():
@@ -716,27 +720,34 @@ class Station201(VersionStation):
         if not self._reset_scheduled or any(e.tx is not None for e in self.evses.values()):
             return
         self._reset_scheduled = False
-        if self.host.spawn(self._do_reset()) is None:
+        if self.host.spawn(self._do_reset(on_idle=True)) is None:
             self._reset_scheduled = True  # not connected: the next session runs it
 
-    async def _do_reset(self) -> None:
+    def _end_all_for_reset(self) -> None:
+        for e in self.evses.values():
+            self._end_tx(e, T.reset_command, ReasonEnumType.immediate_reset)
+            self._clear_pending(e)
+
+    async def _do_reset(self, *, on_idle: bool = False) -> None:
         if self._resetting:
             return
-        self._resetting = True
+        if on_idle and any(e.tx is not None for e in self.evses.values()):
+            self._reset_scheduled = True  # a transaction started before this task ran: wait for it again
+            return
+        self._resetting = True  # refuses new starts until the session is closed
         try:
             self._reset_scheduled = False
-            for e in self.evses.values():
-                self._end_tx(e, T.reset_command, ReasonEnumType.immediate_reset)
-                self._clear_pending(e)
-            self._adapter.boot_reason = BootReasonEnumType.remote_reset
+            self._end_all_for_reset()
             # Let the queued messages go out first; bounded, a silent CSMS must not block the Reset (anything
-            # left stays queued for the next session).
+            # left stays queued for the next session). The outbox worker runs only while online.
             try:
                 async with asyncio.timeout(self.host.call_timeout):
-                    while self._outq and self.host.connected:
+                    while self._outq and self.host.online:
                         await asyncio.sleep(RESET_DRAIN_POLL_S)
             except TimeoutError:
                 log.info("%s: Reset closes with %d queued message(s)", self.cfg.id, len(self._outq))
+            self._end_all_for_reset()  # e.g. a transaction a CSMS answer ended / started meanwhile
+            self._adapter.boot_reason = BootReasonEnumType.remote_reset
         finally:
             self._resetting = False
             self.host.end_session_for_reset()
@@ -859,7 +870,7 @@ class Station201(VersionStation):
                 self._end_tx(e, T.stop_authorized, ReasonEnumType.local, token=id_tag)
                 return A.STOPPED
             return A.BUSY
-        if e.fault or not e.operative:
+        if e.fault or not e.operative or self._resetting:
             return A.UNAVAILABLE
         status = await self._authorize(id_tag)
         if status is not A.ACCEPTED:
@@ -867,7 +878,7 @@ class Station201(VersionStation):
         # Re-check: the await may have let another start / a fault in.
         if e.tx is not None:
             return A.BUSY
-        if e.fault or not e.operative:
+        if e.fault or not e.operative or self._resetting:
             return A.UNAVAILABLE
         if not e.plugged:
             self._clear_pending(e)
@@ -920,7 +931,7 @@ class Station201(VersionStation):
         return d.GetCompositeResult(d.CommandStatus.REJECTED)  # smart charging is M5
 
     async def send_meter_values(self, connector: int, context: str = ReadingContextEnumType.other.value) -> None:
-        """Send a MeterValues of ``connector`` now (outside the TransactionEvent flow; M3 TriggerMessage uses it)."""
+        """Send a MeterValues of ``connector`` now (outside the TransactionEvent flow)."""
         e = self._evse(connector)
         self._advance(e)
         ev = d.MeterSample(e.id, self.host.clock(), self._samples(e, TX_UPDATED_MEASURANDS), context)

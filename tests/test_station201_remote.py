@@ -328,3 +328,44 @@ def test_trigger_message_other_values_not_implemented(message):
         r = await peer.request(CP, call.TriggerMessage(requested_message=message))
         assert r.status == "NotImplemented"
     _scenario(body)
+
+
+def test_a_waiting_token_keeps_its_evse():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        assert (await peer.request(CP, _start(evse_id=1, remote_id=1))).status == "Accepted"
+        await _until(lambda: rt.snapshot()["connectors"][0]["pending_tag"] == "R1")
+        r = await peer.request(CP, _start("R2", evse_id=1, remote_id=2))
+        assert (r.status, _reason(r)) == ("Rejected", "Occupied")
+        assert await rt.swipe(2, "LOCAL") == AuthResult.ACCEPTED  # waits on EVSE 2
+        r = await peer.request(CP, _start("R3", remote_id=3))  # no EVSE without a waiting token
+        assert (r.status, _reason(r)) == ("Rejected", "Occupied")
+        await rt.plug(1)
+        await _until(lambda: len(s.transaction_events) == 1)
+        assert s.transaction_events[0]["transaction_info"]["remote_start_id"] == 1
+    _scenario(body, cfg_kw={"connectors": 2, "auth_mode": "accept_all"})
+
+
+def test_immediate_reset_overrides_a_scheduled_on_idle_reset():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        assert await rt.swipe(1, "TAG1") == AuthResult.ACCEPTED
+        assert (await peer.request(CP, call.Reset(type="OnIdle"))).status == "Scheduled"
+        assert (await peer.request(CP, call.Reset(type="Immediate"))).status == "Accepted"
+        s2 = await _online(peer, rt, 1)
+        assert s.transaction_events[-1]["transaction_info"]["stopped_reason"] == "ImmediateReset"
+        assert s2.boot_requests[0]["reason"] == "RemoteReset"
+        assert await rt.swipe(1, "TAG1") == AuthResult.ACCEPTED  # nothing scheduled any more
+        await _until(lambda: len(s2.transaction_events) == 1)
+        assert len(peer.history) == 2
+    _scenario(body, cfg_kw={"auth_mode": "accept_all"})
+
+
+def test_reset_while_pending_reboots_at_once():
+    async def body(peer, rt):
+        await _until(lambda: rt.registration == "Pending")
+        assert (await peer.request(CP, call.Reset(type="Immediate"))).status == "Accepted"
+        s2 = await _online(peer, rt, 1)
+        assert s2.boot_requests[0]["reason"] == "RemoteReset"
+    _scenario(body, {"boot_statuses": ["Pending"], "retry_interval": 60})
