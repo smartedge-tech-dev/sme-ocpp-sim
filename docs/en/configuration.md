@@ -73,7 +73,7 @@ mask keeps the stored password.
 | Field | Default | Meaning |
 |---|---|---|
 | `url` | none | CSMS WebSocket URL (`ws://` or `wss://`); the charger id is appended as the last path segment. Required unless every charger has `csms_url` |
-| `ocpp_version` | `"1.6"` | Only `"1.6"` in v0.1; `"2.0.1"` / `"2.1"` are rejected as coming in a later version |
+| `ocpp_version` | `"1.6"` | `"1.6"` or `"2.0.1"`; `"2.1"` is rejected as coming in v0.3 |
 | `security_profile` | `0` | `0`, `1` or `2`; every charger is checked against it, see [Security profiles](security-profiles.md) |
 | `reconnect.min_s` | `1.0` | First reconnect delay in seconds |
 | `reconnect.max_s` | `60.0` | Maximum reconnect delay (≥ `min_s`); the delay grows exponentially |
@@ -103,17 +103,17 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 |---|---|---|
 | `id` | required | Charge point id (quoted string). Used as the last URL path segment and as the Basic auth user-id, so it must not contain `:`; `bulk` is reserved |
 | `csms_url` | `csms_defaults.url` | Per-charger CSMS URL |
-| `ocpp_version` | `csms_defaults.ocpp_version` | Per-charger OCPP version |
+| `ocpp_version` | `csms_defaults.ocpp_version` | Per-charger OCPP version (`"1.6"` or `"2.0.1"`); one site may mix both |
 | `password` | none | Basic auth password (security profile 1 / 2) |
 | `ca_file` | system trust store | Extra CA bundle (PEM) to verify the CSMS certificate on `wss://` |
 | `verify_tls` | `true` | `false` skips certificate verification (testing only; a warning is logged) |
-| `require_subprotocol` | `true` | `false` keeps the connection when the CSMS does not echo the `ocpp1.6` subprotocol |
+| `require_subprotocol` | `true` | `false` keeps the connection when the CSMS does not echo the `ocpp1.6` / `ocpp2.0.1` subprotocol |
 | `vendor` | `"SmartEdge"` | BootNotification `chargePointVendor` (max. 20 characters) |
 | `model` | `"SIM-AC6"` | `chargePointModel` (max. 20) |
 | `serial` | none | `chargePointSerialNumber` (max. 25) |
 | `firmware` | `"0.1.0"` | `firmwareVersion` (max. 50) |
-| `connectors` | `1` | Number of connectors (1–32); all share the supply settings and `max_power_w` below |
-| `config_keys` | `{}` | Initial OCPP configuration keys, e.g. `HeartbeatInterval: 300`; numbers and booleans may be unquoted |
+| `connectors` | `1` | Number of connectors (1–32); all share the supply settings and `max_power_w` below. OCPP 2.0.1: the number of EVSEs, each with one connector |
+| `config_keys` | `{}` | OCPP 1.6: initial configuration keys, e.g. `HeartbeatInterval: 300`; numbers and booleans may be unquoted. Not used by a 2.0.1 charger (see `variables`) |
 | `auth_mode` | `local_then_csms` | `local_only` (only `id_tags`), `csms_only` (always Authorize), `local_then_csms` (`id_tags` first, then Authorize), `accept_all` |
 | `id_tags` | `[]` | Locally accepted id tags (max. 20 characters each, no duplicates) |
 | `boot_retry_s` | `60.0` | Boot retry delay when the CSMS answers Pending / Rejected with interval 0 |
@@ -126,7 +126,7 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `session.ev_model` | `compact-40kwh` | The EV plugged into the connectors (preset or `ev_models` id) |
 | `session.initial_soc` | `30.0` | SoC (%) at the start of every transaction |
 | `session.target_soc` | `90.0` | When reached, the EV stops accepting power (SuspendedEV) |
-| `meter_sample_interval_s` | key default | Default `MeterValueSampleInterval` when `config_keys` does not set it |
+| `meter_sample_interval_s` | key default | Default `MeterValueSampleInterval` when `config_keys` does not set it; for 2.0.1 the initial `SampledDataCtrlr.TxUpdatedInterval` |
 | `variables` | `[]` | OCPP 2.0.1 chargers only: Device Model overrides and user-defined variables (see below) |
 
 ### variables (OCPP 2.0.1) { #variables }
@@ -176,4 +176,10 @@ chargers:
 Values are checked when the configuration is loaded (type, limits, `values_list`); a `variables` list on a 1.6
 charger is an error.
 
-Not in v0.1: charger templates, the 2.0.1 `evses` tree and `behaviors` (planned for v0.2).
+In the web UI the **Variables (Device Model)** table of a 2.0.1 charger shows these values read-only.
+
+![Variables of an OCPP 2.0.1 charger](../assets/screenshots/en/variables.png)
+
+A mixed 1.6 / 2.0.1 example is [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml).
+
+Not supported yet: charger templates, the 2.0.1 `evses` tree (several connectors per EVSE) and `behaviors`.

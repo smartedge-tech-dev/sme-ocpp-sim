@@ -2,11 +2,11 @@
 
 <h1 align="center">SME OCPPSim</h1>
 
-<p align="center"><strong>一台电脑，模拟整个充电场站。</strong><br>支持 Smart Charging 的 OCPP 1.6J 充电桩，用于 CSMS 与 EMS 测试，附带实时 Web UI。</p>
+<p align="center"><strong>一台电脑，模拟整个充电场站。</strong><br>支持 Smart Charging 的 OCPP 1.6J / 2.0.1 充电桩，用于 CSMS 与 EMS 测试，附带实时 Web UI。</p>
 
 <p align="center"><a href="https://smartedge-tech.com/zh/open-source/#ocpp-sim"><b>官网</b></a> · <a href="https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/"><b>文档</b></a> · <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><b>下载</b></a></p>
 
-<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J-2e8b57" alt="OCPP 1.6J"></p>
+<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J%20%7C%202.0.1-2e8b57" alt="OCPP 1.6J | 2.0.1"></p>
 
 <p align="center"><a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <strong>简体中文</strong></p>
 
@@ -14,7 +14,8 @@
 
 一个带实时 Web UI 的 OCPP 充电桩模拟器。可以模拟几十到几百台 AC 充电桩，插入虚拟 EV、启动和停止交易，并在浏览器中观察充电功率如何跟随 CSMS（SteVe、你自己的 CSMS、EMS……）下发的 Smart Charging profile 变化。
 
-- **OCPP 1.6J 充电桩。** Boot、Heartbeat、状态、Authorize、交易和 MeterValues；远程启动 / 停止、配置、复位、TriggerMessage、可用性、解锁和 DataTransfer。OCPP 2.0.1 / 2.1 计划在 v0.2 / v0.3 支持。
+- **OCPP 1.6J 充电桩。** Boot、Heartbeat、状态、Authorize、交易和 MeterValues；远程启动 / 停止、配置、复位、TriggerMessage、可用性、解锁和 DataTransfer。
+- **OCPP 2.0.1 充电站**，可与 1.6 充电桩任意混合：带离线队列的 TransactionEvent、RequestStart / StopTransaction、Reset、ChangeAvailability、TriggerMessage、UnlockConnector、Device Model（GetVariables / SetVariables / GetBaseReport，UI 中只读显示），以及带外部（EMS）限值的 2.0.1 Smart Charging。OCPP 2.1 计划在 v0.3 支持。
 - **功率闭环的 Smart Charging。** 支持 SetChargingProfile、ClearChargingProfile 和 GetCompositeSchedule。功率限值与应答 GetCompositeSchedule 的是同一个函数，计划与 MeterValues 不会不一致。规范未明确之处的解释全部写在文档中。
 - **EV 与功率模型。** 电池、SoC、充电曲线、相数、爬坡，以及日本 200 V 单相和三相三角形接法供电；Charging / SuspendedEV / SuspendedEVSE 由模型决定。
 - **单进程 200 台以上**，可单独或批量连接。
@@ -39,6 +40,10 @@ SME OCPPSim 免费且采用 MIT 许可证，由 [smart-edge (智届科技)](http
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/settings.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/settings.png" alt="设置：CSMS URL、OCPP 版本和 Security Profile"></a><br><sub>设置：CSMS URL、OCPP 版本和 Security Profile</sub></td>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/overview-dark.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/overview-dark.png" alt="深色主题"></a><br><sub>深色主题</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/variables.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/variables.png" alt="OCPP 2.0.1 Device Model 变量（只读）"></a><br><sub>OCPP 2.0.1 Device Model 变量（只读）</sub></td>
+    <td width="50%"><sub>1.6 / 2.0.1 混合站点示例：<code>configs/mixed-site.yaml</code></sub></td>
   </tr>
 </table>
 

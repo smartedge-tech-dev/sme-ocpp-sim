@@ -70,7 +70,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | フィールド | 既定値 | 意味 |
 |---|---|---|
 | `url` | なし | CSMS の WebSocket URL（`ws://` または `wss://`）。充電器 ID を最後のパスセグメントとして付加します。すべての充電器に `csms_url` がある場合を除き必須です |
-| `ocpp_version` | `"1.6"` | v0.1 は `"1.6"` のみ。`"2.0.1"` / `"2.1"` は今後のバージョンで対応予定としてエラーになります |
+| `ocpp_version` | `"1.6"` | `"1.6"` または `"2.0.1"`。`"2.1"` は v0.3 で対応予定としてエラーになります |
 | `security_profile` | `0` | `0`、`1`、`2`。各充電器の設定をこれに照らして検査します。[セキュリティプロファイル](security-profiles.md) を参照 |
 | `reconnect.min_s` | `1.0` | 最初の再接続待ち時間（秒） |
 | `reconnect.max_s` | `60.0` | 再接続待ち時間の上限（≥ `min_s`）。待ち時間は指数的に増えます |
@@ -100,17 +100,17 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 |---|---|---|
 | `id` | 必須 | Charge Point ID（引用符付き文字列）。URL の最後のパスセグメントと Basic 認証のユーザー ID に使うため、`:` は使えません。`bulk` は予約済みです |
 | `csms_url` | `csms_defaults.url` | 充電器ごとの CSMS URL |
-| `ocpp_version` | `csms_defaults.ocpp_version` | 充電器ごとの OCPP バージョン |
+| `ocpp_version` | `csms_defaults.ocpp_version` | 充電器ごとの OCPP バージョン（`"1.6"` または `"2.0.1"`）。1 つのサイトで混在できます |
 | `password` | なし | Basic 認証のパスワード（セキュリティプロファイル 1 / 2） |
 | `ca_file` | システムの信頼ストア | `wss://` で CSMS の証明書を検証する追加の CA バンドル（PEM） |
 | `verify_tls` | `true` | `false` で証明書の検証を省略します（試験専用。警告をログに出力します） |
-| `require_subprotocol` | `true` | `false` にすると、CSMS が `ocpp1.6` サブプロトコルを返さなくても接続を続けます |
+| `require_subprotocol` | `true` | `false` にすると、CSMS が `ocpp1.6` / `ocpp2.0.1` サブプロトコルを返さなくても接続を続けます |
 | `vendor` | `"SmartEdge"` | BootNotification の `chargePointVendor`（最大 20 文字） |
 | `model` | `"SIM-AC6"` | `chargePointModel`（最大 20 文字） |
 | `serial` | なし | `chargePointSerialNumber`（最大 25 文字） |
 | `firmware` | `"0.1.0"` | `firmwareVersion`（最大 50 文字） |
-| `connectors` | `1` | コネクター数（1〜32）。すべてのコネクターが以下の電源設定と `max_power_w` を共有します |
-| `config_keys` | `{}` | OCPP 設定キーの初期値（例: `HeartbeatInterval: 300`）。数値と真偽値は引用符なしで書けます |
+| `connectors` | `1` | コネクター数（1〜32）。すべてのコネクターが以下の電源設定と `max_power_w` を共有します。OCPP 2.0.1 では EVSE の数（各 1 コネクター） |
+| `config_keys` | `{}` | OCPP 1.6: 設定キーの初期値（例: `HeartbeatInterval: 300`）。数値と真偽値は引用符なしで書けます。2.0.1 の充電器では使いません（`variables` を参照） |
 | `auth_mode` | `local_then_csms` | `local_only`（`id_tags` のみ）、`csms_only`（常に Authorize）、`local_then_csms`（まず `id_tags`、次に Authorize）、`accept_all` |
 | `id_tags` | `[]` | ローカルで受け付ける ID タグ（各最大 20 文字、重複不可） |
 | `boot_retry_s` | `60.0` | CSMS が interval 0 で Pending / Rejected を返したときの Boot 再送間隔 |
@@ -123,7 +123,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `session.ev_model` | `compact-40kwh` | コネクターに接続する EV（プリセットまたは `ev_models` の ID） |
 | `session.initial_soc` | `30.0` | 各トランザクション開始時の SoC（%） |
 | `session.target_soc` | `90.0` | この SoC に達すると EV は電力を受け付けなくなります（SuspendedEV） |
-| `meter_sample_interval_s` | キーの既定値 | `config_keys` で指定していない場合の `MeterValueSampleInterval` の既定値 |
+| `meter_sample_interval_s` | キーの既定値 | `config_keys` で指定していない場合の `MeterValueSampleInterval` の既定値。2.0.1 では `SampledDataCtrlr.TxUpdatedInterval` の初期値 |
 | `variables` | `[]` | OCPP 2.0.1 の充電器のみ: Device Model の値の上書きとユーザー定義変数（下記） |
 
 ### variables（OCPP 2.0.1） { #variables }
@@ -170,4 +170,10 @@ chargers:
 
 値は設定の読み込み時に検証されます（型、範囲、`values_list`）。1.6 の充電器に `variables` を書くとエラーです。
 
-v0.1 の対象外: 充電器テンプレート、2.0.1 の `evses` ツリー、`behaviors`（v0.2 で対応予定）。
+Web UI では、2.0.1 の充電器の **変数（Device Model）** 表にこれらの値を参照のみで表示します。
+
+![OCPP 2.0.1 充電器の変数](../assets/screenshots/ja/variables.png)
+
+1.6 / 2.0.1 混在の例は [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml) です。
+
+未対応: 充電器テンプレート、2.0.1 の `evses` ツリー（EVSE あたり複数コネクター）、`behaviors`。

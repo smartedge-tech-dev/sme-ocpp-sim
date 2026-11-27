@@ -18,7 +18,7 @@ Successful requests answer `{"ok": true, ...}` (GET routes return the data itsel
 | POST | `/api/simulation` | Run / pause and time scale: `{"running": true, "time_scale": 10}` (both optional; other fields are rejected) |
 | GET / PUT | `/api/csms-defaults` | The `csms_defaults` block (PUT replaces it and reloads) |
 | GET / PATCH | `/api/chargers/{id}/settings` | Connection / authorization settings of one charger (see below) |
-| GET | `/api/chargers/{id}/configuration` | Run-time configuration keys as GetConfiguration sees them |
+| GET | `/api/chargers/{id}/configuration` | Run-time configuration keys as GetConfiguration sees them; OCPP 2.0.1: the Device Model variables (see below) |
 | POST | `/api/devices` | Add a charger |
 | GET / PUT | `/api/devices/{id}/config` | One charger's configuration (PUT replaces the whole item) |
 | POST | `/api/devices/{id}/duplicate` | Copy a charger (the id is incremented) |
@@ -33,6 +33,13 @@ it contains; `null` unsets a field (`id_tags` / `config_keys` become empty; `ver
 false). The password mask round-trips as above. Changes are applied with a configuration reload and are
 written to the file only by `POST /api/config/save`.
 
+For an OCPP 2.0.1 charger `/api/chargers/{id}/configuration` returns `{"keys": [], "ocpp_version": "2.0.1",
+"variables": [...]}`: one entry per Device Model variable with `component`, `component_instance`, `evse_id`,
+`connector_id`, `variable`, `variable_instance`, `data_type`, `mutability`, `unit`, `min_limit`, `max_limit`,
+`values_list`, `reboot_required` and `attributes` (the `Actual` / `Target` / `MinSet` / `MaxSet` values it has;
+`null` for a WriteOnly variable), incl. the values the CSMS changed with SetVariables. There is no route to change
+a variable: the CSMS uses SetVariables, and the YAML file sets the start values (`variables:`).
+
 ## Charger operations
 
 | Method | Path | Body |
@@ -45,7 +52,7 @@ written to the file only by `POST /api/config/save`.
 | POST | `/api/chargers/{id}/swipe` | `{"connector": 1, "id_tag": "04A1B2C3"}` — `id_tag` is required |
 | POST | `/api/chargers/{id}/start` | `{"connector": 1, "id_tag": "04A1B2C3"}` — plug in and swipe; `id_tag` defaults to the first configured tag (`400` when there is none); `400` when the connector already has a transaction or is faulted |
 | POST | `/api/chargers/{id}/stop` | `{"connector": 1}` |
-| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — one of the charger's `fault_codes` (1.6: `ChargePointErrorCode`), `400` otherwise; ends a running transaction with reason `Other` and reports `Faulted` |
+| POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — one of the charger's `fault_codes` (1.6: `ChargePointErrorCode`; 2.0.1: the fault values of `ReasonEnumType`), `400` otherwise; ends a running transaction (1.6: reason `Other`; 2.0.1: `stoppedReason` = the code) and reports `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — back to Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}` (charger → CSMS) |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`, `["CP-0001"]` or `{"all": true}` |

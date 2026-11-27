@@ -4,11 +4,15 @@ A free OCPP charging station simulator with a live web UI, for testing a CSMS or
 hundreds of AC chargers in one process, plug in virtual EVs, start and stop transactions, and watch how the
 charging power follows the Smart Charging profiles your CSMS sends.
 
-- **OCPP 1.6J charge points.** Each simulated charger is a WebSocket client that connects out to your CSMS
-  (subprotocol `ocpp1.6`), boots, sends heartbeats, status notifications, transactions and meter values, and
-  answers the CSMS commands listed in [OCPP 1.6J messages](messages.md). OCPP 2.0.1 / 2.1 are planned
-  (v0.2 / v0.3) and shown greyed out in the UI.
-- **Smart Charging with a closed power loop.** SetChargingProfile / ClearChargingProfile /
+- **OCPP 1.6J and OCPP 2.0.1.** Each simulated charger is a WebSocket client that connects out to your CSMS
+  (subprotocol `ocpp1.6` or `ocpp2.0.1`, chosen per charger, so one process can run a mixed site), boots, sends
+  heartbeats, status notifications, transactions (1.6 StartTransaction / StopTransaction, 2.0.1 TransactionEvent)
+  and meter values, and answers the CSMS commands listed in [OCPP messages](messages.md). OCPP 2.1 is planned
+  (v0.3) and shown greyed out in the UI.
+- **OCPP 2.0.1 Device Model and external limits.** GetVariables / SetVariables / GetBaseReport on a minimal set
+  of standard variables plus your own (`variables:` in the YAML file), shown read-only in the web UI; an external
+  (EMS) limit per EVSE or station with NotifyChargingLimit / ClearedChargingLimit.
+- **Smart Charging with a closed power loop (1.6 and 2.0.1).** SetChargingProfile / ClearChargingProfile /
   GetCompositeSchedule; the limit applied to the simulated power is computed by the same function that answers
   GetCompositeSchedule, so what the CSMS is told and what the meter values show cannot diverge.
   See [Smart Charging](smart-charging.md).

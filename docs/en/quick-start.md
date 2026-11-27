@@ -2,7 +2,7 @@
 
 SME OCPPSim simulates the **charge point** side. You need a CSMS (central system) for the chargers to
 connect to. The examples use [SteVe](https://github.com/steve-community/steve), an open-source OCPP 1.6 CSMS;
-any OCPP 1.6J CSMS works.
+any OCPP 1.6J CSMS works. For OCPP 2.0.1 see [An OCPP 2.0.1 charger](#ocpp-201) below.
 
 ## Windows executable
 
@@ -77,3 +77,47 @@ attached to every release.
 
 To use another CSMS, change `csms_defaults.url` in the YAML file or in the settings dialog of the UI. The
 charger id is appended to the URL as the last path segment.
+
+## An OCPP 2.0.1 charger { #ocpp-201 }
+
+A 2.0.1 charging station needs a CSMS that speaks OCPP 2.0.1 (subprotocol `ocpp2.0.1`). `ocpp_version` is set
+per charger (or for all of them in `csms_defaults`), so 1.6 and 2.0.1 chargers can run side by side, each with
+its own `csms_url`:
+
+```yaml
+csms_defaults:
+  url: "ws://localhost:8180/steve/websocket/CentralSystemService"   # OCPP 1.6 CSMS
+  ocpp_version: "1.6"
+
+chargers:
+  - id: "CP-0001"                     # OCPP 1.6J
+    max_power_w: 6000
+    id_tags: ["04A1B2C3"]
+  - id: "CS-2001"                     # OCPP 2.0.1, two EVSEs
+    ocpp_version: "2.0.1"
+    csms_url: "ws://localhost:9000/ocpp"
+    connectors: 2
+    max_power_w: 7400
+    id_tags: ["04A1B2C3"]
+    variables:
+      - { component: OCPPCommCtrlr, variable: HeartbeatInterval, value: 120 }
+```
+
+[`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml) is a complete example. Replace the 2.0.1 URL with the charging-station
+endpoint of your CSMS; the station id is appended as the last path segment, as for 1.6. The version can also be
+changed in the settings dialog of the UI (the charger reconnects).
+
+For a 2.0.1 charger the web UI shows:
+
+- the OCPP version in the charger list and in the detail header;
+- EVSEs instead of connectors (`connectors: N` = N EVSEs with one connector each);
+- **Variables (Device Model)** instead of configuration keys: the run-time values as the CSMS reads them with
+  GetVariables, incl. its SetVariables changes. The table is read-only (the HTTP API has no route to change a
+  variable): change values from the CSMS, or with `variables:` in the YAML file;
+- an **External limit (EMS)** control in the Smart Charging panel, see [Smart Charging](smart-charging.md#ocpp-201).
+
+The fault dialog lists the fault codes of the charger's version. A 2.0.1 StatusNotification has no error code,
+so a 2.0.1 fault reports the EVSE as Faulted and the code is sent only as the `stoppedReason` of a transaction it
+interrupts.
+
+![Variables of an OCPP 2.0.1 charger](../assets/screenshots/en/variables.png)

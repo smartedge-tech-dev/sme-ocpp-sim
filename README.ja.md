@@ -2,11 +2,11 @@
 
 <h1 align="center">SME OCPPSim</h1>
 
-<p align="center"><strong>ノート PC 1 台で、EV 充電器が並ぶ駐車場をまるごと再現。</strong><br>Smart Charging 対応の OCPP 1.6J 充電器を、CSMS・EMS の試験用にライブ Web UI 付きで。</p>
+<p align="center"><strong>ノート PC 1 台で、EV 充電器が並ぶ駐車場をまるごと再現。</strong><br>Smart Charging 対応の OCPP 1.6J / 2.0.1 充電器を、CSMS・EMS の試験用にライブ Web UI 付きで。</p>
 
 <p align="center"><a href="https://smartedge-tech.com/open-source/#ocpp-sim"><b>Web サイト</b></a> · <a href="https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/"><b>ドキュメント</b></a> · <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><b>ダウンロード</b></a></p>
 
-<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J-2e8b57" alt="OCPP 1.6J"></p>
+<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J%20%7C%202.0.1-2e8b57" alt="OCPP 1.6J | 2.0.1"></p>
 
 <p align="center"><a href="README.md">English</a> | <strong>日本語</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
@@ -18,8 +18,11 @@
 
 - **OCPP 1.6J の充電器。** Boot、Heartbeat、ステータス、Authorize、トランザクション、MeterValues に加え、
   リモート開始・停止、設定、リセット、TriggerMessage、Availability、アンロック、DataTransfer に対応します。
-  OCPP 2.0.1 / 2.1 は v0.2 / v0.3 で対応予定です。
-- **電力の閉ループを持つ Smart Charging。** SetChargingProfile、ClearChargingProfile、GetCompositeSchedule に対応します。
+- **OCPP 2.0.1 の充電器**（1.6 の充電器と自由に混在可能）。オフラインキュー付きの TransactionEvent、
+  RequestStart / StopTransaction、Reset、ChangeAvailability、TriggerMessage、UnlockConnector、Device Model
+  （GetVariables / SetVariables / GetBaseReport。UI では参照のみ）、外部（EMS）制限値付きの 2.0.1 Smart Charging。
+  OCPP 2.1 は v0.3 で対応予定です。
+- **電力の閉ループを持つ Smart Charging（1.6 と 2.0.1）。** SetChargingProfile、ClearChargingProfile、GetCompositeSchedule に対応します。
   電力の制限値は GetCompositeSchedule に応答するのと同じ関数で計算するため、計画と MeterValues が食い違いません。
   仕様が定めていない点の解釈はすべてドキュメントに記載しています。
 - **EV と電力のモデル。** 電池、SoC、充電カーブ、相数、ランプ、日本の 200 V 単相・三相デルタ電源を扱い、
@@ -38,15 +41,19 @@ SME OCPPSim は無償の MIT ライセンスで、[smart-edge (智届科技)](ht
 <table>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/overview.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/overview.png" alt="充電器一覧: 接続状態、OCPP バージョン、コネクター数、合計電力"></a><br><sub>充電器一覧: 接続状態、OCPP バージョン、コネクター数、合計電力</sub></td>
-    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/charger.png" alt="コネクターカード: 接続、タグ、開始、停止、故障"></a><br><sub>コネクターカード: 接続、タグ、開始、停止、故障</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/charger.png" alt="OCPP 2.0.1 の充電器: EVSE カード（接続、タグ、開始、停止、故障）"></a><br><sub>OCPP 2.0.1 の充電器: EVSE カード（接続、タグ、開始、停止、故障）</sub></td>
   </tr>
   <tr>
-    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/smart-charging.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/smart-charging.png" alt="Smart Charging パネル: 制限値・電力・SoC を同じ時間軸で表示"></a><br><sub>Smart Charging パネル: 制限値・電力・SoC を同じ時間軸で表示</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/smart-charging.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/smart-charging.png" alt="Smart Charging パネル: 制限値・電力・SoC を同じ時間軸で表示（2.0.1 の外部制限値付き）"></a><br><sub>Smart Charging パネル: 制限値・電力・SoC を同じ時間軸で表示（2.0.1 の外部制限値付き）</sub></td>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/frames.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/frames.png" alt="OCPP フレームログ（絞り込みと JSON 詳細）"></a><br><sub>OCPP フレームログ（絞り込みと JSON 詳細）</sub></td>
   </tr>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/settings.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/settings.png" alt="設定: CSMS URL、OCPP バージョン、セキュリティプロファイル"></a><br><sub>設定: CSMS URL、OCPP バージョン、セキュリティプロファイル</sub></td>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/overview-dark.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/overview-dark.png" alt="ダークテーマ"></a><br><sub>ダークテーマ</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/variables.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/ja/variables.png" alt="OCPP 2.0.1 の Device Model 変数（参照のみ）"></a><br><sub>OCPP 2.0.1 の Device Model 変数（参照のみ）</sub></td>
+    <td width="50%"><sub>1.6 / 2.0.1 混在サイトの例: <code>configs/mixed-site.yaml</code></sub></td>
   </tr>
 </table>
 

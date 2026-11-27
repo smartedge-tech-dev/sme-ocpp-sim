@@ -8,7 +8,10 @@
 // backfill is merged in). Charger rows and the selected charger's connector cards are patched in place (a card is
 // rebuilt only when its state changed) so the list stays smooth with a few hundred chargers. Settings go through
 // the JSON routes /api/csms-defaults and /api/chargers/{id}/settings (validated and reloaded server side); the
-// configuration key table shows the run-time keys (/api/chargers/{id}/configuration).
+// configuration key table shows the run-time keys (/api/chargers/{id}/configuration). An OCPP 2.0.1 charger shows
+// its Device Model variables instead (same route, read-only: no Web API route changes a variable) and gets the
+// external-limit control of the Smart Charging panel (POST /api/chargers/{id}/external-limit); its connectors
+// are EVSEs (one connector each), so the panel's selector is labelled EVSE.
 //
 // Global entry points (plan §9, used for screenshots / docs): openChargerDialog(id), openSettingsDialog(id),
 // openProfileDialog(id), openFrameDetail(seq), openAddChargerDialog(); About is Shell.openAbout().
@@ -35,7 +38,11 @@ const PRODUCT = {
 
 // Fault codes depend on the charger's OCPP version: the fault dialog loads them from GET /api/chargers/{id} each
 // time it opens (protocol values, not translated), so a version change in the settings is picked up.
-const DEFAULT_FAULT = "OtherError";
+// Preselected fault code: 1.6 OtherError, 2.0.1 Other (ReasonEnumType); else the first code.
+const DEFAULT_FAULTS = ["OtherError", "Other"];
+// Versions with a Device Model (variables instead of configuration keys) and external limits.
+const DEVICE_MODEL_VERSIONS = new Set(["2.0.1"]);
+const hasDeviceModel = (c) => !!c && DEVICE_MODEL_VERSIONS.has(c.ocpp_version);
 const TIME_SCALES = [1, 2, 5, 10, 60];
 const MAX_FRAMES = 2000;          // frames kept client side
 const MAX_FRAME_ROWS = 500;       // frame rows in the DOM
@@ -280,8 +287,32 @@ function renderDetail(fresh) {
   $("dError").textContent = c.last_error ? t("detail.last_error", { e: errText(c.last_error) }) : "";
   $("dConnect").disabled = c.enabled !== false;
   $("dDisconnect").disabled = c.enabled === false;
+  renderVersionParts(c);
   renderConnectors(c, fresh);
   drawChart();
+}
+
+// The parts that depend on the OCPP version: keys or variables, the external limit, "Connector" or "EVSE".
+function renderVersionParts(c) {
+  const dm = hasDeviceModel(c);
+  const box = $("detailBody");
+  if (box.dataset.sel !== c.id) {   // another charger: drop the rows of the previous one until loadKeys answers
+    box.dataset.sel = c.id;
+    $("keyRows").replaceChildren();
+    $("varRows").replaceChildren();
+  }
+  if (box.dataset.dm === String(dm)) return;
+  box.dataset.dm = String(dm);
+  $("keysBox").open = false;
+  $("varsBox").open = false;
+  $("keysBox").hidden = dm;
+  $("varsBox").hidden = !dm;
+  $("extForm").hidden = !dm;
+  $("extHint").hidden = !dm;
+  const label = $("scConnectorLabel");
+  label.dataset.i18n = dm ? "sc.evse" : "sc.connector";
+  label.textContent = t(label.dataset.i18n);
+  if (dm) { $("keyRows").replaceChildren(); } else { $("varRows").replaceChildren(); }
 }
 
 // The cards and the connector select are rebuilt only when the charger or its connector set changes; otherwise a
@@ -297,6 +328,10 @@ function renderConnectors(c, fresh) {
     const want = fresh ? "1" : sel.value;
     sel.replaceChildren(...conns.map((x) => h("option", { value: x.id }, String(x.id))));
     sel.value = conns.some((x) => String(x.id) === want) ? want : sel.options[0] && sel.options[0].value;
+    const ext = $("extTarget"), extWant = fresh ? "0" : ext.value;
+    ext.replaceChildren(h("option", { value: "0" }, t("sc.ext.station")),
+      ...conns.map((x) => h("option", { value: x.id }, t("sc.ext.evse", { n: x.id }))));
+    ext.value = conns.some((x) => String(x.id) === extWant) ? extWant : "0";
     return;
   }
   for (const x of conns) {
@@ -384,7 +419,8 @@ async function faultThen(id, conn) {
     codes = (await api("GET", `/api/chargers/${enc(id)}`)).fault_codes || [];
   } catch (e) { fail(e); return; }
   $("faultCode").replaceChildren(...codes.map((c) => h("option", { value: c }, c)));
-  if (codes.includes(DEFAULT_FAULT)) $("faultCode").value = DEFAULT_FAULT;
+  const def = DEFAULT_FAULTS.find((c) => codes.includes(c));
+  if (def) $("faultCode").value = def;
   $("faultTitle").textContent = t("op.fault.title", { id, n: conn });
   if (await ask($("dlgFault"))) op(id, "fault", { connector: conn, error_code: $("faultCode").value });
 }
@@ -396,16 +432,42 @@ async function loadKeys() {
   try {
     const [conf, set] = await Promise.all([api("GET", chargerUrl(id, "configuration")), api("GET", chargerUrl(id, "settings"))]);
     if (id !== S.sel) return;
-    const keys = conf.keys || [];
-    rows.replaceChildren(...(keys.length ? keys.map((k) => h("tr", null, h("td", null, k.key), h("td", null, k.value ?? ""),
+    if (conf.variables) {
+      renderVariables(conf.variables);
+    } else {
+      const keys = conf.keys || [];
+      rows.replaceChildren(...(keys.length ? keys.map((k) => h("tr", null, h("td", null, k.key), h("td", null, k.value ?? ""),
       h("td", { class: "muted" }, t(k.readonly ? "keys.readonly" : "keys.readwrite"))))
       : [h("tr", null, h("td", { colspan: 3, class: "muted" }, t("keys.none")))]));
+    }
     const tags = set.id_tags || [];
     $("tagList").replaceChildren(...tags.map((v) => h("option", { value: v })));
     if (tags.length) $("tagValue").value = tags[0];
   } catch (e) {
-    if (id === S.sel) rows.replaceChildren(h("tr", null, h("td", { colspan: 3, class: "err" }, String(e.message))));
+    if (id !== S.sel) return;
+    const err = (n) => [h("tr", null, h("td", { colspan: n, class: "err" }, String(e.message)))];
+    if (hasDeviceModel(S.chargers.get(id))) $("varRows").replaceChildren(...err(5));
+    else rows.replaceChildren(...err(3));
   }
+}
+
+// One row per Device Model variable: the Actual value (WriteOnly values are null), the other attributes below it.
+const MUTABILITY = { ReadOnly: "keys.readonly", ReadWrite: "keys.readwrite", WriteOnly: "vars.writeonly" };
+function renderVariables(vars) {
+  const comp = (v) => [v.component, v.component_instance && `[${v.component_instance}]`,
+    v.evse_id != null && ` EVSE ${v.evse_id}`, v.connector_id != null && `, connector ${v.connector_id}`].filter(Boolean).join("");
+  const name = (v) => v.variable + (v.variable_instance ? `[${v.variable_instance}]` : "");
+  const row = (v) => {
+    const a = v.attributes || {};
+    const value = h("td", null, v.mutability === "WriteOnly" ? h("span", { class: "muted" }, t("vars.hidden")) : (a.Actual ?? ""));
+    const more = ["Target", "MinSet", "MaxSet"].filter((k) => k in a).map((k) => `${k}: ${a[k] ?? ""}`);
+    if (more.length) value.append(h("div", { class: "muted" }, more.join(" · ")));
+    const type = [v.data_type, v.unit].filter(Boolean).join(", ");
+    return h("tr", null, h("td", null, comp(v)), h("td", null, name(v)), value, h("td", { class: "attr" }, type),
+      h("td", { class: "muted" }, t(MUTABILITY[v.mutability] || "keys.readwrite")));
+  };
+  $("varRows").replaceChildren(...(vars.length ? vars.map(row)
+    : [h("tr", null, h("td", { colspan: 5, class: "muted" }, t("vars.none")))]));
 }
 
 // ------------------------------------------------------------------ Smart Charging (profiles + one time axis)
@@ -450,6 +512,19 @@ async function loadSmartCharging() {
   } catch (e) {
     if (id === S.sel && conn === $("scConnector").value) $("scList").replaceChildren(h("li", { class: "err" }, String(e.message)));
   }
+}
+
+// External (EMS) limit of a 2.0.1 charger: limit_w null removes it. The answer has no data; the profile list
+// and the chart are refreshed so the new ChargingStationExternalConstraints profile shows at once.
+async function setExternalLimit(limitW) {
+  const id = S.sel;
+  if (!id) return;
+  try {
+    await api("POST", chargerUrl(id, "external-limit"), { connector: Number($("extTarget").value), limit_w: limitW });
+    Shell.toast(t(limitW == null ? "sc.ext.cleared" : "sc.ext.applied"), "ok");
+  } catch (e) { fail(e); return; }
+  S.composite = null;
+  loadSmartCharging();
 }
 
 function profileLine(p) {
@@ -638,7 +713,7 @@ function versionOptions(sel, withDefault) {
   sel.replaceChildren(
     ...(withDefault ? [h("option", { value: "" }, t("settings.default"))] : []),
     h("option", { value: "1.6" }, "1.6"),
-    h("option", { value: "2.0.1", disabled: true }, t("settings.version.v201")),
+    h("option", { value: "2.0.1" }, "2.0.1"),
     h("option", { value: "2.1", disabled: true }, t("settings.version.v21")));
 }
 
@@ -954,6 +1029,13 @@ $("fAction").addEventListener("input", renderFrames);
 $("fClear").addEventListener("click", () => { S.frames = []; S.frameSet.clear(); $("frameRows").replaceChildren(); });
 $("tagValue").addEventListener("input", checkTag);
 $("keysBox").addEventListener("toggle", () => { if ($("keysBox").open) loadKeys(); });
+$("varsBox").addEventListener("toggle", () => { if ($("varsBox").open) loadKeys(); });
+$("extForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = $("extLimit").valueAsNumber;
+  if (Number.isFinite(v)) setExternalLimit(v);
+});
+$("extClear").addEventListener("click", () => setExternalLimit(null));
 bindForm("setForm", "setErr", applySettings);
 bindForm("addForm", "addErr", addCharger);
 bindForm("dtForm", "dtErr", sendDataTransfer, true);

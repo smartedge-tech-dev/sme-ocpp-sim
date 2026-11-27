@@ -1,9 +1,11 @@
 """Make the README / documentation screenshots (dev only).
 
-Starts the dev CSMS ``tests/peers/ocpp16_peer.py`` in-process (MobilityHouse ``ocpp``, a dev dependency), runs the
-simulator with ``scripts/screenshots.yaml`` in a temporary directory on a free port of 127.0.0.1, starts a
-transaction on every charger, sends a TxDefaultProfile to CP-0001 and captures the web UI with Playwright in
-English, Japanese and Chinese (light) plus a dark overview. Output: ``docs/assets/screenshots/{en,ja,zh}/``.
+Starts the dev CSMS peers ``tests/peers/ocpp16_peer.py`` and ``tests/peers/ocpp201_peer.py`` in-process
+(MobilityHouse ``ocpp``, a dev dependency), runs the simulator with the mixed 1.6 / 2.0.1 site
+``scripts/screenshots.yaml`` in a temporary directory on a free port of 127.0.0.1, starts a transaction on every
+charger, sends a TxDefaultProfile to the 2.0.1 station CP-0001 and sets an external (EMS) limit on it, and
+captures the web UI with Playwright in English, Japanese and Chinese (light) plus a dark overview.
+Output: ``docs/assets/screenshots/{en,ja,zh}/``.
 
     .venv\\Scripts\\python scripts\\screenshots.py
 """
@@ -29,7 +31,11 @@ sys.path.insert(0, str(ROOT))
 from PIL import Image  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
+import yaml  # noqa: E402
+from ocpp.v201 import call as call201  # noqa: E402
+
 from tests.peers.ocpp16_peer import CsmsPeer  # noqa: E402
+from tests.peers.ocpp201_peer import CsmsPeer201  # noqa: E402
 
 OUT = ROOT / "docs" / "assets" / "screenshots"
 CONFIG = ROOT / "scripts" / "screenshots.yaml"
@@ -37,7 +43,8 @@ LANGS = ("en", "ja", "zh")
 STORAGE = "sme-ocpp-sim"           # data-storage prefix of the shell script tag (index.html)
 VIEWPORT = {"width": 1440, "height": 1000}
 WIDE = {"width": 1600, "height": 1100}  # Japanese wide image (plan §9)
-FOCUS = "CP-0001"                  # the charger with the Smart Charging profile
+FOCUS = "CP-0001"                  # the OCPP 2.0.1 station with the Smart Charging profile
+EXTERNAL_LIMIT_W = 5000            # external (EMS) limit of the whole FOCUS station
 WARMUP_S = 15                      # let power ramp and frames accumulate before the first page
 HISTORY_S = 25                     # time on the page before capturing, so the charts have a history
 GIF_FRAMES, GIF_STEP_S, GIF_COLOURS = 12, 0.6, 128
@@ -46,16 +53,18 @@ GIF_FRAMES, GIF_STEP_S, GIF_COLOURS = 12, 0.6, 128
 # clock (time_scale only speeds up the power model), so short periods keep several steps inside the chart window
 # (which starts small because the page only plots what it has seen). The periods cover the whole script run.
 PERIOD_S, PERIOD_LIMITS = 30, (6000, 3500, 5000, 2500, 4500)
+# OCPP 2.0.1 field names in snake_case (the ``ocpp`` library camel-cases the payload).
 PROFILE = {
-    "chargingProfileId": 101,
-    "stackLevel": 0,
-    "chargingProfilePurpose": "TxDefaultProfile",
-    "chargingProfileKind": "Relative",
-    "chargingSchedule": {
-        "chargingRateUnit": "W",
-        "chargingSchedulePeriod": [{"startPeriod": i * PERIOD_S, "limit": PERIOD_LIMITS[i % len(PERIOD_LIMITS)]}
-                                   for i in range(20)],
-    },
+    "id": 101,
+    "stack_level": 0,
+    "charging_profile_purpose": "TxDefaultProfile",
+    "charging_profile_kind": "Relative",
+    "charging_schedule": [{
+        "id": 1,
+        "charging_rate_unit": "W",
+        "charging_schedule_period": [{"start_period": i * PERIOD_S, "limit": PERIOD_LIMITS[i % len(PERIOD_LIMITS)]}
+                                     for i in range(20)],
+    }],
 }
 
 
@@ -85,8 +94,11 @@ async def wait_http(base: str, proc: subprocess.Popen, timeout: float = 30) -> N
     raise TimeoutError("simulator did not start")
 
 
-def charger_ids() -> list:
-    return [ln.split('"')[1] for ln in CONFIG.read_text(encoding="utf-8").splitlines() if ln.startswith('  - id: "CP-')]
+def charger_ids() -> dict:
+    """Charger id -> OCPP version of the demo site."""
+    site = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    default = site["csms_defaults"]["ocpp_version"]
+    return {c["id"]: c.get("ocpp_version", default) for c in site["chargers"]}
 
 
 async def page_for(browser, lang: str, theme: str, viewport: dict, base: str):
@@ -98,6 +110,7 @@ async def page_for(browser, lang: str, theme: str, viewport: dict, base: str):
     await page.goto(base + "/")
     await page.wait_for_function("document.querySelectorAll('#chargerRows tr').length >= 8")
     await page.evaluate(f"openChargerDialog({FOCUS!r})")
+    await page.fill("#extLimit", str(EXTERNAL_LIMIT_W))  # the value the script set through the HTTP API
     await page.wait_for_timeout(HISTORY_S * 1000)  # the charts plot what the page has seen
     return ctx, page
 
@@ -111,6 +124,10 @@ async def capture_lang(browser, lang: str, base: str) -> None:
     sc = page.locator("#scChart").locator("xpath=ancestor::*[.//h3[@data-i18n='sc.title']][1]")
     await sc.screenshot(path=out / "smart-charging.png")
     await page.locator("section.pane.frames").screenshot(path=out / "frames.png")
+    await page.evaluate("document.getElementById('varsBox').open = true")  # the toggle loads the variables
+    await page.wait_for_function("document.querySelectorAll('#varRows tr').length > 5")
+    await page.locator("#varsBox").screenshot(path=out / "variables.png")
+    await page.evaluate("document.getElementById('varsBox').open = false")
 
     frames = []
     for _ in range(GIF_FRAMES):
@@ -137,12 +154,17 @@ async def capture_lang(browser, lang: str, base: str) -> None:
 
 
 async def main() -> None:
-    ids = charger_ids()
-    peer = CsmsPeer(hb_interval=10, registered=set(ids))
+    versions = charger_ids()
+    ids = list(versions)
+    peer = CsmsPeer(hb_interval=10, registered={c for c, v in versions.items() if v == "1.6"})
+    peer201 = CsmsPeer201(hb_interval=10, registered={c for c, v in versions.items() if v == "2.0.1"})
     await peer.start()
+    await peer201.start()
+    peers = {"1.6": peer, "2.0.1": peer201}
     tmp = Path(tempfile.mkdtemp(prefix="sme-ocpp-sim-shots-"))
-    (tmp / "site.yaml").write_text(CONFIG.read_text(encoding="utf-8").replace("__CSMS_URL__", peer.url),
-                                   encoding="utf-8")
+    site = CONFIG.read_text(encoding="utf-8").replace("__CSMS201_URL__", peer201.url).replace("__CSMS_URL__", peer.url)
+    with open(tmp / "site.yaml", "w", encoding="utf-8", newline="") as f:
+        f.write(site)
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     env = {**os.environ, "PYTHONPATH": str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")}
@@ -152,13 +174,19 @@ async def main() -> None:
                             stdout=log, stderr=subprocess.STDOUT)
     try:
         await wait_http(base, proc)
-        for cid in ids:
-            while cid not in peer.sessions:
-                await asyncio.sleep(0.2)
-            await asyncio.wait_for(peer.sessions[cid].booted.wait(), 30)
-        await peer.set_charging_profile(FOCUS, 1, PROFILE)
+        async with asyncio.timeout(30):
+            for cid in ids:
+                sessions = peers[versions[cid]].sessions
+                while cid not in sessions:
+                    await asyncio.sleep(0.2)
+                await sessions[cid].booted.wait()
+        res = await peer201.request(FOCUS, call201.SetChargingProfile(evse_id=1, charging_profile=PROFILE))
+        print("SetChargingProfile", FOCUS, res.status)
         for cid in ids:
             await asyncio.to_thread(http, base, "POST", f"/api/chargers/{cid}/start", {"connector": 1})
+        await asyncio.to_thread(http, base, "POST", f"/api/chargers/{FOCUS}/external-limit",
+                                {"connector": 0, "limit_w": EXTERNAL_LIMIT_W})
+        print("fault codes of", FOCUS, http(base, "GET", f"/api/chargers/{FOCUS}")["fault_codes"])
         await asyncio.sleep(WARMUP_S)
         async with async_playwright() as pw:
             browser = await pw.chromium.launch()
@@ -170,6 +198,7 @@ async def main() -> None:
         proc.wait(10)
         log.close()
         await peer.stop()
+        await peer201.stop()
         shutil.rmtree(tmp, ignore_errors=True)
     for p in sorted(OUT.rglob("*.*")):
         print(f"{p.relative_to(ROOT)}  {p.stat().st_size / 1024:.0f} KiB")

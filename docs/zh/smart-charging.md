@@ -68,7 +68,7 @@ Relative 的 60 秒时段在任何 time_scale 下都持续真实的 60 秒。
 - 电能按梯形法积分，电能寄存器只增不减。SoC 最多会超出目标一个步长。
 - 爬坡（`ramp_up_w_per_s`、`ramp_down_w_per_s`）单位为每模拟秒的 W，默认是阶跃变化。
 
-## OCPP 2.0.1
+## OCPP 2.0.1 { #ocpp-201 }
 
 2.0.1 充电桩有这套规则的独立副本（`protocol/v201/profiles.py` / `composite.py`）；功率模型共用，因此同样的闭环成立：
 GetCompositeSchedule 的值等于随后 TransactionEvent 读数中的 `Power.Active.Import`。消息：SetChargingProfile、
@@ -94,3 +94,8 @@ ChargingStationExternalConstraints profile（stackLevel 0、单个 W 时段、�
 
 依据对规格正文的记忆实现的 2.0.1 规则（TxProfile 需要 `transactionId`、stackLevel 冲突、CSMS 不能设置外部约束）尚未对照规格书
 核实；详见各模块的 docstring。
+
+在 Web UI 中，2.0.1 充电桩的 Smart Charging 面板有一行 **外部限值（EMS）**：选择整个充电站（0）或某个 EVSE，
+输入以 W 为单位的限值后点“设置”，或点“解除”。外部约束 profile 随即出现在 profile 列表中，图表中的合成限值也会包含它。
+
+![设置了外部限值的 OCPP 2.0.1 充电桩的 Smart Charging 面板](../assets/screenshots/zh/smart-charging.png)
