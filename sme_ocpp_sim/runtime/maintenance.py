@@ -208,6 +208,9 @@ class Maintenance:
             if not await self._install(rid):
                 return
             await self._reboot_and_wait(job)
+            # The install is over once the new firmware has booted; clear the flag before Installed goes
+            # out so a CSMS reacting to it with a new UpdateFirmware is not refused as "Installing".
+            self.installing = False
             await self._firmware(F.INSTALLED, rid)
         finally:
             self.installing = False
