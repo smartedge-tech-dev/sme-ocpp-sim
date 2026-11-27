@@ -5,8 +5,8 @@ M9) and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
 A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
-``ev_models`` entry). Not in v0.1: ``template`` (TemplateRegistry, v0.2), the ``evses`` tree (2.0.1) and
-``behaviors`` (v0.2).
+``ev_models`` entry). A charger may take its model defaults from a charger template (``template`` / ``params``,
+:mod:`.templates_builtin`). Not supported: the ``evses`` tree (plan Q11: ``connectors: N``) and ``behaviors`` (v0.3).
 
 YAML pitfall: unquoted ``0123``, ``1e5``-like numbers, ``ON`` / ``OFF`` / ``yes`` / ``no`` are not strings in
 YAML 1.1. Identity / text fields therefore only accept real strings and tell the user to quote the value,
@@ -17,7 +17,8 @@ as a whole (``sme_sim_common.config.replace_yaml_block``). Comments outside the 
 comments *inside* a replaced block - e.g. on a single ``chargers:`` entry - are lost (accepted v0.1 trade-off;
 per-item write-back needs sme-sim-common 1.2 ``replace_yaml_list_item``). Blocks are dumped with
 ``exclude_defaults``: a value equal to its default is not written out, which keeps the file short but means a
-default changed in a later version applies to such a file too. If ``replace_yaml_block`` cannot splice a block
+default changed in a later version applies to such a file too. A templated charger is compared with its template
+instead (a field set to the model default but differing from the template is written). If ``replace_yaml_block`` cannot splice a block
 (unusual layout) it re-dumps the whole document and *all* comments are lost; :func:`write_back_checked` reports
 that and :func:`write_back` / :func:`save_file` log a warning.
 
@@ -32,7 +33,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
-from pydantic import AfterValidator, BeforeValidator, Field, field_validator, model_validator
+from pydantic import (AfterValidator, BeforeValidator, Field, SerializationInfo, field_validator, model_serializer,
+                      model_validator)
+from pydantic_core import to_jsonable_python
 from sme_sim_common.config import StrictModel, atomic_write_text, replace_yaml_block, splice_yaml_block
 from typing_extensions import Annotated
 
@@ -269,6 +272,45 @@ class ChargerConfig(StrictModel):
     variables: List[VariableConfig] = Field(default_factory=list)
     #: Firmware / diagnostics simulation timings and failure injection (M7).
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+    #: Charger template (:mod:`.templates_builtin`): the template fields this charger does not set come from it.
+    template: Optional[Annotated[QuotedStr, Field(min_length=1)]] = None
+    #: Template parameters (``{param}`` placeholders of a user template), overriding the template's defaults.
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_template(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("template") is not None:
+            from .templates_builtin import expand_charger  # lazy: the templates module imports this one
+
+            data = expand_charger(data)
+        return data
+
+    @model_serializer(mode="wrap")
+    def _without_template_values(self, handler, info: SerializationInfo):
+        # A dump keeps only the charger's own overrides of its template (module docstring of templates_builtin).
+        # The template fields are compared with the template's value, not the model default: ``exclude_defaults``
+        # drops e.g. ``phases: 1`` before this runs, which would silently revert an override of a 3-phase
+        # template to the template's value on the next load. Dict / model fields (``config_keys``, ``session``,
+        # ``maintenance``) are diffed per key, so only the keys the charger changed are written.
+        out = handler(self)
+        if self.template is None or not isinstance(out, dict):
+            return out
+        from .templates_builtin import template_values
+
+        for k, tv in template_values(self.template, self.params).items():
+            if (info.include is not None and k not in info.include) or (info.exclude is not None
+                                                                         and k in info.exclude):
+                continue
+            own, ref = to_jsonable_python(getattr(self, k)), to_jsonable_python(tv)
+            if isinstance(own, dict) and isinstance(ref, dict):
+                own = {key: v for key, v in own.items() if key not in ref or ref[key] != v}
+            # an empty value is not an override (expand_extras lets the template fill it in)
+            if own in (None, "", {}, []) or own == ref:
+                out.pop(k, None)
+            else:
+                out[k] = own
+        return out
 
     @field_validator("id_tags")
     @classmethod

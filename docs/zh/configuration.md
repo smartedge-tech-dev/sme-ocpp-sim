@@ -124,6 +124,8 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `session.ev_model` | `compact-40kwh` | 插在 connector 上的 EV（预设或 `ev_models` 的 ID） |
 | `session.initial_soc` | `30.0` | 每次交易开始时的 SoC（%） |
 | `session.target_soc` | `90.0` | 达到后 EV 不再接受功率（SuspendedEV） |
+| `template` | 无 | 充电桩模板（内置或用户模板，见 [Excel 与模板](excel-templates.md)）；本充电桩未设置的模板字段取模板的值 |
+| `params` | `{}` | 含 `{param}` 占位符的用户模板的参数 |
 | `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值；2.0.1 为 `SampledDataCtrlr.TxUpdatedInterval` 的初始值 |
 | `variables` | `[]` | 仅 OCPP 2.0.1 充电桩：Device Model 的值覆盖与用户自定义变量（见下文） |
 
@@ -180,7 +182,7 @@ chargers:
 
 1.6 / 2.0.1 混合站点的示例见 [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml)。
 
-尚不支持：充电桩模板、2.0.1 的 `evses` 树（每个 EVSE 多个 connector）和 `behaviors`。
+尚不支持：2.0.1 的 `evses` 树（每个 EVSE 多个 connector）和 `behaviors`。充电桩模板见 [Excel 与模板](excel-templates.md)。
 
 
 ## mini_csms { #mini_csms }

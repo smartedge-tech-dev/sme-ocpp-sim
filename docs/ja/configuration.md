@@ -125,6 +125,8 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `session.ev_model` | `compact-40kwh` | コネクターに接続する EV（プリセットまたは `ev_models` の ID） |
 | `session.initial_soc` | `30.0` | 各トランザクション開始時の SoC（%） |
 | `session.target_soc` | `90.0` | この SoC に達すると EV は電力を受け付けなくなります（SuspendedEV） |
+| `template` | なし | 充電器テンプレート（組み込みまたはユーザー。[Excel とテンプレート](excel-templates.md) 参照）。この充電器が設定していないテンプレート項目はテンプレートの値 |
+| `params` | `{}` | `{param}` プレースホルダを持つユーザーテンプレートのパラメータ |
 | `meter_sample_interval_s` | キーの既定値 | `config_keys` で指定していない場合の `MeterValueSampleInterval` の既定値。2.0.1 では `SampledDataCtrlr.TxUpdatedInterval` の初期値 |
 | `variables` | `[]` | OCPP 2.0.1 の充電器のみ: Device Model の値の上書きとユーザー定義変数（下記） |
 
@@ -184,7 +186,7 @@ Web UI では、2.0.1 の充電器の **変数（Device Model）** 表にこれ�
 
 1.6 / 2.0.1 混在の例は [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml) です。
 
-未対応: 充電器テンプレート、2.0.1 の `evses` ツリー（EVSE あたり複数コネクター）、`behaviors`。
+未対応: 2.0.1 の `evses` ツリー（EVSE あたり複数コネクター）、`behaviors`。充電器テンプレートは [Excel とテンプレート](excel-templates.md) を参照。
 
 
 ## mini_csms { #mini_csms }

@@ -39,6 +39,20 @@ OCPP 2.0.1 の充電器では `/api/chargers/{id}/configuration` は `{"keys": [
 WriteOnly の変数は `null`）を含み、CSMS が SetVariables で変更した値も反映されます。変数を変更するルートは
 ありません。CSMS は SetVariables を使い、初期値は YAML ファイル（`variables:`）で設定します。
 
+## Excel とテンプレート { #excel-and-templates }
+
+ブックの構成とテンプレートの規則は [Excel インポート / エクスポートと充電器テンプレート](excel-templates.md) を参照してください。
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| GET | `/api/config/xlsx` | 充電器・構成キー・変数・EV モデルを Excel ブックで取得（パスワードは `********`） |
+| GET | `/api/config/xlsx-template` | 列見出しだけの空のブック |
+| POST | `/api/config/import` | multipart の `file`：ブックを適用（全か無か）。`{"ok": true, "warnings": [...]}`、または `400` と `errors`（シート・行・列を示すメッセージ 1 件ずつ） |
+| GET | `/api/templates` | 充電器テンプレート：`name`、`title`、`description`、`params`、`source`（`builtin` / `user`） |
+| POST | `/api/templates/reload` | ユーザーテンプレートのディレクトリを再読込：`{"dir", "loaded", "errors", "templates"}` |
+| POST | `/api/templates/from-device/{id}` | `{"name", "title"?, "description"?, "overwrite"?}`：充電器のテンプレート項目をユーザーテンプレートとして保存（既にあり `overwrite` なしなら `409`） |
+| POST | `/api/chargers/bulk/create` | `{"id": "CP-0001", "count": 10, "template"?, "params"?, "password"?, "fields"?}`：`count` 台を 1 回のリロードで追加。ID と末尾が数字のパスワードは連番、`fields` は各台に共通の他の項目（`csms_url`、`ocpp_version`、`id_tags` …）。ID が既にあれば `409`（1 台も追加しない） |
+
 ## 充電器の操作
 
 | メソッド | パス | ボディ |

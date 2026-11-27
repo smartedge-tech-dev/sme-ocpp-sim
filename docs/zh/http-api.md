@@ -37,6 +37,20 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 `null`），并包含 CSMS 通过 SetVariables 修改的值。没有修改变量的路由：CSMS 使用 SetVariables，初始值由 YAML 文件
 （`variables:`）设置。
 
+## Excel 与模板 { #excel-and-templates }
+
+工作簿结构与模板规则见 [Excel 导入导出与充电桩模板](excel-templates.md)。
+
+| 方法 | 路径 | 含义 |
+|---|---|---|
+| GET | `/api/config/xlsx` | 以 Excel 工作簿导出充电桩、配置键、变量和 EV 型号（密码为 `********`） |
+| GET | `/api/config/xlsx-template` | 只有列标题的空白工作簿 |
+| POST | `/api/config/import` | multipart 字段 `file`：应用工作簿（全部或全不）。返回 `{"ok": true, "warnings": [...]}`，或 `400` 加 `errors`（每个问题一条，含工作表、行、列） |
+| GET | `/api/templates` | 充电桩模板：`name`、`title`、`description`、`params`、`source`（`builtin` / `user`） |
+| POST | `/api/templates/reload` | 重新读取用户模板目录：`{"dir", "loaded", "errors", "templates"}` |
+| POST | `/api/templates/from-device/{id}` | `{"name", "title"?, "description"?, "overwrite"?}`：把充电桩的模板字段保存为用户模板（已存在且未设 `overwrite` 时 `409`） |
+| POST | `/api/chargers/bulk/create` | `{"id": "CP-0001", "count": 10, "template"?, "params"?, "password"?, "fields"?}`：一次重载添加 `count` 台；ID 和末尾为数字的密码递增，`fields` 为每台共用的其他字段（`csms_url`、`ocpp_version`、`id_tags` …）。ID 已存在时 `409`（一台也不添加） |
+
 ## 充电桩操作
 
 | 方法 | 路径 | 请求体 |

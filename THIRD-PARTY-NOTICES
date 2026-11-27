@@ -44,6 +44,8 @@ h11                  MIT            https://github.com/python-hyper/h11
 httptools            MIT            https://github.com/MagicStack/httptools
 watchfiles           MIT            https://github.com/samuelcolvin/watchfiles
 python-dotenv        BSD-3-Clause   https://github.com/theskumar/python-dotenv
+openpyxl             MIT            https://foss.heptapod.net/openpyxl/openpyxl
+et-xmlfile           MIT            https://foss.heptapod.net/openpyxl/et_xmlfile
 
 Platform-specific (installed only on some platforms)
 ----------------------------------------------------

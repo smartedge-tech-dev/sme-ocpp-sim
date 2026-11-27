@@ -9,6 +9,8 @@
 # No protocol library data: the OCPP-J RPC layer and message models are in-house, and the `ocpp`
 # package is a dev-only test peer, so there is no collect_data_files("ocpp") / collect_submodules.
 # cryptography (runtime dependency since v0.2 M8) is collected by the hook in pyinstaller-hooks-contrib.
+# openpyxl (Excel import / export, v0.2 M10, via sme-sim-common[xlsx]) is imported lazily inside functions;
+# it is listed as a hidden import so the executable never misses it.
 import os
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -29,7 +31,7 @@ a = Analysis(
     pathex=[root],
     datas=datas,
     # Version adapters (sme_ocpp_sim.protocol.v16, ...) are imported by name at runtime
-    hiddenimports=collect_submodules("sme_ocpp_sim"),
+    hiddenimports=collect_submodules("sme_ocpp_sim") + ["openpyxl"],
     excludes=["tkinter"],
 )
 pyz = PYZ(a.pure)
