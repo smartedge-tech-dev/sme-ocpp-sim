@@ -708,6 +708,8 @@ class Station201(VersionStation):
         # Claimed now (a waiting token blocks the next request); the transaction starts after the answer.
         e.pending_tag, e.pending_type = req.id_token.id_token, req.id_token.type
         e.pending_remote_id = req.remote_start_id
+        # AuthorizeRemoteStart: from now on a plug waits for the authorization (see _remote_authorize).
+        e.pending_authorizing = self.dm.bool_value(dm.AUTHORIZE_REMOTE_START)
         self.host.after_reply(functools.partial(self._remote_start_go, e, req.remote_start_id))
         return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
 
@@ -717,8 +719,7 @@ class Station201(VersionStation):
         if e.fault or not e.operative or self._resetting:
             self._clear_pending(e)
             return
-        if self.dm.bool_value(dm.AUTHORIZE_REMOTE_START):
-            e.pending_authorizing = True
+        if e.pending_authorizing:
             if self.host.spawn(self._remote_authorize(e, remote_start_id)) is None:
                 self._clear_pending(e)  # the session ended meanwhile
             return
