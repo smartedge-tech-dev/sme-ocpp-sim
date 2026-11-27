@@ -9,89 +9,144 @@ EVSE, connector) and variable (name, instance). It answers GetVariables / SetVar
 The variable set is minimal (plan §11.1 Q7): :func:`standard_variables` holds the variables the station uses,
 and the charger YAML ``variables:`` list overrides their values or adds user-defined variables
 (:func:`apply_config`). Component / variable names of the standard set are the ones the ``ocpp`` library
-(``ocpp.v201.enums``, sourced from OCPP 2.0.1 Part 2 Appendix 3) lists; their data types, mutability, units,
-limits and default values are simulator choices (see Interpretations).
+(``ocpp.v201.enums``, sourced from OCPP 2.0.1 Part 2 Appendix 3) lists.
 
-Interpretations (not defined by the spec, or not verified against the spec text)
--------------------------------------------------------------------------------
+Spec references: OCPP 2.0.1 Edition 4 Part 2 "Referenced Components and Variables" (section numbers in brackets
+below) and the Appendices v1.5 CSV ``dm_components_vars.csv``. dataType, mutability, unit and the limits of the
+standard set are taken from there; where the spec leaves a choice (``ReadWrite or ReadOnly``, a default value, an
+implementer-defined maxLimit) the choice is stated in the table.
+
+Interpretations (not defined by the spec)
+-----------------------------------------
 - Lookup order of one GetVariables / SetVariables item: no component with that name, instance, EVSE and
   connector -> ``UnknownComponent``; no variable with that name and instance in it -> ``UnknownVariable``; the
   attribute type is not one the variable has -> ``NotSupportedAttributeType``; then the mutability. A component
   is matched exactly: an EVSE component is not found without its ``evse`` and a station-level one is not found
-  with one. A missing ``attributeType`` is ``Actual`` (the schema default).
+  with one. A missing ``attributeType`` is ``Actual`` (the schema default; B05.FR.12).
 - Mutability belongs to the variable and applies to every attribute it has: GetVariables of a ``WriteOnly``
   variable and SetVariables of a ``ReadOnly`` one are ``Rejected`` (``statusInfo.reasonCode`` ``WriteOnly`` /
-  ``ReadOnly``). A ``WriteOnly`` value is never reported (NotifyReport leaves ``value`` out).
+  ``ReadOnly``). A ``WriteOnly`` value is never reported (NotifyReport leaves ``value`` out; B07.FR.03).
 - Value validation of SetVariables (``Rejected``, ``reasonCode`` :data:`REASON_INVALID_VALUE` /
   :data:`REASON_OUT_OF_RANGE` / :data:`REASON_NOT_IN_LIST`): ``integer`` = optional ``-`` and ASCII digits;
   ``decimal`` = a finite number; ``boolean`` = ``true`` / ``false`` (any case, stored lower case); ``dateTime`` =
   ISO 8601; ``OptionList`` = one value of ``valuesList``; ``SequenceList`` / ``MemberList`` = comma-separated
   values of ``valuesList`` (MemberList without duplicates; an empty value is the empty list). ``minLimit`` /
-  ``maxLimit`` bound the number for ``integer`` / ``decimal`` and the length for ``string``. Every value is at most
-  :data:`MAX_VALUE_LENGTH` characters (``ConfigurationValueSize`` is not modelled).
-- ``RebootRequired``: the value of a variable marked ``reboot_required`` is validated, stored and reported at
-  once, but the station does not act on it (the simulator does not model what a reboot would change).
+  ``maxLimit`` bound the number for ``integer`` / ``decimal`` and the length for ``string``; for a list type
+  they are informative. Every value is at most :data:`MAX_VALUE_LENGTH` characters (``ConfigurationValueSize``
+  is not modelled).
+- ``RebootRequired`` (user-defined YAML variables only): the value of a variable marked ``reboot_required`` is
+  validated, stored and reported at once, but the station does not act on it.
 - A SetVariables value equal to the stored one is ``Accepted`` and changes nothing.
 - SetVariables changes live in memory only: they are not written back to the YAML file (the 1.6
-  ChangeConfiguration is not either), so a reload or restart starts from the YAML values again.
+  ChangeConfiguration is not either), so a reload or restart starts from the YAML values again. This includes
+  a new SecurityCtrlr.BasicAuthPassword.
 - Report bases: ``FullInventory`` = every variable; ``ConfigurationInventory`` = every variable that is not
-  ``ReadOnly``; ``SummaryInventory`` = the variables marked ``summary`` (availability / state variables of the
-  standard set, and YAML variables with ``summary: true``). ``supportsMonitoring`` is ``false`` (monitoring is
-  not modelled).
-- Standard variables (names from ``ocpp.v201.enums``; data types, mutability, units, limits and defaults are
-  NOT verified against the Appendix 3 text):
+  ``ReadOnly`` (B07.FR.07); ``SummaryInventory`` (B07.FR.09) = ChargingStation.AvailabilityState and each
+  EVSE's AvailabilityState (the Connector's equals its EVSE's, one connector per EVSE, so it is left out; no
+  Problem / Tripped / Overload / Fallback variables are modelled), plus YAML variables with ``summary: true``.
+  ``supportsMonitoring`` is ``false`` (monitoring is not modelled).
+- "Fixed" variables are required by the spec, but the behaviour they configure is not modelled: they are
+  ``ReadOnly`` (where the spec allows ReadWrite, too) with the value that describes what the simulator does, and
+  YAML may not override them.
+- Standard variables:
 
   ============================================  =========  ==========  ==================================
-  Component . Variable [instance]               dataType   mutability  value / effect
+  Component . Variable [instance] (Part 2 §)    dataType   mutability  value / effect
   ============================================  =========  ==========  ==================================
-  OCPPCommCtrlr.HeartbeatInterval               integer s  ReadWrite   heartbeat interval; an accepted
+  OCPPCommCtrlr.HeartbeatInterval (2.1.5)       integer s  ReadWrite   heartbeat interval, minLimit 1
+                                                                       (spec "> 0"); an accepted
                                                                        BootNotification sets it too
   OCPPCommCtrlr.MessageTimeout [Default]        integer s  ReadOnly    the CALL timeout of the runtime
   OCPPCommCtrlr.MessageAttempts                 integer    ReadWrite   attempts of a TransactionEvent
   [TransactionEvent]                                                   (default 3)
   OCPPCommCtrlr.MessageAttemptInterval          integer s  ReadWrite   retry step of a TransactionEvent
   [TransactionEvent]                                                   (default 10)
+  OCPPCommCtrlr.FileTransferProtocols (2.1.4)   MemberList ReadOnly    fixed: empty (no file transfer)
+  OCPPCommCtrlr.NetworkConfigurationPriority    SequenceL. ReadOnly    fixed: ``1``, the one connection of
+  (2.1.6)                                                              the YAML (valuesList ``1``)
+  OCPPCommCtrlr                                 integer    ReadOnly    fixed: 3 (the shell retries with
+  .NetworkProfileConnectionAttempts (2.1.7)                            back-off, there is no fallback)
+  OCPPCommCtrlr.OfflineThreshold (2.1.8)        integer s  ReadOnly    fixed: 60 (informative)
+  OCPPCommCtrlr.UnlockOnEVSideDisconnect        boolean    ReadOnly    fixed: true (no lock is modelled)
+  (2.1.12)
+  OCPPCommCtrlr.ResetRetries (2.1.14)           integer    ReadOnly    fixed: 0 (a Reset never fails)
   SampledDataCtrlr.TxUpdatedInterval            integer s  ReadWrite   periodic Updated interval (0 = none;
                                                                        ``meter_sample_interval_s`` / 60)
+  SampledDataCtrlr.TxEndedInterval (2.7.8)      integer s  ReadOnly    fixed: 0 (only the start and end
+                                                                       readings are sent)
   SampledDataCtrlr.TxStartedMeasurands /        MemberList ReadWrite   readings of Started / Updated /
-  TxUpdatedMeasurands / TxEndedMeasurands                              Ended (the measurands the station
-                                                                       models)
-  AuthCtrlr.Enabled                             boolean    ReadOnly    ``auth_mode`` != ``accept_all``
-  AuthCtrlr.AuthorizeRemoteStart                boolean    ReadWrite   authorize a RequestStartTransaction
+  TxUpdatedMeasurands / TxEndedMeasurands                              Ended; maxLimit (implementer
+  (2.7.9 ..)                                                           defined) = length of the full list
+  AuthCtrlr.Enabled (2.3.1)                     boolean    ReadWrite   false: every token is accepted
+                                                                       (initial: ``auth_mode`` is not
+                                                                       ``accept_all``)
+  AuthCtrlr.AuthorizeRemoteStart (2.3.4)        boolean    ReadWrite   authorize a RequestStartTransaction
                                                                        token first (default false)
-  AuthCtrlr.LocalPreAuthorize                   boolean    ReadOnly    ``id_tags`` checked before the CSMS
-                                                                       (``local_only`` / ``local_then_csms``)
-  AuthCtrlr.LocalAuthorizeOffline               boolean    ReadOnly    ``id_tags`` accepted offline (same)
-  AuthCtrlr.OfflineTxForUnknownIdEnabled        boolean    ReadOnly    ``auth_mode`` == ``accept_all``
-  AuthCtrlr.DisableRemoteAuthorization          boolean    ReadOnly    ``auth_mode`` == ``local_only``
+  AuthCtrlr.LocalPreAuthorize (2.3.6)           boolean    ReadWrite   online: an ``id_tags`` token is
+                                                                       accepted without Authorize (initial:
+                                                                       ``local_only`` / ``local_then_csms``)
+  AuthCtrlr.LocalAuthorizeOffline (2.3.5)       boolean    ReadWrite   offline: an ``id_tags`` token is
+                                                                       accepted (initial: the same)
+  AuthCtrlr.OfflineTxForUnknownIdEnabled        boolean    ReadWrite   offline: any other token is accepted
+  (2.3.3)                                                              (initial: ``accept_all``)
+  AuthCtrlr.DisableRemoteAuthorization (2.3.8)  boolean    ReadWrite   no Authorize is sent: ``id_tags``
+                                                                       tokens accepted, others Invalid
+                                                                       (initial: ``local_only``)
+  TxCtrlr.EVConnectionTimeOut (2.6.1)           integer s  ReadOnly    fixed: 120 (informative: a waiting
+                                                                       token does not time out)
+  TxCtrlr.StopTxOnEVSideDisconnect (2.6.2)      boolean    ReadOnly    fixed: true (unplugging ends the
+                                                                       transaction)
   TxCtrlr.TxStartPoint / TxStopPoint            MemberList ReadOnly    ``PowerPathClosed`` (M2 behaviour)
   TxCtrlr.StopTxOnInvalidId                     boolean    ReadWrite   end a transaction whose token the
                                                                        CSMS refuses (default true)
-  SecurityCtrlr.SecurityProfile                 integer    ReadOnly    0 / 1 / 2 from password and ws(s)://
-  SecurityCtrlr.Identity                        string     ReadOnly    the charger id
+  SecurityCtrlr.SecurityProfile (2.2.5)         integer    ReadOnly    1 / 2 from password and ws(s)://;
+                                                                       0 (no password) is a simulator-only
+                                                                       value, the spec defines 1 / 2 / 3
+  SecurityCtrlr.Identity (2.2.2)                string     ReadOnly    the charger id; maxLimit 48
+  SecurityCtrlr.CertificateEntries (2.2.4)      integer    ReadOnly    fixed: 0, maxLimit 0 (no
+                                                                       certificate management)
   SecurityCtrlr.OrganizationName                string     ReadWrite   ``vendor`` (not used)
-  SecurityCtrlr.BasicAuthPassword               string     WriteOnly   ``password``; RebootRequired, 16..40
-                                                                       characters, not applied
+  SecurityCtrlr.BasicAuthPassword (2.2.1)       string     WriteOnly   ``password``; 16..64 characters
+                                                                       (maxLimit: spec "at least 40, at
+                                                                       most 64"). A new value is
+                                                                       ``Accepted``, then the station
+                                                                       reconnects with it (A01)
   DeviceDataCtrlr.ItemsPerMessage               integer    ReadOnly    50: GetVariables / SetVariables
   [GetReport / GetVariables / SetVariables]                            items (more -> CALLERROR
-                                                                       OccurenceConstraintViolation, the
-                                                                       2.0.1 spelling), reportData per
-                                                                       NotifyReport
+                                                                       OccurrenceConstraintViolation),
+                                                                       reportData per NotifyReport
   DeviceDataCtrlr.BytesPerMessage [same]        integer    ReadOnly    65000, informative (not enforced)
-  SmartChargingCtrlr.Enabled / Available        boolean    ReadOnly    true (informative; M5)
+  SmartChargingCtrlr.Enabled (2.9.1)            boolean    ReadWrite   true; stored and reported, not
+                                                                       acted on (profiles are always
+                                                                       handled)
+  SmartChargingCtrlr.Available (2.9.2)          boolean    ReadOnly    true
   SmartChargingCtrlr                            boolean    ReadWrite   false: the operator external limit
   .ExternalControlSignalsEnabled                                       is refused (default true)
   SmartChargingCtrlr                            boolean    ReadWrite   NotifyChargingLimit carries the
-  .NotifyChargingLimitWithSchedules                                    schedule (default true)
+  .NotifyChargingLimitWithSchedules (2.9.8)                            schedule (default false)
+  SmartChargingCtrlr.Entries [ChargingProfiles] integer    ReadOnly    the profiles installed now (no
+  (2.9.10)                                                             capacity is modelled: no maxLimit)
+  SmartChargingCtrlr.LimitChangeSignificance    decimal    ReadOnly    fixed: 0 (every change is sent)
+  (2.9.11)
   SmartChargingCtrlr.ProfileStackLevel          integer    ReadOnly    100: higher stackLevel -> Rejected
   SmartChargingCtrlr.PeriodsPerSchedule         integer    ReadOnly    1024: more periods -> Rejected
   SmartChargingCtrlr.RateUnit                   MemberList ReadOnly    A,W: another unit -> Rejected
-  EVSE(evse i).AvailabilityState                OptionList ReadOnly    the connectorStatus of EVSE i
+  ChargingStation.Available / AvailabilityState boolean /  ReadOnly    true; ``Unavailable`` when every
+  (CSV, required)                               OptionList             EVSE is, else ``Available``
+  EVSE(evse i).Available / AvailabilityState    boolean /  ReadOnly    true; the connectorStatus of EVSE i
+  (CSV, required)                               OptionList
+  EVSE(evse i).Power (CSV, required)            decimal W  ReadOnly    the power now; maxLimit
+                                                                       ``max_power_w``
+  EVSE(evse i).SupplyPhases (CSV, required)     integer    ReadOnly    ``phases`` of the charger
+  Connector(evse i, connector 1).Available /    boolean /  ReadOnly    true; the connectorStatus of EVSE i
+  AvailabilityState (CSV)                       OptionList
   ============================================  =========  ==========  ==================================
 
-- The ReadOnly variables derived from other settings (``auth_mode``, the charger id, the CSMS url, the CALL
-  timeout, the transaction start / stop points, the EVSE state) cannot be overridden in YAML; the other standard
-  variables take a YAML ``value`` (and ``target`` / ``min_set`` / ``max_set`` when they have that attribute).
+- The ReadOnly variables derived from other settings or the station state (the charger id, the CSMS url, the
+  CALL timeout, the transaction start / stop points, the availability, the power) and the fixed ones cannot be
+  overridden in YAML; the other standard variables take a YAML ``value`` (and ``target`` / ``min_set`` /
+  ``max_set`` when they have that attribute). The AuthCtrlr variables get their initial value from
+  ``auth_mode``; a YAML ``value`` overrides it.
 """
 
 from __future__ import annotations
@@ -131,7 +186,9 @@ TX = "TxCtrlr"
 SECURITY = "SecurityCtrlr"
 DEVICE_DATA = "DeviceDataCtrlr"
 SMART_CHARGING = "SmartChargingCtrlr"
+CHARGING_STATION = "ChargingStation"
 EVSE_COMPONENT = "EVSE"
+CONNECTOR_COMPONENT = "Connector"
 
 HEARTBEAT_INTERVAL = (OCPP_COMM, "HeartbeatInterval")
 TX_UPDATED_INTERVAL = (SAMPLED_DATA, "TxUpdatedInterval")
@@ -150,6 +207,14 @@ NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES = (SMART_CHARGING, "NotifyChargingLimitWith
 PROFILE_STACK_LEVEL = (SMART_CHARGING, "ProfileStackLevel")
 PERIODS_PER_SCHEDULE = (SMART_CHARGING, "PeriodsPerSchedule")
 RATE_UNIT = (SMART_CHARGING, "RateUnit")
+AUTH_ENABLED = (AUTH, "Enabled")
+LOCAL_PRE_AUTHORIZE = (AUTH, "LocalPreAuthorize")
+LOCAL_AUTHORIZE_OFFLINE = (AUTH, "LocalAuthorizeOffline")
+OFFLINE_TX_FOR_UNKNOWN_ID = (AUTH, "OfflineTxForUnknownIdEnabled")
+DISABLE_REMOTE_AUTHORIZATION = (AUTH, "DisableRemoteAuthorization")
+SECURITY_PROFILE = (SECURITY, "SecurityProfile")
+BASIC_AUTH_PASSWORD = (SECURITY, "BasicAuthPassword")
+INSTANCE_CHARGING_PROFILES = "ChargingProfiles"
 INSTANCE_TX_EVENT = "TransactionEvent"
 INSTANCE_GET_REPORT = "GetReport"
 INSTANCE_GET_VARIABLES = "GetVariables"
@@ -181,6 +246,12 @@ RATE_UNITS = ("A", "W")
 TX_POINTS = ("ParkingBayOccupancy", "EVConnected", "Authorized", "DataSigned", "PowerPathClosed",
              "EnergyTransfer")
 AVAILABILITY_STATES = ("Available", "Occupied", "Reserved", "Unavailable", "Faulted")
+#: FileTransferProtocols valuesList (Part 2 §2.1.4).
+FILE_TRANSFER_PROTOCOLS = ("FTP", "FTPS", "HTTP", "HTTPS", "SFTP")
+#: SecurityCtrlr.Identity maxLimit (Part 2 §2.2.2).
+IDENTITY_MAX = 48
+#: SecurityCtrlr.BasicAuthPassword length (Part 2 §2.2.1: at least 16; maxLimit at least 40, at most 64).
+PASSWORD_MIN, PASSWORD_MAX = 16, 64
 
 #: (component, component instance, EVSE id, connector id, variable, variable instance)
 Key = Tuple[str, Optional[str], Optional[int], Optional[int], str, Optional[str]]
@@ -504,63 +575,97 @@ def _b(flag: bool) -> str:
 
 
 def security_profile(password: Optional[str], url: str) -> int:
-    """0 / 1 / 2 as the shell connects (password: Basic Auth; wss://: TLS)."""
+    """1 / 2 as the shell connects (password: Basic Auth; wss://: TLS); 0 without a password is a
+    simulator-only value (Part 2 §2.2.5 / A00 define profiles 1 / 2 / 3)."""
     if password is None:
         return 0
     return 2 if url.startswith("wss://") else 1
 
 
+def _decimal(x: float) -> str:
+    """A decimal value without exponent or trailing zeros (``2469.0`` -> ``2469``, ``1e6`` -> ``1000000``)."""
+    return format(x, "f").rstrip("0").rstrip(".") or "0"
+
+
+def station_availability(states: Sequence[str]) -> str:
+    """ChargingStation.AvailabilityState from the EVSE states: ``Unavailable`` when every EVSE is, else
+    ``Available`` (the station has no state of its own; see the module docstring)."""
+    return "Unavailable" if states and all(x == "Unavailable" for x in states) else "Available"
+
+
 def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S, url: str = "",
-                       availability: Optional[Callable[[int], str]] = None) -> List[Variable]:
-    """The minimal default set (module docstring table) for the charger config ``cfg`` (``ChargerConfig``):
+                       availability: Optional[Callable[[int], str]] = None,
+                       power_w: Optional[Callable[[int], float]] = None,
+                       profile_count: Optional[Callable[[], int]] = None) -> List[Variable]:
+    """The default set (module docstring table) for the charger config ``cfg`` (``ChargerConfig``):
     ``message_timeout_s`` is the CALL timeout, ``url`` the CSMS url, ``availability(evse_id)`` the live
-    connectorStatus of an EVSE."""
+    connectorStatus of an EVSE, ``power_w(evse_id)`` its live power and ``profile_count()`` the number of
+    installed charging profiles."""
     mode = cfg.auth_mode
     local_first = mode in ("local_only", "local_then_csms")
     meas = MEASURANDS
+    meas_max = len(",".join(meas))
     started, updated, ended = DEFAULT_TX_STARTED, DEFAULT_TX_UPDATED, DEFAULT_TX_ENDED
     heartbeat_s = DEFAULT_HEARTBEAT_S
     interval = cfg.meter_sample_interval_s
     tx_updated_interval_s = DEFAULT_TX_UPDATED_INTERVAL_S if interval is None else interval
+    evses = range(1, cfg.connectors + 1)
 
     def var(name: Tuple[str, str], data_type: DataEnumType, value: str, **kw: Any) -> Variable:
         return Variable(name[0], name[1], data_type, {AT.actual: value}, **kw)
 
     def ro(name: Tuple[str, str], data_type: DataEnumType, value: str, **kw: Any) -> Variable:
+        """ReadOnly, derived from other settings / the station state, or fixed (not modelled)."""
         return var(name, data_type, value, mutability=MU.read_only, derived=True, **kw)
 
+    def state(i: int) -> str:
+        return availability(i) if availability is not None else "Available"
+
     out = [
-        var(HEARTBEAT_INTERVAL, DT.integer, str(heartbeat_s), unit="s", min_limit=0),
+        var(HEARTBEAT_INTERVAL, DT.integer, str(heartbeat_s), unit="s", min_limit=1),
         ro((OCPP_COMM, "MessageTimeout"), DT.integer, str(max(1, math.ceil(message_timeout_s))), unit="s",
            variable_instance="Default"),
         var(MESSAGE_ATTEMPTS, DT.integer, str(DEFAULT_MESSAGE_ATTEMPTS), min_limit=1,
             variable_instance=INSTANCE_TX_EVENT),
         var(MESSAGE_ATTEMPT_INTERVAL, DT.integer, str(DEFAULT_MESSAGE_ATTEMPT_INTERVAL_S), unit="s", min_limit=0,
             variable_instance=INSTANCE_TX_EVENT),
+        ro((OCPP_COMM, "FileTransferProtocols"), DT.member_list, "", values_list=FILE_TRANSFER_PROTOCOLS),
+        ro((OCPP_COMM, "NetworkConfigurationPriority"), DT.sequence_list, "1", values_list=("1",)),
+        ro((OCPP_COMM, "NetworkProfileConnectionAttempts"), DT.integer, "3"),
+        ro((OCPP_COMM, "OfflineThreshold"), DT.integer, "60", unit="s"),
+        ro((OCPP_COMM, "UnlockOnEVSideDisconnect"), DT.boolean, "true"),
+        ro((OCPP_COMM, "ResetRetries"), DT.integer, "0"),
         var(TX_UPDATED_INTERVAL, DT.integer, str(tx_updated_interval_s), unit="s", min_limit=0),
-        var(TX_STARTED_MEASURANDS, DT.member_list, ",".join(started), values_list=meas),
-        var(TX_UPDATED_MEASURANDS, DT.member_list, ",".join(updated), values_list=meas),
-        var(TX_ENDED_MEASURANDS, DT.member_list, ",".join(ended), values_list=meas),
-        ro((AUTH, "Enabled"), DT.boolean, _b(mode != "accept_all"), summary=True),
+        ro((SAMPLED_DATA, "TxEndedInterval"), DT.integer, "0", unit="s"),
+        var(TX_STARTED_MEASURANDS, DT.member_list, ",".join(started), values_list=meas, max_limit=meas_max),
+        var(TX_UPDATED_MEASURANDS, DT.member_list, ",".join(updated), values_list=meas, max_limit=meas_max),
+        var(TX_ENDED_MEASURANDS, DT.member_list, ",".join(ended), values_list=meas, max_limit=meas_max),
+        var(AUTH_ENABLED, DT.boolean, _b(mode != "accept_all")),
         var(AUTHORIZE_REMOTE_START, DT.boolean, "false"),
-        ro((AUTH, "LocalPreAuthorize"), DT.boolean, _b(local_first)),
-        ro((AUTH, "LocalAuthorizeOffline"), DT.boolean, _b(local_first)),
-        ro((AUTH, "OfflineTxForUnknownIdEnabled"), DT.boolean, _b(mode == "accept_all")),
-        ro((AUTH, "DisableRemoteAuthorization"), DT.boolean, _b(mode == "local_only")),
+        var(LOCAL_PRE_AUTHORIZE, DT.boolean, _b(local_first)),
+        var(LOCAL_AUTHORIZE_OFFLINE, DT.boolean, _b(local_first)),
+        var(OFFLINE_TX_FOR_UNKNOWN_ID, DT.boolean, _b(mode == "accept_all")),
+        var(DISABLE_REMOTE_AUTHORIZATION, DT.boolean, _b(mode == "local_only")),
+        ro((TX, "EVConnectionTimeOut"), DT.integer, "120", unit="s"),
+        ro((TX, "StopTxOnEVSideDisconnect"), DT.boolean, "true"),
         ro((TX, "TxStartPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
         ro((TX, "TxStopPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
         var(STOP_TX_ON_INVALID_ID, DT.boolean, "true"),
-        ro((SECURITY, "SecurityProfile"), DT.integer, str(security_profile(cfg.password, url))),
-        ro((SECURITY, "Identity"), DT.string, cfg.id),
+        ro(SECURITY_PROFILE, DT.integer, str(security_profile(cfg.password, url))),
+        ro((SECURITY, "Identity"), DT.string, cfg.id, max_limit=IDENTITY_MAX),
+        ro((SECURITY, "CertificateEntries"), DT.integer, "0", max_limit=0),
         var((SECURITY, "OrganizationName"), DT.string, cfg.vendor, max_limit=50),
-        var((SECURITY, "BasicAuthPassword"), DT.string, cfg.password or "", mutability=MU.write_only,
-            reboot_required=True, min_limit=16, max_limit=40),
+        var(BASIC_AUTH_PASSWORD, DT.string, cfg.password or "", mutability=MU.write_only,
+            min_limit=PASSWORD_MIN, max_limit=PASSWORD_MAX),
     ]
     out += [
-        ro(SC_ENABLED, DT.boolean, "true"),
+        var(SC_ENABLED, DT.boolean, "true"),
         ro(SC_AVAILABLE, DT.boolean, "true"),
         var(EXTERNAL_CONTROL_SIGNALS_ENABLED, DT.boolean, "true"),
-        var(NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES, DT.boolean, "true"),
+        var(NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES, DT.boolean, "false"),
+        ro((SMART_CHARGING, "Entries"), DT.integer, "0", variable_instance=INSTANCE_CHARGING_PROFILES,
+           getter=(lambda: str(profile_count())) if profile_count is not None else None),
+        ro((SMART_CHARGING, "LimitChangeSignificance"), DT.decimal, "0"),
         var(PROFILE_STACK_LEVEL, DT.integer, str(DEFAULT_PROFILE_STACK_LEVEL), mutability=MU.read_only, min_limit=0),
         var(PERIODS_PER_SCHEDULE, DT.integer, str(DEFAULT_PERIODS_PER_SCHEDULE), mutability=MU.read_only,
             min_limit=1, max_limit=DEFAULT_PERIODS_PER_SCHEDULE),
@@ -571,11 +676,26 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
                        variable_instance=instance, min_limit=1))
         out.append(var((DEVICE_DATA, "BytesPerMessage"), DT.integer, str(DEFAULT_BYTES_PER_MESSAGE),
                        mutability=MU.read_only, variable_instance=instance, min_limit=1))
-    for evse in range(1, cfg.connectors + 1):
-        getter = (lambda i=evse: availability(i)) if availability is not None else None  # type: ignore[misc]
-        out.append(Variable(EVSE_COMPONENT, "AvailabilityState", DT.option_list, {AT.actual: "Available"},
-                            mutability=MU.read_only, evse_id=evse, values_list=AVAILABILITY_STATES, summary=True,
-                            derived=True, getter=getter))
+    # Physical components (Appendices CSV, Required "yes"; Connector.AvailabilityState is optional there).
+    out += [
+        ro((CHARGING_STATION, "Available"), DT.boolean, "true"),
+        ro((CHARGING_STATION, "AvailabilityState"), DT.option_list, "Available", values_list=AVAILABILITY_STATES,
+           summary=True, getter=lambda: station_availability([state(i) for i in evses])),
+    ]
+    for evse in evses:
+        live = (lambda i=evse: state(i))  # type: ignore[misc]
+        watts = (lambda i=evse: _decimal(power_w(i))) if power_w is not None else None  # type: ignore[misc]
+        out += [
+            ro((EVSE_COMPONENT, "Available"), DT.boolean, "true", evse_id=evse),
+            ro((EVSE_COMPONENT, "AvailabilityState"), DT.option_list, "Available", evse_id=evse,
+               values_list=AVAILABILITY_STATES, summary=True, getter=live),
+            ro((EVSE_COMPONENT, "Power"), DT.decimal, "0", evse_id=evse, unit="W", max_limit=cfg.max_power_w,
+               getter=watts),
+            ro((EVSE_COMPONENT, "SupplyPhases"), DT.integer, str(cfg.phases), evse_id=evse),
+            ro((CONNECTOR_COMPONENT, "Available"), DT.boolean, "true", evse_id=evse, connector_id=1),
+            ro((CONNECTOR_COMPONENT, "AvailabilityState"), DT.option_list, "Available", evse_id=evse,
+               connector_id=1, values_list=AVAILABILITY_STATES, getter=live),
+        ]
     return out
 
 
@@ -634,10 +754,12 @@ def apply_config(model: DeviceModel, entries: Iterable[Any], evse_count: int) ->
 
 
 def build(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S, url: str = "",
-          availability: Optional[Callable[[int], str]] = None) -> DeviceModel:
+          availability: Optional[Callable[[int], str]] = None, power_w: Optional[Callable[[int], float]] = None,
+          profile_count: Optional[Callable[[], int]] = None) -> DeviceModel:
     """The Device Model of the charger config ``cfg``: the standard set plus its ``variables``."""
     model = DeviceModel(standard_variables(cfg, message_timeout_s=message_timeout_s, url=url,
-                                           availability=availability))
+                                           availability=availability, power_w=power_w,
+                                           profile_count=profile_count))
     apply_config(model, cfg.variables, cfg.connectors)
     return model
 

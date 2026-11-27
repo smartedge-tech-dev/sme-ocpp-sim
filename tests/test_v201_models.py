@@ -102,7 +102,7 @@ def test_error_mapping(action, payload, kind, code):
 
 def test_wire_names_of_the_mapped_codes():
     assert (E.format_violation, E.occurrence_constraint_violation) == (
-        "FormatViolation", "OccurenceConstraintViolation")
+        "FormatViolation", "OccurrenceConstraintViolation")
 
 
 def test_error_reports_nested_field_path():

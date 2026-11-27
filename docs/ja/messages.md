@@ -116,7 +116,7 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | GetMonitoringReport | Not supported |  |
 | GetReport | Not supported | GetBaseReport を使用してください |
 | GetTransactionStatus | Not supported |  |
-| GetVariables | 対応 | 属性タイプ Actual / Target / MinSet / MaxSet。`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`。WriteOnly の変数は `Rejected`。`DeviceDataCtrlr.ItemsPerMessage[GetVariables]` を超える件数は CALLERROR `OccurenceConstraintViolation` |
+| GetVariables | 対応 | 属性タイプ Actual / Target / MinSet / MaxSet。`UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`。WriteOnly の変数は `Rejected`。`DeviceDataCtrlr.ItemsPerMessage[GetVariables]` を超える件数は CALLERROR `OccurrenceConstraintViolation` |
 | InstallCertificate | Not supported |  |
 | PublishFirmware | Not supported |  |
 | RequestStartTransaction | 対応 | `remoteStartId` と任意の `chargingProfile`（`transactionId` なしの TxProfile。新しいトランザクションに紐付けて設定）。`evseId` がなければケーブル接続済みで開始可能な最初の EVSE を使います。`AuthCtrlr.AuthorizeRemoteStart` が true ならトークンを提示時と同様に認証します |

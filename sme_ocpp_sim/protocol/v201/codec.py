@@ -7,16 +7,18 @@ Interpretations (not defined by the spec's JSON schemas, which only say what is 
 CALLERROR code an invalid payload gets):
 
 - Missing required field / array below ``minItems`` or above ``maxItems`` ->
-  OccurenceConstraintViolation (the cardinality is the "occurrence constraint"). The ``ocpp`` library
-  (``ocpp/messages.py``) answers a missing field with ProtocolError instead; we keep the narrower
-  occurrence code, as the 1.6 codec does.
+  OccurrenceConstraintViolation (the cardinality is the "occurrence constraint"; Part 4 Table 8 spelling).
+  The ``ocpp`` library (``ocpp/messages.py``) answers a missing field with ProtocolError instead; we keep the
+  narrower occurrence code, as the 1.6 codec does.
 - Value outside an enum / string longer than ``maxLength`` -> PropertyConstraintViolation ("a field
-  contains an invalid value"). The ``ocpp`` library uses TypeConstraintViolation for maxLength; the
-  JSON type is right there, only the value is not, so we keep the property code.
+  contains an invalid value"). AMBIGUOUS: Part 4 Table 8 does not settle the maxLength case. The ``ocpp``
+  library uses TypeConstraintViolation for maxLength; the JSON type is right there, only the value is not,
+  so we keep the property code.
 - Wrong JSON type (``"1"`` for an integer, ``1.5`` for an integer, ``null``, a string that is no dateTime
   string) -> TypeConstraintViolation.
-- Unknown field (strict mode only), a payload that is not a JSON object, anything else the schema rejects
-  -> FormatViolation (the ``ocpp`` library does the same for additionalProperties and its fallback).
+- Unknown field (strict mode only; AMBIGUOUS: Part 4 Table 8 does not settle it), a payload that is not a
+  JSON object (Table 8 "syntactically incorrect"), anything else the schema rejects -> FormatViolation (the
+  ``ocpp`` library does the same for additionalProperties and its fallback).
 - A dateTime without a UTC offset (``2026-01-01T00:00:00``) is accepted and read as UTC, as in the 1.6
   codec: the schema's ``format: date-time`` asks for an offset, but a simulator tolerates the peer here.
   The optional ``schema.SchemaValidator`` rejects it when ``rfc3339-validator`` is installed.

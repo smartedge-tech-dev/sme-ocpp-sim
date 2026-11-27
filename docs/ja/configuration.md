@@ -132,9 +132,15 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 備えています。例: `OCPPCommCtrlr.HeartbeatInterval`、`SampledDataCtrlr.TxUpdatedInterval`（初期値は
 `meter_sample_interval_s`、未指定なら 60）と `TxUpdatedMeasurands`、`AuthCtrlr.AuthorizeRemoteStart`、
 `TxCtrlr.StopTxOnInvalidId`、`OCPPCommCtrlr.MessageAttempts[TransactionEvent]`、
-`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`、`auth_mode` を反映する読み取り専用の変数
-（`AuthCtrlr.LocalPreAuthorize` など）、`SecurityCtrlr.SecurityProfile` / `Identity`、EVSE ごとの
-`EVSE.AvailabilityState`。CSMS は GetVariables / SetVariables で読み書きし、GetBaseReport で一覧を取得します。
+`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`、認証制御の
+`AuthCtrlr.Enabled` / `LocalPreAuthorize` / `LocalAuthorizeOffline` / `OfflineTxForUnknownIdEnabled` /
+`DisableRemoteAuthorization`（ReadWrite。初期値は `auth_mode` から決まり、SetVariables による変更は即時に反映）、
+`SmartChargingCtrlr.Enabled`（ReadWrite、動作には反映しない）と `NotifyChargingLimitWithSchedules`（既定値
+`false`）、`SecurityCtrlr.SecurityProfile` / `Identity` / `BasicAuthPassword`（新しいパスワードは受け付けられ、
+充電器はそのパスワードで再接続する。メモリ上のみ）、必須の ChargingStation / EVSE / Connector の変数
+（`Available`、`AvailabilityState`、EVSE の `Power` と `SupplyPhases`）。OCPP 2.0.1 が必須とするその他の変数
+（例: `OCPPCommCtrlr.OfflineThreshold`、`TxCtrlr.EVConnectionTimeOut`、
+`SmartChargingCtrlr.Entries[ChargingProfiles]`）は、シミュレーターの動作を表す値で読み取り専用として報告されます。CSMS は GetVariables / SetVariables で読み書きし、GetBaseReport で一覧を取得します。
 `GET /api/chargers/{id}/configuration` では `variables` に表示されます。SetVariables による変更は YAML
 ファイルには書き戻されません。
 

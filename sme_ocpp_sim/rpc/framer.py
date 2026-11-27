@@ -42,7 +42,8 @@ Frame = Union[Call, CallResult, CallErrorFrame]
 
 # BadFrame kinds
 NO_UID = "no_uid"              # not JSON / not an array / no string uniqueId: cannot answer
-BAD_CALL = "bad_call"          # CALL with wrong shape or non-object payload
+BAD_CALL = "bad_call"          # CALL with a wrong frame structure (element count, action not a string)
+BAD_PAYLOAD = "bad_payload"    # CALL whose payload is not a JSON object
 BAD_RESULT = "bad_result"      # CALLRESULT / CALLERROR with wrong shape
 UNKNOWN_TYPE = "unknown_type"  # MessageTypeId other than 2 / 3 / 4
 
@@ -88,8 +89,10 @@ def decode(raw: str) -> Frame:
         raise BadFrame(UNKNOWN_TYPE, f"unknown MessageTypeId {mtype!r}", uid, mtype)
 
     if mtype == CALL:
-        if len(msg) != 4 or not isinstance(msg[2], str) or not isinstance(msg[3], dict):
-            raise BadFrame(BAD_CALL, "CALL frame or payload is malformed", uid, mtype)
+        if len(msg) != 4 or not isinstance(msg[2], str):
+            raise BadFrame(BAD_CALL, "CALL frame is malformed", uid, mtype)
+        if not isinstance(msg[3], dict):
+            raise BadFrame(BAD_PAYLOAD, "CALL payload is not a JSON object", uid, mtype)
         return Call(uid, msg[2], msg[3])
     if mtype == CALLRESULT:
         if len(msg) != 3 or not isinstance(msg[2], dict):

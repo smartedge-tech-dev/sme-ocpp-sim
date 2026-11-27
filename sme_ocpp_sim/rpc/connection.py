@@ -87,6 +87,9 @@ class RpcConnection:
 
     async def _send_error(self, uid: str, code: str, desc: str,
                           details: Optional[dict] = None, action: Optional[str] = None) -> None:
+        cap = self.codes.max_error_description_length
+        if cap is not None and len(desc) > cap:
+            desc = desc[:cap]
         raw = framer.encode_error(uid, code, desc, details)
         try:
             await self._send_raw(raw, FrameInfo("tx", raw, framer.CALLERROR, uid, action))
@@ -152,6 +155,13 @@ class RpcConnection:
             return
 
         if isinstance(frame, framer.Call):
+            limit = self.codes.max_message_id_length
+            if limit is not None and len(frame.uid) > limit and self.codes.rpc_framework_error is not None:
+                # The answer echoes the long MessageId on purpose: it is readable and the only way to correlate.
+                reason = f"MessageId longer than {limit} characters"
+                self._emit(FrameInfo("rx", raw, framer.CALL, frame.uid, frame.action, reason))
+                await self._send_error(frame.uid, self.codes.rpc_framework_error, reason, action=frame.action)
+                return
             self._emit(FrameInfo("rx", raw, framer.CALL, frame.uid, frame.action))
             t = asyncio.create_task(self._handle_call(frame))
             self._tasks.add(t)
@@ -194,9 +204,12 @@ class RpcConnection:
             return
         self._emit(FrameInfo("rx", raw, mtype, e.uid, None, e.reason))
         if e.kind == framer.BAD_CALL:
-            # A bad CALL shape or a non-object payload: the version's format code (1.6J
-            # FormationViolation, 2.0.1 FormatViolation). TODO(spec): 2.0.1 could also read this as
-            # RpcFrameworkError ("not a valid RPC request"); the ocpp library uses FormatViolation.
+            # A wrong CALL frame structure: the version's choice (2.0.1 RpcFrameworkError, Part 4 Table 8); 1.6J
+            # defines none and keeps its format code (FormationViolation).
+            code = self.codes.bad_call_frame or self.codes.format_violation
+        elif e.kind == framer.BAD_PAYLOAD:
+            # A payload that is not a JSON object: the version's format code (1.6J FormationViolation, 2.0.1
+            # FormatViolation, Part 4 Table 8).
             code = self.codes.format_violation
         else:
             # UNKNOWN_TYPE: the version's MessageTypeNotSupported where it has one (2.0.1);

@@ -135,9 +135,16 @@ A 2.0.1 charger has a Device Model instead of `config_keys`. It ships a minimal 
 simulator acts on, e.g. `OCPPCommCtrlr.HeartbeatInterval`, `SampledDataCtrlr.TxUpdatedInterval` (initial value
 `meter_sample_interval_s`, else 60) and `TxUpdatedMeasurands`, `AuthCtrlr.AuthorizeRemoteStart`,
 `TxCtrlr.StopTxOnInvalidId`, `OCPPCommCtrlr.MessageAttempts[TransactionEvent]`,
-`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`, read-only reflections of `auth_mode`
-(`AuthCtrlr.LocalPreAuthorize` ...), `SecurityCtrlr.SecurityProfile` / `Identity` and
-`EVSE.AvailabilityState` per EVSE. The CSMS reads and changes them with GetVariables / SetVariables and lists
+`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`, the authorization controls
+`AuthCtrlr.Enabled` / `LocalPreAuthorize` / `LocalAuthorizeOffline` / `OfflineTxForUnknownIdEnabled` /
+`DisableRemoteAuthorization` (ReadWrite; their initial values come from `auth_mode`, a SetVariables change
+applies at once), `SmartChargingCtrlr.Enabled` (ReadWrite, not acted on) and
+`NotifyChargingLimitWithSchedules` (default `false`), `SecurityCtrlr.SecurityProfile` / `Identity` /
+`BasicAuthPassword` (a new password is accepted and the charger reconnects with it, in memory only), and the
+required ChargingStation / EVSE / Connector variables (`Available`, `AvailabilityState`, EVSE `Power` and
+`SupplyPhases`). The other variables OCPP 2.0.1 requires (for example `OCPPCommCtrlr.OfflineThreshold`,
+`TxCtrlr.EVConnectionTimeOut`, `SmartChargingCtrlr.Entries[ChargingProfiles]`) are reported read-only with the
+value that describes the simulator. The CSMS reads and changes them with GetVariables / SetVariables and lists
 them with GetBaseReport; `GET /api/chargers/{id}/configuration` shows them under `variables`. SetVariables
 changes are not written back to the YAML file.
 

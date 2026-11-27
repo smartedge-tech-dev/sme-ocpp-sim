@@ -131,8 +131,13 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 `OCPPCommCtrlr.HeartbeatInterval`、`SampledDataCtrlr.TxUpdatedInterval`（初始值为 `meter_sample_interval_s`，
 未设置则为 60）和 `TxUpdatedMeasurands`、`AuthCtrlr.AuthorizeRemoteStart`、`TxCtrlr.StopTxOnInvalidId`、
 `OCPPCommCtrlr.MessageAttempts[TransactionEvent]`、`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`、
-反映 `auth_mode` 的只读变量（`AuthCtrlr.LocalPreAuthorize` 等）、`SecurityCtrlr.SecurityProfile` / `Identity`，
-以及每个 EVSE 的 `EVSE.AvailabilityState`。CSMS 用 GetVariables / SetVariables 读写，用 GetBaseReport 获取列表；
+认证控制变量 `AuthCtrlr.Enabled` / `LocalPreAuthorize` / `LocalAuthorizeOffline` / `OfflineTxForUnknownIdEnabled` /
+`DisableRemoteAuthorization`（ReadWrite；初始值由 `auth_mode` 决定，SetVariables 修改后立即生效）、
+`SmartChargingCtrlr.Enabled`（ReadWrite，不影响行为）和 `NotifyChargingLimitWithSchedules`（默认 `false`）、
+`SecurityCtrlr.SecurityProfile` / `Identity` / `BasicAuthPassword`（新密码被接受后充电桩用它重新连接，仅保存在内存中），
+以及必需的 ChargingStation / EVSE / Connector 变量（`Available`、`AvailabilityState`、EVSE 的 `Power` 和
+`SupplyPhases`）。OCPP 2.0.1 要求的其他变量（例如 `OCPPCommCtrlr.OfflineThreshold`、`TxCtrlr.EVConnectionTimeOut`、
+`SmartChargingCtrlr.Entries[ChargingProfiles]`）以描述模拟器行为的值作为只读变量报告。CSMS 用 GetVariables / SetVariables 读写，用 GetBaseReport 获取列表；
 `GET /api/chargers/{id}/configuration` 在 `variables` 中显示它们。SetVariables 的修改不会写回 YAML 文件。
 
 `variables` 的每一项指向一个变量：`component`、可选的 `component_instance`、`evse`、`connector`、`variable`、

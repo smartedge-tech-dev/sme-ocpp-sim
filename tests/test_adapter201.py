@@ -65,7 +65,7 @@ def test_data_transfer_and_remote_control_are_served_inbound():
     assert sink.cmds == [d.DataTransfer("v", "m", {"k": [1]})]
     with pytest.raises(CallError) as ei:
         asyncio.run(handlers["DataTransfer"]({"messageId": "m"}))
-    assert ei.value.code == "OccurenceConstraintViolation"
+    assert ei.value.code == "OccurrenceConstraintViolation"
 
 
 def test_1_6_shaped_transaction_calls_are_not_used():

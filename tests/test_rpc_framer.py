@@ -34,7 +34,7 @@ def test_decode_valid(raw, frame):
     ('[true,"x",{}]', framer.UNKNOWN_TYPE, "x"),
     ('["2","x","Heartbeat",{}]', framer.UNKNOWN_TYPE, "x"),
     ('[2,"x","Heartbeat"]', framer.BAD_CALL, "x"),
-    ('[2,"x","Heartbeat","str"]', framer.BAD_CALL, "x"),
+    ('[2,"x","Heartbeat","str"]', framer.BAD_PAYLOAD, "x"),
     ('[2,"x",1,{}]', framer.BAD_CALL, "x"),
     ('[3,"x",[]]', framer.BAD_RESULT, "x"),
     ('[3,"x",{},1]', framer.BAD_RESULT, "x"),

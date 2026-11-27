@@ -58,6 +58,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The fault dialog takes the fault codes of the charger's OCPP version from the new `GET /api/chargers/{id}`;
   `POST /api/chargers/{id}/fault` rejects a code that is not one of them with `400`.
 
+### Fixed
+
+- OCPP 2.0.1 spec conformance, RPC (Part 4): the error code is `OccurrenceConstraintViolation` (Part 4 Table 8;
+  Part 2 B06 / B08 spell it `Occurence`); a CALL with a wrong frame structure is answered `RpcFrameworkError`,
+  a non-object payload still `FormatViolation`; a received MessageId longer than 36 characters is answered
+  `RpcFrameworkError`; an outgoing errorDescription is cut to 255 characters. OCPP 1.6 is unchanged.
+- OCPP 2.0.1 Device Model (Part 2 Referenced Components and Variables): HeartbeatInterval minLimit 1; the
+  AuthCtrlr controls (Enabled, LocalPreAuthorize, LocalAuthorizeOffline, OfflineTxForUnknownIdEnabled,
+  DisableRemoteAuthorization) and SmartChargingCtrlr.Enabled are ReadWrite, the AuthCtrlr ones start from
+  `auth_mode` and change the authorization at once; NotifyChargingLimitWithSchedules defaults to `false`;
+  Identity maxLimit 48, BasicAuthPassword maxLimit 64, Tx*Measurands maxLimit; the required ChargingStation /
+  EVSE / Connector variables (Available, AvailabilityState, EVSE Power and SupplyPhases) and the missing
+  required OCPPCommCtrlr, SampledDataCtrlr, TxCtrlr, SecurityCtrlr and SmartChargingCtrlr variables are
+  reported; SummaryInventory follows B07.FR.09 (the station's and each EVSE's AvailabilityState).
+- OCPP 2.0.1 B use cases: SetVariables of SecurityCtrlr.BasicAuthPassword is `Accepted` and the station
+  reconnects with the new password (A01; in memory only); GetBaseReport never answers `EmptyResultSet` (B07) but
+  `Accepted` with one empty NotifyReport.
+
 ## [0.1.0] - 2026-11-27
 
 First release.

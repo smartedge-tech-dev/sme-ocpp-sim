@@ -25,6 +25,7 @@ calls, meter readings with the frozen values) keeps running.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import logging
 import time
@@ -280,6 +281,12 @@ class ChargerRuntime:
 
     def end_session_for_reset(self) -> None:
         self._reset_done.set()
+
+    def reconnect_with_password(self, password: str) -> None:
+        # The transport changes at once (a connection lost meanwhile reconnects with the new password too); the
+        # session closes after the SetVariables answer: a deliberate close, no back-off, no "disconnected" error.
+        self.transport = dataclasses.replace(self.transport, password=password)
+        self._after_reply(self._reset_done.set)
 
     def kick_boot(self) -> None:
         self._boot_kick.set()

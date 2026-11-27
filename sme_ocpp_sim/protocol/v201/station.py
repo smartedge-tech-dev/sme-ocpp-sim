@@ -57,8 +57,15 @@ Interpretations (not defined by the spec)
 - While the boot is not accepted only BootNotification is sent (no Authorize, StatusNotification or
   TransactionEvent; B02 / B03). CSMS CALLs are answered in every registration state: DataTransfer by the
   configured rules, every other action NotImplemented. A transaction may start while offline / Pending when the
-  token is authorized locally (``accept_all``, ``local_only``, or a listed tag with ``local_then_csms``);
-  ``csms_only`` answers ``Offline`` then.
+  token is authorized locally (see the AuthCtrlr variables below); otherwise it is ``Offline`` then.
+- Authorization of a token (presented, or of a RequestStartTransaction with AuthorizeRemoteStart) follows the
+  AuthCtrlr variables (Part 2 §2.3), whose initial values come from ``auth_mode`` and which SetVariables may
+  change: Enabled ``false`` -> accepted; DisableRemoteAuthorization ``true`` -> accepted when it is in
+  ``id_tags`` (the local list), else ``Invalid``, no Authorize is sent; online, LocalPreAuthorize ``true`` and in
+  ``id_tags`` -> accepted without Authorize, else Authorize; offline, LocalAuthorizeOffline ``true`` and in
+  ``id_tags`` -> accepted, else OfflineTxForUnknownIdEnabled ``true`` -> accepted, else ``Offline``. With the
+  initial values this is the ``auth_mode`` behaviour (``accept_all``, ``local_only``, ``local_then_csms``,
+  ``csms_only``).
 - The operator API returns once ``Started`` is queued (2.0.1 needs no CSMS answer to know the transaction id); a
   later refusal of the token in the answer ends the transaction (see above).
 - Device Model (M4, :mod:`.device_model`): the station reads its settings from the standard variables, so a
@@ -67,12 +74,19 @@ Interpretations (not defined by the spec)
   of the charger; a change applies after the current wait, and an empty TxUpdatedMeasurands sends no periodic
   ``Updated``), Tx{Started,Updated,Ended}Measurands (readings of the TransactionEvents), OCPPCommCtrlr
   MessageAttempts / MessageAttemptInterval [TransactionEvent] (the retry policy below), AuthCtrlr
-  AuthorizeRemoteStart and TxCtrlr.StopTxOnInvalidId. ``config_keys`` (the 1.6 key table) is not used.
-  GetVariables / SetVariables with more items than DeviceDataCtrlr.ItemsPerMessage [GetVariables /
-  SetVariables] are answered CALLERROR ``OccurenceConstraintViolation``. GetBaseReport is answered first; the
-  NotifyReport parts (ItemsPerMessage [GetReport] ``reportData`` each, ``seqNo`` from 0, ``tbc`` on all but the
-  last, one ``generatedAt``) follow, also while the boot is Pending (they answer a CSMS request), and stop at the
-  first part that fails. A report holds the values at the time of the request.
+  AuthorizeRemoteStart, the other AuthCtrlr variables (above) and TxCtrlr.StopTxOnInvalidId. ``config_keys``
+  (the 1.6 key table) is not used. GetVariables with more items than DeviceDataCtrlr.ItemsPerMessage
+  [GetVariables] is answered CALLERROR ``OccurrenceConstraintViolation`` (B06 "MAY respond with CALLERROR";
+  Part 4 Table 8 spelling, B06 / B08 write ``Occurence``); SetVariables over ItemsPerMessage [SetVariables] is
+  answered the same way, an extension of the B06 / B08 rule (B05 only forbids the CSMS to send more).
+  GetBaseReport is answered first (``Accepted``; B07 has no ``EmptyResultSet``, so an empty report base sends
+  one NotifyReport without ``reportData``); the NotifyReport parts (``seqNo`` from 0, B07.FR.10; ``tbc`` on all
+  but the last, one ``generatedAt``) follow, also while the boot is Pending (they answer a CSMS request), and
+  stop at the first part that fails. A report holds the values at the time of the request. Interpretation: a
+  part holds at most ItemsPerMessage [GetReport] ``reportData`` entries; BytesPerMessage is not enforced.
+- SecurityCtrlr.BasicAuthPassword (A01): a new value is ``Accepted``; after the SetVariables answer the station
+  closes the connection and reconnects (without back-off) with the new password, SecurityProfile updated. The
+  password lives in memory only (it is not written to the YAML).
 - Triggered / operator MeterValues (outside the transaction flow) report :data:`TX_UPDATED_MEASURANDS`, not the
   TxUpdatedMeasurands variable.
 - Operator fault codes are the fault-type values of ``ReasonEnumType`` (:attr:`Station201.fault_codes`): a 2.0.1
@@ -298,10 +312,12 @@ class Station201(VersionStation):
         self.evses: Dict[int, _Evse] = {i: _Evse(i) for i in range(1, cfg.connectors + 1)}
         #: The Device Model (M4); ``ValueError`` when the charger's ``variables`` do not apply.
         self.dm = dm.build(cfg, message_timeout_s=host.call_timeout, url=getattr(host, "csms_url", "") or "",
-                           availability=lambda i: connector_status(self.evses[i].status).value)
+                           availability=lambda i: connector_status(self.evses[i].status).value,
+                           power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()))
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
         self.dm.on_change(dm.TX_UPDATED_INTERVAL, lambda v: self._restart_meters())
+        self.dm.on_change(dm.BASIC_AUTH_PASSWORD, self._password_changed)
         #: Charging profiles (M5), keyed by EVSE id (0 = the station).
         self.profiles = ProfileStore(cfg.connectors)
         #: (vendorId, messageId or None) -> answer for inbound DataTransfer; default UnknownVendorId.
@@ -543,6 +559,13 @@ class Station201(VersionStation):
                 out.append(d.Sample(name, round(r.soc_pct, SOC_DECIMALS), "Percent", location=SOC_LOCATION))
         return out
 
+    def _power_w(self, evse_id: int) -> float:
+        """Live active power of an EVSE (EVSE.Power); 0 when it does not charge."""
+        e = self.evses[evse_id]
+        if e.pw is None:
+            return 0.0
+        return round(power.meter_reading(e.pw, self.ev, self.supply).power_active_import_w, POWER_DECIMALS)
+
     def _phases(self, evse_id: int) -> int:
         """Phases a limit in A applies to: the EV's while one charges, else the supply's."""
         e = self.evses.get(evse_id)
@@ -685,16 +708,20 @@ class Station201(VersionStation):
     # ================================================================== authorization
 
     async def _authorize(self, tag: str) -> A:
-        mode = self.cfg.auth_mode
-        if mode == "accept_all":
+        """Authorize a token by the AuthCtrlr variables (module docstring); ``id_tags`` is the local list."""
+        if not self.dm.bool_value(dm.AUTH_ENABLED):
             return A.ACCEPTED
         local = tag in self.cfg.id_tags
-        if mode == "local_only":
+        if self.dm.bool_value(dm.DISABLE_REMOTE_AUTHORIZATION):
             return A.ACCEPTED if local else A.INVALID
-        if mode == "local_then_csms" and local:
-            return A.ACCEPTED
         if not self.host.online:
-            return A.OFFLINE  # TODO(spec): offline authorization (LocalAuthListCtrlr / AuthCacheCtrlr) is M6
+            # TODO(spec): the Authorization Cache / Local Authorization List (AuthCacheCtrlr / LocalAuthListCtrlr)
+            # are not modelled; id_tags stands for the local list.
+            if local and self.dm.bool_value(dm.LOCAL_AUTHORIZE_OFFLINE):
+                return A.ACCEPTED
+            return A.ACCEPTED if self.dm.bool_value(dm.OFFLINE_TX_FOR_UNKNOWN_ID) else A.OFFLINE
+        if local and self.dm.bool_value(dm.LOCAL_PRE_AUTHORIZE):
+            return A.ACCEPTED
         info: Optional[d.IdTokenInfo] = await self.host.safe(
             self._adapter.send_authorize(d.AuthorizeRequest(tag)), "Authorize")
         return info.status if info is not None else A.ERROR
@@ -979,19 +1006,25 @@ class Station201(VersionStation):
 
     def _get_base_report(self, req: m.GetBaseReportRequest) -> m.GetBaseReportResponse:
         data = self.dm.report(req.report_base)
-        if not data:
-            return m.GetBaseReportResponse(status=GenericDeviceModelStatusEnumType.empty_result_set)
         per = self.dm.int_value(dm.ITEMS_PER_MESSAGE, dm.INSTANCE_GET_REPORT)
-        parts = [data[i:i + per] for i in range(0, len(data), per)]
+        # B07 has no EmptyResultSet: an empty report is Accepted and sent as one part without reportData.
+        parts = [data[i:i + per] for i in range(0, len(data), per)] or [[]]
         self.host.after_reply(functools.partial(self._send_report, req.request_id, parts, self.host.clock()))
         return m.GetBaseReportResponse(status=GenericDeviceModelStatusEnumType.accepted)
+
+    def _password_changed(self, password: str) -> None:
+        """BasicAuthPassword was set (A01): the shell uses it at once and reconnects after the answer went out."""
+        self.dm.put(dm.SECURITY_PROFILE, str(dm.security_profile(password, getattr(self.host, "csms_url", "")
+                                                                 or "")))
+        self.host.reconnect_with_password(password)
 
     async def _send_report(self, request_id: int, parts: Sequence[Sequence[m.ReportDataType]],
                            generated_at: datetime) -> None:
         """NotifyReport parts ``seqNo`` 0.. with ``tbc`` on all but the last; stops at the first failed part."""
         for seq, part in enumerate(parts):
             req = m.NotifyReportRequest(request_id=request_id, generated_at=generated_at, seq_no=seq,
-                                        report_data=list(part), tbc=True if seq < len(parts) - 1 else None)
+                                        report_data=list(part) or None,
+                                        tbc=True if seq < len(parts) - 1 else None)
             if await self.host.safe(self._adapter.send_notify_report(req), "NotifyReport") is None:
                 log.info("%s: NotifyReport %d stopped at part %d of %d", self.cfg.id, request_id, seq,
                          len(parts))
