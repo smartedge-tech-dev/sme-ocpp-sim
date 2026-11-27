@@ -29,7 +29,7 @@ def test_index_and_assets_served():
         common_refs = re.findall(r'"/sme-sim-common/[^"]+"', r.text)
         assert len(common_refs) == 4
         assert all(ref.endswith(f'?v={common_version}"') for ref in common_refs), common_refs
-        for asset in ("app.js", "style.css", "i18n/en.js", "i18n/ja.js", "i18n/zh.js", "favicon.svg"):
+        for asset in ("app.js", "csms.js", "style.css", "i18n/en.js", "i18n/ja.js", "i18n/zh.js", "favicon.svg"):
             assert c.get(f"/static/{asset}").status_code == 200, asset
         for asset in ("shell/shell.js", "shell/shell.css", "vendor/vendor.js", "i18n/common.js"):
             assert c.get(f"/sme-sim-common/{asset}").status_code == 200, asset
@@ -43,7 +43,7 @@ def test_state_and_version():
 
 def test_used_keys_defined():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8") + (STATIC / "csms.js").read_text(encoding="utf-8")
     used = set(re.findall(r'data-i18n(?:-placeholder|-title|-aria-label)?="([^"]+)"', html))
     used |= set(re.findall(r'\bt\(\s*"([^"]+)"', js)) | set(re.findall(r'\["(about\.[^"]+)"', js))
     assert used
@@ -56,8 +56,8 @@ def test_used_keys_defined():
 def test_literal_and_enumerated_keys_defined():
     # Keys passed as plain string literals to helpers (btn("op.plug"), kv("detail.power"), menu labels) and the
     # enumerated keys built with tk(prefix, value) for OCPP 1.6 connector statuses and the connection badge.
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    prefixes = ("add", "bulk", "chargers", "conn", "detail", "dt", "frames", "keys", "menu", "op", "profiles",
+    js = (STATIC / "app.js").read_text(encoding="utf-8") + (STATIC / "csms.js").read_text(encoding="utf-8")
+    prefixes = ("add", "bulk", "chargers", "conn", "csms", "detail", "dt", "frames", "keys", "menu", "op", "profiles",
                 "sc", "settings", "status")
     used = set(re.findall(r'"((?:%s)\.[A-Za-z0-9_.]+)"' % "|".join(prefixes), js))
     used -= set(re.findall(r'\btk\(\s*"([^"]+)"', js))  # tk() prefixes, completed below
@@ -66,6 +66,9 @@ def test_literal_and_enumerated_keys_defined():
                                      "Finishing", "Reserved", "Unavailable", "Faulted")}
     used |= {f"conn.{s}" for s in ("online", "pending", "rejected", "booting", "connecting", "error", "held")}
     used |= {f"frames.dir.{d}" for d in ("tx", "rx")}
+    # csms.js: t(`csms.boot.${boot_status || "none"}`) and t(`csms.plan.${status}`)
+    used |= {f"csms.boot.{s}" for s in ("Accepted", "Pending", "Rejected", "none")}
+    used |= {f"csms.plan.{s}" for s in ("waiting", "sent", "ok", "error", "cancelled")}
     product = _en_keys(STATIC / "i18n" / "en.js")
     missing = sorted(used - product)
     assert not missing, f"missing {missing}"
@@ -80,6 +83,7 @@ def test_global_dialog_functions_exposed():
     assert names == {"openChargerDialog", "openSettingsDialog", "openProfileDialog", "openFrameDetail",
                      "openAddChargerDialog"}
     assert "vendor: Shell.vendors.smartEdge" in js
+    assert "window.openCsmsPanel = openCsmsPanel" in (STATIC / "csms.js").read_text(encoding="utf-8")
 
 
 def test_settings_use_json_routes():

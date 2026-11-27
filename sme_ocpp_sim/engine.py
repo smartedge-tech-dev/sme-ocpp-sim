@@ -43,6 +43,12 @@ full one (``full: true``, every charger: it replaces the client's charger list, 
 reload disappear too), and so is the first push to a new subscriber; a client therefore never has to refetch state
 itself. A gap in ``push_seq`` only tells it something was lost (frames: fetch them from the frame log).
 
+Mini CSMS (plan M9): with ``mini_csms.enabled`` the engine owns a :class:`.csms.MiniCsms` (``self.csms``). It
+starts before the chargers (so chargers pointed at it connect at once) and stops after them. A reload that changes
+``enabled`` / ``host`` / ``port`` restarts it (its stations reconnect); any other ``mini_csms`` change applies to the
+running instance. A port that cannot be bound does not fail the engine or the reload: it is reported as an
+``error`` event and in ``csms_error`` (``GET /api/csms``).
+
 Operator hold (``disconnect``): ``_held`` lives in memory only. It survives reloads and their rollback, but not a
 restart, and it is not written to the config file.
 """
@@ -58,7 +64,8 @@ from typing import Any, Awaitable, Dict, Iterable, List, Optional, Set, Tuple
 
 from sme_sim_common.engine import BaseEngine
 
-from .config import PASSWORD_MASK, ChargerConfig, SimConfig, save_file
+from .config import PASSWORD_MASK, ChargerConfig, MiniCsmsConfig, SimConfig, save_file
+from .csms import MiniCsms
 from .framelog import FrameLog
 from .runtime.charger import ChargerRuntime
 
@@ -146,6 +153,8 @@ class OcppEngine(BaseEngine):
         # Chargers disconnected by the operator (not launched until connect). In memory only: survives reloads
         # and their rollback, not a restart, and is not saved to the config file.
         self._held: Set[str] = set()
+        self.csms: Optional[MiniCsms] = None
+        self.csms_error: Optional[str] = None
         super().__init__(config, **kwargs)
 
     @property
@@ -213,6 +222,34 @@ class OcppEngine(BaseEngine):
         self._install(merged)
         if gone or fresh:
             self.log_event("config", f"chargers restarted: {sorted(set(gone) | set(fresh))}")
+        if self._started and not self._stopping:
+            await self._sync_csms(new_config.mini_csms)
+
+    # ------------------------------------------------------------ Mini CSMS
+
+    async def _sync_csms(self, cfg: MiniCsmsConfig) -> None:
+        """Bring the Mini CSMS in line with ``cfg`` (start / stop / restart / update in place); never raises for a
+        port that cannot be bound (``csms_error``)."""
+        cur = self.csms
+        if cur is not None and cfg.enabled and cur.running and cur.listen_key == (cfg.host, cfg.port):
+            cur.update(cfg)
+            return
+        if cur is not None:
+            self.csms = None
+            await cur.stop()
+            self.log_event("info", "Mini CSMS stopped")
+        self.csms_error = None
+        if not cfg.enabled:
+            return
+        csms = MiniCsms(cfg)
+        try:
+            port = await csms.start()
+        except OSError as e:
+            self.csms_error = f"cannot listen on {cfg.host}:{cfg.port}: {e.strerror or e}"
+            self.log_event("error", f"Mini CSMS: {self.csms_error}")
+            return
+        self.csms = csms
+        self.log_event("info", f"Mini CSMS listening on ws://{cfg.host}:{port}")
 
     async def _undo(self, old_state: Dict[str, _Entry], launched: List[str]) -> None:
         """Undo a partly applied diff: stop the runtimes it launched, restart the old ones it stopped and restore
@@ -271,6 +308,7 @@ class OcppEngine(BaseEngine):
             return
         await super().start()
         self._started = True
+        await self._sync_csms(self.config.mini_csms)
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
         for cid, e in self.state.items():
             if cid not in self._held:
@@ -281,6 +319,9 @@ class OcppEngine(BaseEngine):
         self._stopping = True
         self._cancel_push_later()
         await self._halt(list(self._runs))
+        if self.csms is not None:
+            csms, self.csms = self.csms, None
+            await csms.stop()
         await super().stop()
         self._cancel_push_later()
 
@@ -456,16 +497,18 @@ class OcppEngine(BaseEngine):
         masked) keeps the password of the current charger with the same id (:meth:`validate_config`, under the
         reload lock). The client's text then still holds the mask, so it is not stored as ``config_text``: the
         unmasked config is re-dumped instead (comments of that text are lost)."""
-        if any(c.password == PASSWORD_MASK for c in config.chargers):
+        if (any(c.password == PASSWORD_MASK for c in config.chargers)
+                or any(c.password == PASSWORD_MASK for c in config.mini_csms.auth.credentials)):
             text = None
         await super().reload(config, text)
 
     def validate_config(self, config: SimConfig) -> None:
         """Called by BaseEngine under the reload lock (and once by ``__init__``): replaces masked passwords in
         ``config`` (in place) by the stored ones, so a concurrent reload cannot slip in between."""
+        current = getattr(self, "config", None)
+        self._unmask_csms(config, current)
         if not any(c.password == PASSWORD_MASK for c in config.chargers):
             return
-        current = getattr(self, "config", None)
         old = {c.id: c.password for c in current.chargers} if current is not None else {}
         chargers = []
         for c in config.chargers:
@@ -476,6 +519,22 @@ class OcppEngine(BaseEngine):
                 c = c.model_copy(update={"password": old[c.id]})
             chargers.append(c)
         config.chargers = chargers
+
+    @staticmethod
+    def _unmask_csms(config: SimConfig, current: Optional[SimConfig]) -> None:
+        creds = config.mini_csms.auth.credentials
+        if not any(c.password == PASSWORD_MASK for c in creds):
+            return
+        old = {c.id: c.password for c in current.mini_csms.auth.credentials} if current is not None else {}
+        out = []
+        for c in creds:
+            if c.password == PASSWORD_MASK:
+                if c.id not in old:
+                    raise ValueError(f"mini_csms.auth.credentials {c.id!r}: password is the mask {PASSWORD_MASK!r} "
+                                     "but there is no stored password to keep; send the real password")
+                c = c.model_copy(update={"password": old[c.id]})
+            out.append(c)
+        config.mini_csms.auth.credentials = out
 
     async def save_config(self) -> str:
         """Write the running config back into ``config_path`` (:func:`save_file`: comments outside the changed

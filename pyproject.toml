@@ -54,6 +54,7 @@ version = { attr = "sme_ocpp_sim.__version__" }
 packages = [
   "sme_ocpp_sim",
   "sme_ocpp_sim.charging",
+  "sme_ocpp_sim.csms",
   "sme_ocpp_sim.protocol",
   "sme_ocpp_sim.protocol.v16",
   "sme_ocpp_sim.protocol.v201",

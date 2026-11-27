@@ -1,6 +1,7 @@
 """Simulator configuration (YAML, design §7).
 
-Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` and a flat per-charger model
+Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` / ``mini_csms`` (built-in CSMS,
+M9) and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
 A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
@@ -277,12 +278,102 @@ class ChargerConfig(StrictModel):
         return v
 
 
+#: OCPP versions the Mini CSMS speaks, and their OCPP-J subprotocols.
+MINI_CSMS_VERSIONS = {"1.6": "ocpp1.6", "2.0.1": "ocpp2.0.1"}
+_AUTH_STATUSES = ("Accepted", "Blocked", "Expired", "Invalid", "Unknown", "NoCredit", "NotAllowedTypeEVSE",
+                  "NotAtThisLocation", "NotAtThisTime", "ConcurrentTx")
+
+
+class MiniCsmsBoot(StrictModel):
+    """The BootNotification answer of the Mini CSMS."""
+
+    status: Literal["Accepted", "Pending", "Rejected"] = "Accepted"
+    #: Heartbeat interval (Accepted) or retry delay (Pending / Rejected), seconds.
+    interval: int = Field(300, ge=0)
+
+
+class MiniCsmsCredential(StrictModel):
+    id: QuotedStr = Field(min_length=1)
+    password: QuotedStr = Field(repr=False)
+
+
+class MiniCsmsAuth(StrictModel):
+    """Security profile 1 check (HTTP Basic Auth over ws://). ``basic: false`` = profile 0, any station id."""
+
+    basic: bool = False
+    #: Known stations and their passwords; with ``basic: true`` any other id or a wrong password is HTTP 401.
+    credentials: List[MiniCsmsCredential] = Field(default_factory=list)
+
+    @field_validator("credentials")
+    @classmethod
+    def _unique(cls, v: List[MiniCsmsCredential]) -> List[MiniCsmsCredential]:
+        ids = [c.id for c in v]
+        if len(set(ids)) != len(ids):
+            raise ValueError("duplicate mini_csms.auth.credentials id")
+        return v
+
+
+class MiniCsmsAuthorize(StrictModel):
+    """The authorization status answered for an id tag / id token (Authorize, StartTransaction, TransactionEvent)."""
+
+    default: Literal[_AUTH_STATUSES] = "Accepted"  # type: ignore[valid-type]
+    #: Per id tag overrides, e.g. ``{"BAD-TAG": "Blocked"}``. 1.6 knows only Accepted / Blocked / Expired /
+    #: Invalid / ConcurrentTx: another status is answered as Invalid to a 1.6 station.
+    tags: Dict[str, Literal[_AUTH_STATUSES]] = Field(default_factory=dict)  # type: ignore[valid-type]
+
+
+class MiniCsmsPlanItem(StrictModel):
+    """One scheduled CALL: ``action`` with ``payload`` sent ``at_s`` seconds after the trigger ``after``."""
+
+    at_s: float = Field(0.0, ge=0)
+    #: ``boot`` = the first Accepted BootNotification of a connection; ``connect`` = the WebSocket connection.
+    after: Literal["boot", "connect"] = "boot"
+    action: QuotedStr = Field(min_length=1)
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    #: Only stations with this id (shell-style pattern, e.g. ``"CP-*"``); ``None`` = every station.
+    charger: Optional[QuotedStr] = None
+    #: Only stations speaking this version; ``None`` = every version (the payload must fit each of them).
+    ocpp_version: Optional[Literal["1.6", "2.0.1"]] = None
+
+
+class MiniCsmsConfig(StrictModel):
+    """Built-in simple CSMS (``mini_csms:``, plan M9): a WebSocket server in the same process, Security Profile 0 / 1.
+    ``host`` / ``port`` / ``enabled`` changes restart it (stations reconnect); the other fields apply at once."""
+
+    enabled: bool = False
+    host: QuotedStr = "127.0.0.1"
+    port: int = Field(9000, ge=0, le=65535)
+    versions: List[Literal["1.6", "2.0.1"]] = Field(default_factory=lambda: ["1.6", "2.0.1"], min_length=1)
+    boot: MiniCsmsBoot = Field(default_factory=MiniCsmsBoot)
+    auth: MiniCsmsAuth = Field(default_factory=MiniCsmsAuth)
+    authorize: MiniCsmsAuthorize = Field(default_factory=MiniCsmsAuthorize)
+    #: Answer a station CALL whose payload does not match the version's schema with CALLERROR (else: answer it
+    #: anyway and record a warning - tolerant towards real stations).
+    strict: bool = False
+    call_timeout_s: float = Field(30.0, gt=0)
+    frame_log_size: int = Field(5000, ge=100)
+    plan: List[MiniCsmsPlanItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_plan(self) -> "MiniCsmsConfig":
+        from .csms.handlers import check_outbound  # lazy: config imports no protocol stack at module level
+
+        for i, item in enumerate(self.plan):
+            for version in [item.ocpp_version] if item.ocpp_version else self.versions:
+                try:
+                    check_outbound(version, item.action, item.payload)
+                except ValueError as e:
+                    raise ValueError(f"mini_csms.plan[{i}] ({item.action}, OCPP {version}): {e}") from None
+        return self
+
+
 class SimConfig(StrictModel):
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     frame_log: FrameLogConfig = Field(default_factory=FrameLogConfig)
     csms_defaults: CsmsDefaults = Field(default_factory=CsmsDefaults)
     ev_models: List[EvModelConfig] = Field(default_factory=list)
     chargers: List[ChargerConfig] = Field(default_factory=list)
+    mini_csms: MiniCsmsConfig = Field(default_factory=MiniCsmsConfig)
 
     @model_validator(mode="after")
     def _check_chargers(self) -> "SimConfig":
@@ -358,7 +449,7 @@ def load_file(path: Union[str, Path]) -> SimConfig:
 
 #: Top-level blocks :func:`write_back` may rewrite, and their value when everything in them is default.
 WRITE_BACK_BLOCKS: Dict[str, Any] = {"simulation": {}, "frame_log": {}, "csms_defaults": {}, "ev_models": [],
-                                     "chargers": []}
+                                     "chargers": [], "mini_csms": {}}
 
 
 def _blocks(config: SimConfig) -> Dict[str, Any]:

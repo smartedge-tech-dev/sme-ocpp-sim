@@ -82,6 +82,22 @@ OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーシ�
 
 フレームログに含まれるのは OCPP フレームだけで、HTTP ヘッダーやパスワードは含みません。
 
+## Mini CSMS { #mini-csms }
+
+組み込み [Mini CSMS](mini-csms.md) のルートです。ステーション ID はステーションが接続に使った ID です。
+
+| メソッド | パス | 意味 |
+|---|---|---|
+| GET | `/api/csms` | 状態（`enabled`、`running`、`error`、`url`、`versions` など）、ステーション（`chargers`）、拒否した接続（`rejections`） |
+| GET | `/api/csms/chargers/{id}` | 1 ステーション: Boot 情報、コネクタ / EVSE ごとの最新状態、トランザクション、最近のメーター値、アクションごとの回数と最新ペイロード、警告、送信した CALL、計画の状態 |
+| GET | `/api/csms/transactions` | 全ステーションのトランザクション |
+| GET | `/api/csms/actions?version=` | `1.6` / `2.0.1` で送信できる CSMS → CP アクション |
+| POST | `/api/csms/chargers/{id}/call` | ボディ `{"action", "payload", "timeout"?}`。スキーマで検査（不一致は該当フィールド付きで 400）してから送信。応答は `{"ok": true, "result"}`（応答がスキーマに合わなければ `warning` 付き）、CALLERROR なら `{"ok": false, "error": {"code", "description", "details"}}` |
+| GET | `/api/csms/frames?since=&charger=&limit=` | Mini CSMS 専用フレームログ（方向は CSMS 側から） |
+
+エラー: 404 未知のステーション、400 スキーマ不一致またはステーション未接続、504 時間内に応答なし、409 Mini CSMS 停止中
+（`GET /api/csms` を除く）。
+
 ## WebSocket `/ws`
 
 ライブ更新を受け取るクライアントは `ws://127.0.0.1:8082/ws` に接続します。

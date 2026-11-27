@@ -81,6 +81,7 @@ nav:
       - messages.md
       - smart-charging.md
       - security-profiles.md
+      - mini-csms.md
       - http-api.md
       - development.md
       - changelog.md

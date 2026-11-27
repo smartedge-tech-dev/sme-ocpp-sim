@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Mini CSMS: a simple built-in OCPP 1.6J / 2.0.1 CSMS (WebSocket server, default port 9000) in the same process,
+  with a new web UI panel (Simulation → Mini CSMS). Subprotocol negotiation, Security Profile 0 / 1 (optional
+  Basic Auth), configurable BootNotification answer (Accepted / Pending / Rejected + interval) and authorization
+  statuses, valid minimal answers to every CP → CSMS action, records boot info, statuses, transactions and meter
+  values per station, a JSON editor that checks any CALL against the schema before sending it, and a YAML plan of
+  scheduled CALLs (`mini_csms:` block; e.g. SetChargingProfile 30 s after boot). New `/api/csms/*` routes,
+  `--mini-csms` / `--csms-host` / `--csms-port` options, demo config `configs/mini-csms-demo.yaml` and the
+  Docker image exposes 9000.
 - Local Authorization List and Authorization Cache for OCPP 1.6J and 2.0.1: SendLocalList (Full / Differential,
   version numbers, `VersionMismatch` / `Failed`), GetLocalListVersion and ClearCache. A presented id token is
   authorized from the list first, then the cache (LocalPreAuthorize / LocalAuthorizeOffline); Authorize,

@@ -192,3 +192,28 @@ In the web UI the **Variables (Device Model)** table of a 2.0.1 charger shows th
 A mixed 1.6 / 2.0.1 example is [`configs/mixed-site.yaml`](https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/configs/mixed-site.yaml).
 
 Not supported yet: charger templates, the 2.0.1 `evses` tree (several connectors per EVSE) and `behaviors`.
+
+
+## mini_csms { #mini_csms }
+
+The built-in simple CSMS, see [Mini CSMS](mini-csms.md). Off by default.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Start the Mini CSMS WebSocket server |
+| `host` | `"127.0.0.1"` | Listen address (`"0.0.0.0"` for other hosts and Docker) |
+| `port` | `9000` | Listen port |
+| `versions` | `["1.6", "2.0.1"]` | OCPP versions accepted (subprotocol negotiation) |
+| `boot.status` | `Accepted` | BootNotification answer: `Accepted`, `Pending` or `Rejected` |
+| `boot.interval` | `300` | Heartbeat interval (Accepted) or retry delay (Pending / Rejected), seconds |
+| `auth.basic` | `false` | `true` = Security Profile 1: HTTP Basic Auth required |
+| `auth.credentials` | `[]` | `{id, password}` per station; with `basic: true` any other id or password is refused (HTTP 401). Shown masked in the web UI |
+| `authorize.default` | `Accepted` | Authorization status answered for an id tag / id token |
+| `authorize.tags` | `{}` | Per tag overrides, e.g. `{"BAD": "Blocked"}` (a 2.0.1-only status is answered as `Invalid` to 1.6) |
+| `strict` | `false` | Answer a payload that does not match the schema with CALLERROR (default: answer it and record a warning) |
+| `call_timeout_s` | `30` | Timeout of CALLs sent to a station |
+| `frame_log_size` | `5000` | Frames kept by the Mini CSMS's own frame log |
+| `plan` | `[]` | Scheduled CALLs: `at_s`, `after` (`boot` / `connect`), `action`, `payload`, optional `charger` (pattern) and `ocpp_version` |
+
+Changing `enabled`, `host` or `port` restarts the Mini CSMS (stations reconnect); other changes apply at once (a
+changed plan from the next connection). A port that cannot be bound is reported in the event log and the panel.
