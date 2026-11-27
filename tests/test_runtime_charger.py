@@ -3,7 +3,9 @@
 import asyncio
 import time
 
+import pytest
 from peers.ocpp16_peer import CsmsPeer
+from peers.ocpp201_peer import CsmsPeer201
 
 from sme_ocpp_sim.config import ChargerConfig, ReconnectConfig
 from sme_ocpp_sim.framelog import FrameLog
@@ -12,6 +14,9 @@ from sme_ocpp_sim.runtime.charger import ChargerRuntime
 
 CP = "CP1"
 FAST = ReconnectConfig(min_s=0.05, max_s=0.2, jitter=0)
+#: CSMS peer per OCPP version, for the tests that do not depend on version messages.
+PEERS = {"1.6": CsmsPeer, "2.0.1": CsmsPeer201}
+VERSIONS = pytest.mark.parametrize("version", list(PEERS))
 
 
 def _cfg(**kw):
@@ -27,11 +32,11 @@ async def _until(cond, timeout=8.0):
     await asyncio.wait_for(poll(), timeout)
 
 
-def _scenario(body, peer_kw=None, cfg_kw=None, reconnect=FAST):
+def _scenario(body, peer_kw=None, cfg_kw=None, reconnect=FAST, version="1.6"):
     async def main():
-        peer = CsmsPeer(**{"hb_interval": 30, **(peer_kw or {})})
+        peer = PEERS[version](**{"hb_interval": 30, **(peer_kw or {})})
         await peer.start()
-        rt = ChargerRuntime(_cfg(**(cfg_kw or {})), peer.url, reconnect=reconnect, frame_log=FrameLog(),
+        rt = ChargerRuntime(_cfg(**(cfg_kw or {})), peer.url, version, reconnect=reconnect, frame_log=FrameLog(),
                             call_timeout=5)
         stop = asyncio.Event()
         task = asyncio.create_task(rt.run(stop))
@@ -178,21 +183,33 @@ def test_misc_remote_control():
     _scenario(body)
 
 
-def test_unregistered_charger_404_retried_with_backoff():
+@VERSIONS
+def test_unregistered_charger_404_retried_with_backoff(version):
     async def body(peer, rt):
         await _until(lambda: rt.connect_attempts >= 3)
         assert rt.last_error["kind"] == "not_found" and not rt.connected
         assert CP not in peer.sessions
-    _scenario(body, {"registered": {"OTHER"}})
+    _scenario(body, {"registered": {"OTHER"}}, version=version)
 
 
-def test_stop_ends_loop_promptly():
+@VERSIONS
+def test_boot_pending_then_accepted_resets_the_error(version):
+    async def body(peer, rt):
+        await _until(lambda: rt.registration == "Pending")
+        assert not rt.online and rt.boots == 1
+        await _until(lambda: rt.online)
+        assert rt.boots == 2 and rt.last_error is None and rt.snapshot()["registration"] == "Accepted"
+    _scenario(body, {"boot_statuses": ["Pending"], "retry_interval": 1}, version=version)
+
+
+@VERSIONS
+def test_stop_ends_loop_promptly(version):
     async def main():
-        peer = CsmsPeer(registered={"OTHER"})
+        peer = PEERS[version](registered={"OTHER"})
         await peer.start()
         try:
             # long back-off: stop must interrupt the wait
-            rt = ChargerRuntime(_cfg(), peer.url, reconnect=ReconnectConfig(min_s=30, max_s=60))
+            rt = ChargerRuntime(_cfg(), peer.url, version, reconnect=ReconnectConfig(min_s=30, max_s=60))
             stop = asyncio.Event()
             task = asyncio.create_task(rt.run(stop))
             await _until(lambda: rt.last_error is not None)
@@ -202,7 +219,7 @@ def test_stop_ends_loop_promptly():
             assert time.monotonic() - t0 < 1
             # connected: stop closes the session
             peer.registered = None
-            rt = ChargerRuntime(_cfg(), peer.url, reconnect=FAST)
+            rt = ChargerRuntime(_cfg(), peer.url, version, reconnect=FAST)
             stop = asyncio.Event()
             task = asyncio.create_task(rt.run(stop))
             await _until(lambda: rt.online)
@@ -262,7 +279,8 @@ class _RecordingBackoff:
         self.resets += 1
 
 
-def test_backoff_reset_only_after_accepted_boot():
+@VERSIONS
+def test_backoff_reset_only_after_accepted_boot(version):
     from rpc_fakes import FakeWs
 
     async def connect(_cfg):
@@ -272,7 +290,7 @@ def test_backoff_reset_only_after_accepted_boot():
 
     async def main():
         bo = _RecordingBackoff()
-        rt = ChargerRuntime(_cfg(), "ws://unused/ocpp", connect=connect, backoff=bo)
+        rt = ChargerRuntime(_cfg(), "ws://unused/ocpp", version, connect=connect, backoff=bo)
         stop = asyncio.Event()
         task = asyncio.create_task(rt.run(stop))
         await _until(lambda: rt.connect_attempts >= 4)
@@ -281,11 +299,11 @@ def test_backoff_reset_only_after_accepted_boot():
         assert bo.resets == 0 and bo.nexts >= 3
         assert rt.last_error["kind"] == "disconnected"
 
-        peer = CsmsPeer(hb_interval=30)
+        peer = PEERS[version](hb_interval=30)
         await peer.start()
         try:
             bo = _RecordingBackoff()
-            rt = ChargerRuntime(_cfg(), peer.url, backoff=bo)
+            rt = ChargerRuntime(_cfg(), peer.url, version, backoff=bo)
             stop = asyncio.Event()
             task = asyncio.create_task(rt.run(stop))
             await _until(lambda: rt.online)

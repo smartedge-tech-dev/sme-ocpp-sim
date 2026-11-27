@@ -38,7 +38,7 @@ def test_config_key_values_coerced_to_wire_strings():
                                            "MeterValuesSampledData": "SoC"}
 
 
-@pytest.mark.parametrize("version,msg", [("2.0.1", "coming in v0.2"), ("2.1", "coming in v0.3"),
+@pytest.mark.parametrize("version,msg", [("2.1", "coming in v0.3"),
                                          ("1.5", "unknown OCPP version")])
 def test_unavailable_version_rejected(version, msg):
     with pytest.raises(ValidationError, match=msg):

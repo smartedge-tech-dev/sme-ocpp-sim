@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- OCPP 2.0.1 station core (`ocpp_version: "2.0.1"`, subprotocol `ocpp2.0.1`): BootNotification (Accepted /
+  Pending / Rejected), Heartbeat, StatusNotification per EVSE (`connectors: N` = N EVSEs with one connector
+  each), Authorize with every `auth_mode`, the TransactionEvent flow Started -> Updated -> Ended with
+  station-generated transaction ids, continuous `seqNo` and offline queueing (`offline: true`), MeterValues and
+  DataTransfer. Every other 2.0.1 action, including the ISO 15118 messages, is answered `NotImplemented`.
+
 ### Changed
 
 - Internal split for OCPP 2.0.1: the charger runtime is a version-neutral shell (connection, boot / heartbeat,
