@@ -1,6 +1,11 @@
+---
+title: 免费 OCPP 充电桩模拟器（OCPP 1.6J / 2.0.1，仿真软件）
+description: 免费开源的 OCPP 充电桩模拟器（仿真软件），支持 OCPP 1.6J / 2.0.1，带实时 Web UI，支持 Windows、Linux 和 Docker。无需真实充电桩即可测试 CSMS 或 EMS（含 Smart Charging）。
+---
+
 # SME OCPPSim
 
-一个带实时 Web UI 的免费 OCPP 充电桩模拟器，用于测试 CSMS 或 EMS。可在一个进程中模拟几十到几百台 AC 充电桩，
+一个带实时 Web UI 的免费开源 OCPP 充电桩模拟器（仿真软件），支持 Windows、Linux 和 Docker，用于测试 CSMS 或 EMS。可在一个进程中模拟几十到几百台 AC 充电桩，
 插入虚拟 EV、启动和停止交易，并观察充电功率如何跟随 CSMS 下发的 Smart Charging profile 变化。
 
 - **OCPP 1.6J 与 OCPP 2.0.1。** 每台模拟桩都是一个主动连接 CSMS 的 WebSocket 客户端（子协议 `ocpp1.6` 或
@@ -33,3 +38,21 @@ SME OCPPSim 免费且采用 MIT 许可证，由 [smart-edge (智届科技)](http
 - [快速开始](quick-start.md)：Windows exe、pip、Docker，以及首次连接 SteVe
 - [配置](configuration.md)：YAML 的全部字段
 - [HTTP API](http-api.md)：从测试脚本操作模拟器
+
+## 典型用途
+
+- **无需真实充电桩即可测试 CSMS 或 EMS。** 让 CSMS 连接几十台模拟桩，而不是实体设备；详见 [快速开始](quick-start.md) 和 [OCPP 消息](messages.md)。
+- **验证 Smart Charging 的功率闭环。** 下发充电 profile，确认 MeterValues 跟随限值，详见 [Smart Charging](smart-charging.md)。
+- **测试规模与断线重连。** 单进程运行 200 台以上，并演练断开 / 重连场景，详见 [配置](configuration.md) 和 [HTTP API](http-api.md)。
+
+## smart-edge 模拟器系列
+
+SME OCPPSim 是 smart-edge 免费、MIT 许可的协议模拟器系列之一。各模拟器共用同一套 Web UI 和操作方式，学会一个即可上手其他几个。
+
+| 模拟器 | 模拟对象 | 文档 |
+|---|---|---|
+| [SME BACnetSim](https://github.com/smartedge-tech-dev/sme-bacnet-sim) | BACnet/IP 设备模拟器 | [文档](https://smartedge-tech-dev.github.io/sme-bacnet-sim/zh/) |
+| [SME ModbusSim](https://github.com/smartedge-tech-dev/sme-modbus-sim) | Modbus TCP / RTU / UDP / TLS 从站（Slave）模拟器 | [文档](https://smartedge-tech-dev.github.io/sme-modbus-sim/zh/) |
+| **SME OCPPSim**（本项目） | OCPP 1.6J / 2.0.1 充电桩模拟器 | [文档](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/) |
+
+smart-edge 全部开源工具：<https://smartedge-tech.com/zh/open-source/>

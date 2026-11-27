@@ -12,7 +12,8 @@
 
 <p align="center"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/en/live.gif" alt="Live charging power following a Smart Charging profile" width="100%"></p>
 
-An OCPP charging station simulator with a live web UI. Simulate dozens to hundreds of AC chargers, plug in
+A free, open-source OCPP charging station simulator (a charge point / EV charger simulator) with a live web UI,
+for Windows, Linux and Docker. Simulate dozens to hundreds of AC chargers, plug in
 virtual EVs, start and stop transactions, and watch the charging power follow the Smart Charging profiles your
 CSMS (SteVe, your own CSMS, an EMS...) sends.
 
@@ -91,6 +92,19 @@ Open <http://127.0.0.1:8082/>. The demo configuration connects three chargers to
 
 SME OCPPSim implements the publicly available OCPP specification of the Open Charge Alliance. It is not OCA
 certified and has not been tested with OCTT.
+
+## More simulators from smart-edge
+
+SME OCPPSim is one of a series of free, MIT-licensed protocol simulators by smart-edge. They share the
+same web UI and conventions, so what you learn in one carries over to the others.
+
+| Simulator | What it simulates | Docs |
+|---|---|---|
+| [SME BACnetSim](https://github.com/smartedge-tech-dev/sme-bacnet-sim) | BACnet/IP device simulator | [Docs](https://smartedge-tech-dev.github.io/sme-bacnet-sim/) |
+| [SME ModbusSim](https://github.com/smartedge-tech-dev/sme-modbus-sim) | Modbus TCP / RTU / UDP / TLS slave (server) simulator | [Docs](https://smartedge-tech-dev.github.io/sme-modbus-sim/) |
+| **SME OCPPSim** (this project) | OCPP 1.6J / 2.0.1 charging station (charge point) simulator | [Docs](https://smartedge-tech-dev.github.io/sme-ocpp-sim/) |
+
+All open-source tools from smart-edge: <https://smartedge-tech.com/open-source/>
 
 ## Commercial support & custom development
 
