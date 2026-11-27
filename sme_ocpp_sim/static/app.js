@@ -806,12 +806,26 @@ async function openFrameDetail(seq) {
 }
 
 // Add charger(s): plain defaults or a charger template, one or N at once (POST /api/chargers/bulk/create).
-const ADD = { templates: [] };
+// With a template picked, the (disabled) manual fields show its values; ADD.manual keeps what was typed for
+// "no template".
+const ADD = { templates: [], manual: null };
+const ADD_FIELDS = { addModel: "model", addConnectors: "connectors", addPower: "max_power_w" };
 
 function syncAddTemplate() {
   const tpl = ADD.templates.find((x) => x.name === $("addTemplate").value);
-  for (const id of ["addModel", "addConnectors", "addPower"]) $(id).disabled = !!tpl;
-  $("addTemplateInfo").textContent = tpl ? (tpl.description || tpl.title) : "";
+  if (tpl) {
+    if (!ADD.manual) ADD.manual = Object.fromEntries(Object.keys(ADD_FIELDS).map((id) => [id, $(id).value]));
+    for (const [id, key] of Object.entries(ADD_FIELDS)) {
+      const v = (tpl.fields || {})[key];
+      if (v !== undefined && v !== null) $(id).value = v;
+    }
+  } else if (ADD.manual) {
+    for (const [id, v] of Object.entries(ADD.manual)) $(id).value = v;
+    ADD.manual = null;
+  }
+  for (const id of Object.keys(ADD_FIELDS)) $(id).disabled = !!tpl;
+  const lang = (document.documentElement.lang || "en").slice(0, 2);
+  $("addTemplateInfo").textContent = tpl ? ((tpl.descriptions || {})[lang] || tpl.description || tpl.title) : "";
 }
 
 async function openAddChargerDialog() {
