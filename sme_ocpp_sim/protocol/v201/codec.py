@@ -13,10 +13,13 @@ CALLERROR code an invalid payload gets):
 - Value outside an enum / string longer than ``maxLength`` -> PropertyConstraintViolation ("a field
   contains an invalid value"). The ``ocpp`` library uses TypeConstraintViolation for maxLength; the
   JSON type is right there, only the value is not, so we keep the property code.
-- Wrong JSON type (``"1"`` for an integer, ``1.5`` for an integer, ``null``, a non-RFC 3339 dateTime
+- Wrong JSON type (``"1"`` for an integer, ``1.5`` for an integer, ``null``, a string that is no dateTime
   string) -> TypeConstraintViolation.
 - Unknown field (strict mode only), a payload that is not a JSON object, anything else the schema rejects
   -> FormatViolation (the ``ocpp`` library does the same for additionalProperties and its fallback).
+- A dateTime without a UTC offset (``2026-01-01T00:00:00``) is accepted and read as UTC, as in the 1.6
+  codec: the schema's ``format: date-time`` asks for an offset, but a simulator tolerates the peer here.
+  The optional ``schema.SchemaValidator`` rejects it when ``rfc3339-validator`` is installed.
 - An action with no model (unknown or not implemented in this build) -> NotImplemented, as in 1.6.
 - ``null`` is accepted only inside the untyped ``data`` field and as a vendor property of ``customData``,
   the two places where the schema allows any JSON value.
@@ -63,7 +66,8 @@ _ERROR_TYPE_TO_CODE: dict[str, str] = {
 }
 _FALLBACK_CODE = "format_violation"
 
-# Fields whose value is any JSON (schema without "type"): not searched for null.
+# Fields whose value is any JSON (schema without "type"): not searched for null. Matched by key at any
+# depth; today only DataTransfer.data. Revisit when a later message adds a typed field named "data".
 _OPAQUE_FIELDS = frozenset({"data"})
 
 Kind = Literal["request", "response"]

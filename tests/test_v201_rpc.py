@@ -73,7 +73,7 @@ async def _answers(codes, frames) -> list:
     await _until(lambda: any(json.loads(r)[1] == "marker" for r in ws.sent))
     await rpc.close()
     await rx
-    return [json.loads(r) for r in ws.sent][:-1]
+    return [f for f in (json.loads(r) for r in ws.sent) if f[1] != "marker"]
 
 
 @pytest.mark.parametrize("raw", ["garbage", "{}", [], [2], [2, 17, "Heartbeat", {}]])
@@ -176,6 +176,7 @@ def test_dev_peer_accepts_every_core_request_and_its_answers_parse():
     peer, answers = asyncio.run(scenario())
     s = peer.sessions["CS001"]
     assert s.subprotocol == "ocpp2.0.1"
+    # Counts / order follow FIXTURES: every request has a "min" then a "full" variant.
     assert s.boots == 2 and s.booted.is_set()
     assert answers[("BootNotification", "min")].status.value == "Accepted"
     assert answers[("Authorize", "blocked")].id_token_info.status.value == "Blocked"

@@ -194,11 +194,13 @@ class RpcConnection:
             return
         self._emit(FrameInfo("rx", raw, mtype, e.uid, None, e.reason))
         if e.kind == framer.BAD_CALL:
-            # TODO(spec): 1.6J has no RPC-framework code; FormationViolation is used for
-            # both a bad CALL shape and a non-object payload. 2.0.1 / 2.1 codes for these
-            # cases are chosen by the v0.2 adapter after reading the OCPP-J 2.x text.
+            # A bad CALL shape or a non-object payload: the version's format code (1.6J
+            # FormationViolation, 2.0.1 FormatViolation). TODO(spec): 2.0.1 could also read this as
+            # RpcFrameworkError ("not a valid RPC request"); the ocpp library uses FormatViolation.
             code = self.codes.format_violation
-        else:  # UNKNOWN_TYPE - the version's code if it has one; unspecified in 1.6J, where ProtocolError is our choice
+        else:
+            # UNKNOWN_TYPE: the version's MessageTypeNotSupported where it has one (2.0.1);
+            # unspecified in 1.6J, where ProtocolError is our choice.
             code = self.codes.message_type_not_supported or self.codes.protocol_error
         await self._send_error(e.uid, code, e.reason)
 
