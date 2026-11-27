@@ -198,8 +198,8 @@ class RpcConnection:
             # both a bad CALL shape and a non-object payload. 2.0.1 / 2.1 codes for these
             # cases are chosen by the v0.2 adapter after reading the OCPP-J 2.x text.
             code = self.codes.format_violation
-        else:  # UNKNOWN_TYPE - unspecified in 1.6J; ProtocolError is our choice
-            code = self.codes.protocol_error
+        else:  # UNKNOWN_TYPE - the version's code if it has one; unspecified in 1.6J, where ProtocolError is our choice
+            code = self.codes.message_type_not_supported or self.codes.protocol_error
         await self._send_error(e.uid, code, e.reason)
 
     async def _handle_call(self, frame: framer.Call) -> None:

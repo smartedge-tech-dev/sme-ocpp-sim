@@ -11,7 +11,8 @@ class ErrorCodes:
     """Wire names of the CALLERROR codes for one OCPP-J version.
 
     The attribute names are version neutral; the values are what goes on the wire.
-    ``rpc_framework_error`` is ``None`` where the version has no such code.
+    ``rpc_framework_error`` / ``message_type_not_supported`` are ``None`` where the version has no such code
+    (an unknown MessageTypeId is then answered with ``protocol_error``).
 
     ``bad_frame_reply`` is the per-version policy for a frame whose uniqueId cannot be read: ``None`` = log and
     drop it, otherwise the uniqueId of the CALLERROR that answers it (code ``rpc_framework_error``, or
@@ -29,6 +30,7 @@ class ErrorCodes:
     type_constraint_violation: str = "TypeConstraintViolation"
     generic_error: str = "GenericError"
     rpc_framework_error: Optional[str] = None
+    message_type_not_supported: Optional[str] = None
     bad_frame_reply: Optional[str] = None
 
 
@@ -40,13 +42,20 @@ OCPP16_ERRORS = ErrorCodes(
     occurrence_constraint_violation="OccurenceConstraintViolation",
 )
 
-# 2.0.1 fixes "FormatViolation" but keeps "OccurenceConstraintViolation", and adds
-# RpcFrameworkError. Used from v0.2 on; kept here so the RPC layer stays version neutral.
-# TODO(spec): verify against the OCPP-J 2.0.1 / 2.1 RPC framework text before v0.2, including the bad-frame
-# reply (design §5 spike: id "-1" + RpcFrameworkError); until then ``bad_frame_reply`` stays None (drop).
+# OCPP-J 2.0.1 (the protocol semantics live in protocol/v201/; only the wire table is here so the RPC layer
+# stays version neutral). "FormatViolation" is spelled correctly, "OccurenceConstraintViolation" keeps the
+# 1.6 misspelling (the ocpp library, ocpp/exceptions.py, marks exactly these two as the 2.0.1 names), and
+# RpcFrameworkError / MessageTypeNotSupported are new.
+# Interpretations (not settled by the JSON schemas; the ocpp library defines neither code and logs and drops
+# a frame it cannot read, so it does not decide them either):
+#   - A frame whose uniqueId cannot be read is answered with CALLERROR uniqueId "-1" + RpcFrameworkError
+#     (design §5 spike, issue #34), not dropped as in 1.6.
+#   - An unknown MessageTypeId with a readable uniqueId is answered with MessageTypeNotSupported.
 OCPP201_ERRORS = ErrorCodes(
     occurrence_constraint_violation="OccurenceConstraintViolation",
     rpc_framework_error="RpcFrameworkError",
+    message_type_not_supported="MessageTypeNotSupported",
+    bad_frame_reply="-1",
 )
 OCPP21_ERRORS = ErrorCodes(rpc_framework_error="RpcFrameworkError")
 
