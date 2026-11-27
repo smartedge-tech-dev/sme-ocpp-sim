@@ -127,5 +127,53 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `session.initial_soc` | `30.0` | SoC (%) at the start of every transaction |
 | `session.target_soc` | `90.0` | When reached, the EV stops accepting power (SuspendedEV) |
 | `meter_sample_interval_s` | key default | Default `MeterValueSampleInterval` when `config_keys` does not set it |
+| `variables` | `[]` | OCPP 2.0.1 chargers only: Device Model overrides and user-defined variables (see below) |
+
+### variables (OCPP 2.0.1) { #variables }
+
+A 2.0.1 charger has a Device Model instead of `config_keys`. It ships a minimal set of standard variables the
+simulator acts on, e.g. `OCPPCommCtrlr.HeartbeatInterval`, `SampledDataCtrlr.TxUpdatedInterval` (initial value
+`meter_sample_interval_s`, else 60) and `TxUpdatedMeasurands`, `AuthCtrlr.AuthorizeRemoteStart`,
+`TxCtrlr.StopTxOnInvalidId`, `OCPPCommCtrlr.MessageAttempts[TransactionEvent]`,
+`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`, read-only reflections of `auth_mode`
+(`AuthCtrlr.LocalPreAuthorize` ...), `SecurityCtrlr.SecurityProfile` / `Identity` and
+`EVSE.AvailabilityState` per EVSE. The CSMS reads and changes them with GetVariables / SetVariables and lists
+them with GetBaseReport; `GET /api/chargers/{id}/configuration` shows them under `variables`. SetVariables
+changes are not written back to the YAML file.
+
+Each `variables` entry addresses one variable: `component`, optional `component_instance`, `evse`, `connector`,
+`variable`, optional `variable_instance`.
+
+- An entry that addresses a standard variable sets its `value` (the `Actual` attribute). Variables derived from
+  other settings (`auth_mode`, the charger id, the CSMS url, the EVSE state, the transaction start / stop points)
+  cannot be set.
+- Any other entry is a user-defined variable and needs `data_type` (`string`, `decimal`, `integer`, `dateTime`,
+  `boolean`, `OptionList`, `SequenceList`, `MemberList`) and `value`. Optional: `mutability` (`ReadWrite`
+  default, `ReadOnly`, `WriteOnly`), `unit`, `min_limit` / `max_limit` (number range; length for `string`),
+  `values_list` (required for the list types), `target` / `min_set` / `max_set` (more attributes),
+  `reboot_required` (SetVariables answers `RebootRequired`), `persistent`, `constant`, `summary` (part of a
+  SummaryInventory report).
+
+```yaml
+chargers:
+  - id: "CP201"
+    ocpp_version: "2.0.1"
+    variables:
+      - component: OCPPCommCtrlr
+        variable: HeartbeatInterval
+        value: 120
+      - component: DeviceDataCtrlr
+        variable: ItemsPerMessage
+        variable_instance: GetReport
+        value: 10
+      - component: VendorCtrlr
+        variable: ChargeMode
+        data_type: OptionList
+        values_list: [Eco, Fast]
+        value: Eco
+```
+
+Values are checked when the configuration is loaded (type, limits, `values_list`); a `variables` list on a 1.6
+charger is an error.
 
 Not in v0.1: charger templates, the 2.0.1 `evses` tree and `behaviors` (planned for v0.2).

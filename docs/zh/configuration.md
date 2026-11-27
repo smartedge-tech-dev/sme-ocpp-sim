@@ -123,5 +123,48 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `session.initial_soc` | `30.0` | 每次交易开始时的 SoC（%） |
 | `session.target_soc` | `90.0` | 达到后 EV 不再接受功率（SuspendedEV） |
 | `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值 |
+| `variables` | `[]` | 仅 OCPP 2.0.1 充电桩：Device Model 的值覆盖与用户自定义变量（见下文） |
+
+### variables（OCPP 2.0.1） { #variables }
+
+2.0.1 充电桩用 Device Model 代替 `config_keys`。它自带模拟器实际使用的最小标准变量集，例如
+`OCPPCommCtrlr.HeartbeatInterval`、`SampledDataCtrlr.TxUpdatedInterval`（初始值为 `meter_sample_interval_s`，
+未设置则为 60）和 `TxUpdatedMeasurands`、`AuthCtrlr.AuthorizeRemoteStart`、`TxCtrlr.StopTxOnInvalidId`、
+`OCPPCommCtrlr.MessageAttempts[TransactionEvent]`、`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`、
+反映 `auth_mode` 的只读变量（`AuthCtrlr.LocalPreAuthorize` 等）、`SecurityCtrlr.SecurityProfile` / `Identity`，
+以及每个 EVSE 的 `EVSE.AvailabilityState`。CSMS 用 GetVariables / SetVariables 读写，用 GetBaseReport 获取列表；
+`GET /api/chargers/{id}/configuration` 在 `variables` 中显示它们。SetVariables 的修改不会写回 YAML 文件。
+
+`variables` 的每一项指向一个变量：`component`、可选的 `component_instance`、`evse`、`connector`、`variable`、
+可选的 `variable_instance`。
+
+- 指向标准变量的项设置它的 `value`（`Actual` 属性）。由其它设置推导出的变量（`auth_mode`、充电桩 ID、CSMS URL、
+  EVSE 状态、交易开始 / 结束点）不能设置。
+- 其它项是用户自定义变量，需要 `data_type`（`string`、`decimal`、`integer`、`dateTime`、`boolean`、`OptionList`、
+  `SequenceList`、`MemberList`）和 `value`。可选：`mutability`（默认 `ReadWrite`，或 `ReadOnly`、`WriteOnly`）、
+  `unit`、`min_limit` / `max_limit`（数值范围；`string` 为长度）、`values_list`（列表类型必填）、
+  `target` / `min_set` / `max_set`（更多属性）、`reboot_required`（SetVariables 应答 `RebootRequired`）、
+  `persistent`、`constant`、`summary`（包含在 SummaryInventory 报告中）。
+
+```yaml
+chargers:
+  - id: "CP201"
+    ocpp_version: "2.0.1"
+    variables:
+      - component: OCPPCommCtrlr
+        variable: HeartbeatInterval
+        value: 120
+      - component: DeviceDataCtrlr
+        variable: ItemsPerMessage
+        variable_instance: GetReport
+        value: 10
+      - component: VendorCtrlr
+        variable: ChargeMode
+        data_type: OptionList
+        values_list: [Eco, Fast]
+        value: Eco
+```
+
+加载配置时会校验值（类型、范围、`values_list`）；在 1.6 充电桩上写 `variables` 会报错。
 
 v0.1 不包含：充电桩模板、2.0.1 的 `evses` 树和 `behaviors`（计划在 v0.2 支持）。

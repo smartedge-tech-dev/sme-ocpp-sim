@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `Scheduled` while a transaction runs and BootNotification reason `RemoteReset`), ChangeAvailability (station
   or EVSE level, `Scheduled` while a transaction runs) and TriggerMessage (BootNotification, Heartbeat,
   StatusNotification, MeterValues, TransactionEvent; the other messages answer `NotImplemented`).
+- OCPP 2.0.1 Device Model: GetVariables / SetVariables (attribute types Actual / Target / MinSet / MaxSet,
+  ReadOnly / WriteOnly / ReadWrite, `UnknownComponent` / `UnknownVariable` / `NotSupportedAttributeType`,
+  `RebootRequired`, value checks for dataType, limits and valuesList) and GetBaseReport (ConfigurationInventory,
+  FullInventory, SummaryInventory) answered by NotifyReport parts (`seqNo` / `tbc`). A minimal set of standard
+  variables drives the station (HeartbeatInterval, TxUpdatedInterval / Tx*Measurands, AuthorizeRemoteStart,
+  StopTxOnInvalidId, MessageAttempts, ItemsPerMessage, ...); the new charger `variables:` YAML list overrides
+  them and adds user-defined variables. `GET /api/chargers/{id}/configuration` returns a 2.0.1 charger's
+  variables (`ocpp_version`, `variables`). SetVariables changes are not written back to the YAML file.
 
 ### Changed
 

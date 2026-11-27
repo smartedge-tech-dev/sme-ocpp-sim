@@ -58,6 +58,7 @@ class Session:
     transaction_events: list = field(default_factory=list)  # dict per TransactionEvent
     meter_values: list = field(default_factory=list)        # dict per MeterValues
     data_transfers: list = field(default_factory=list)
+    reports: list = field(default_factory=list)            # dict per NotifyReport
     cs: object = None
 
 
@@ -106,6 +107,7 @@ class PeerCS(OcppCP201):
 
     @on("Authorize")
     async def on_authorize(self, id_token, **_):
+        await self.peer.hold("Authorize")
         self.session.authorizes.append(id_token)
         return call_result.Authorize(id_token_info={"status": self.peer.token_status(id_token["id_token"])})
 
@@ -125,6 +127,12 @@ class PeerCS(OcppCP201):
     async def on_meter_values(self, evse_id, meter_value, **_):
         self.session.meter_values.append({"evse_id": evse_id, "meter_value": meter_value})
         return call_result.MeterValues()
+
+    @on("NotifyReport")
+    async def on_notify_report(self, request_id, generated_at, seq_no, **kw):
+        self.session.reports.append({"request_id": request_id, "generated_at": generated_at, "seq_no": seq_no,
+                                     **kw})
+        return call_result.NotifyReport()
 
     @on("DataTransfer")
     async def on_data_transfer(self, vendor_id, **kw):

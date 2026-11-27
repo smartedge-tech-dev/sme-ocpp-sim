@@ -142,7 +142,7 @@ def test_boot_rejected_is_retried_and_sends_nothing_else():
 
 @pytest.mark.parametrize("action", [
     call.ClearCache(),
-    call.GetVariables(get_variable_data=[{"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "X"}}]),
+    call.GetReport(request_id=1),
     call.Get15118EVCertificate(iso15118_schema_version="urn:iso:15118:2:2013:MsgDef", action="Install",
                                exi_request="AAAA"),
     call.CertificateSigned(certificate_chain="x"),
@@ -304,6 +304,7 @@ def test_events_raised_offline_are_queued_and_resent_with_offline_flag():
             await rt.plug(1)
             await rt.swipe(1, "A")
             await _until(lambda: len(s1.transaction_events) == 1)
+            await _until(lambda: rt.snapshot()["tx_queue"] == 0)  # the answer arrived (else Started is resent)
             tx1 = s1.transaction_events[0]["transaction_info"]["transaction_id"]
             await peer.stop()
             await _until(lambda: not rt.connected and rt.last_error is not None)
@@ -430,6 +431,9 @@ def test_web_api_serves_a_201_charger(tmp_path):
         assert set(Station201.fault_codes) <= set(FAULT_CODES)
         assert [c["connector_status"] for c in detail["connectors"]] == ["Available", "Available"]
         assert client.get("/api/chargers/CP1/profiles").json() == {"profiles": []}
-        assert client.get("/api/chargers/CP1/configuration").json() == {"keys": []}
+        conf = client.get("/api/chargers/CP1/configuration").json()
+        assert conf["keys"] == [] and conf["ocpp_version"] == "2.0.1"
+        hb = next(v for v in conf["variables"] if v["variable"] == "HeartbeatInterval")
+        assert hb["component"] == "OCPPCommCtrlr" and hb["attributes"] == {"Actual": "300"}
         assert client.get("/api/chargers/CP1/composite?connector=1").status_code == 400
         assert client.post("/api/chargers/CP1/fault", json={"error_code": "GroundFault", "connector": 1}).status_code == 200

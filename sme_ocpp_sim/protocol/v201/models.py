@@ -39,6 +39,13 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from .enums import (
+    SetVariableStatusEnumType,
+    ReportBaseEnumType,
+    MutabilityEnumType,
+    GetVariableStatusEnumType,
+    GenericDeviceModelStatusEnumType,
+    DataEnumType,
+    AttributeEnumType,
     AuthorizationStatusEnumType,
     AuthorizeCertificateStatusEnumType,
     BootReasonEnumType,
@@ -93,6 +100,8 @@ String50 = Annotated[str, StringConstraints(max_length=50)]
 String128 = Annotated[str, StringConstraints(max_length=128)]
 String255 = Annotated[str, StringConstraints(max_length=255)]
 String512 = Annotated[str, StringConstraints(max_length=512)]
+String1000 = Annotated[str, StringConstraints(max_length=1000)]
+String16 = Annotated[str, StringConstraints(max_length=16)]
 String2500 = Annotated[str, StringConstraints(max_length=2500)]
 String5500 = Annotated[str, StringConstraints(max_length=5500)]
 
@@ -476,6 +485,128 @@ class TriggerMessageResponse(OcppModel):
     status_info: Optional[StatusInfoType] = None
 
 
+# --- M4 Device Model --------------------------------------------------------------------
+
+
+class ComponentType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse: Optional[EVSEType] = None
+    name: String50
+    instance: Optional[String50] = None
+
+
+class VariableType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    name: String50
+    instance: Optional[String50] = None
+
+
+class GetVariableDataType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    attribute_type: Optional[AttributeEnumType] = None  # schema default Actual
+    component: ComponentType
+    variable: VariableType
+
+
+class GetVariableResultType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    attribute_status_info: Optional[StatusInfoType] = None
+    attribute_status: GetVariableStatusEnumType
+    attribute_type: Optional[AttributeEnumType] = None
+    attribute_value: Optional[String2500] = None
+    component: ComponentType
+    variable: VariableType
+
+
+class GetVariablesRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    get_variable_data: Annotated[list[GetVariableDataType], Field(min_length=1)]
+
+
+class GetVariablesResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    get_variable_result: Annotated[list[GetVariableResultType], Field(min_length=1)]
+
+
+class SetVariableDataType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    attribute_type: Optional[AttributeEnumType] = None  # schema default Actual
+    attribute_value: String1000
+    component: ComponentType
+    variable: VariableType
+
+
+class SetVariableResultType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    attribute_type: Optional[AttributeEnumType] = None
+    attribute_status: SetVariableStatusEnumType
+    attribute_status_info: Optional[StatusInfoType] = None
+    component: ComponentType
+    variable: VariableType
+
+
+class SetVariablesRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    set_variable_data: Annotated[list[SetVariableDataType], Field(min_length=1)]
+
+
+class SetVariablesResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    set_variable_result: Annotated[list[SetVariableResultType], Field(min_length=1)]
+
+
+class GetBaseReportRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    request_id: int
+    report_base: ReportBaseEnumType
+
+
+class GetBaseReportResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: GenericDeviceModelStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class VariableAttributeType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    type: Optional[AttributeEnumType] = None  # schema default Actual
+    value: Optional[String2500] = None
+    mutability: Optional[MutabilityEnumType] = None  # schema default ReadWrite
+    persistent: Optional[bool] = None  # schema default false
+    constant: Optional[bool] = None  # schema default false
+
+
+class VariableCharacteristicsType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    unit: Optional[String16] = None
+    data_type: DataEnumType
+    min_limit: Optional[float] = None
+    max_limit: Optional[float] = None
+    values_list: Optional[String1000] = None
+    supports_monitoring: bool
+
+
+class ReportDataType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    component: ComponentType
+    variable: VariableType
+    variable_attribute: Annotated[list[VariableAttributeType], Field(min_length=1, max_length=4)]
+    variable_characteristics: Optional[VariableCharacteristicsType] = None
+
+
+class NotifyReportRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    request_id: int
+    generated_at: DateTime
+    report_data: Optional[Annotated[list[ReportDataType], Field(min_length=1)]] = None
+    tbc: Optional[bool] = None  # schema default false
+    seq_no: int
+
+
+class NotifyReportResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -493,6 +624,11 @@ ACTIONS = (
     "Reset",
     "ChangeAvailability",
     "TriggerMessage",
+    # M4 Device Model
+    "GetVariables",
+    "SetVariables",
+    "GetBaseReport",
+    "NotifyReport",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

@@ -172,6 +172,27 @@ INVALID = [
     ("ChangeAvailability", "request", {"operationalStatus": "Unavailable"}),
     ("TriggerMessage", "request", {"requestedMessage": "DiagnosticsStatusNotification"}),
     ("TriggerMessage", "response", {"status": "NotSupported"}),
+    # M4 Device Model
+    ("GetVariables", "request", {"getVariableData": []}),
+    ("GetVariables", "request", {"getVariableData": [{"component": {"name": "C"}, "variable": {"name": "V" * 51}}]}),
+    ("GetVariables", "request", {"getVariableData": [{"attributeType": "Minimum", "component": {"name": "C"},
+                                                      "variable": {"name": "V"}}]}),
+    ("GetVariables", "response", {"getVariableResult": [{"attributeStatus": "RebootRequired",
+                                                         "component": {"name": "C"}, "variable": {"name": "V"}}]}),
+    ("SetVariables", "request", {"setVariableData": [{"component": {"name": "C"}, "variable": {"name": "V"}}]}),
+    ("SetVariables", "request", {"setVariableData": [{"attributeValue": "x" * 1001, "component": {"name": "C"},
+                                                      "variable": {"name": "V"}}]}),
+    ("SetVariables", "response", {"setVariableResult": [{"attributeStatus": "Accepted", "component": {"name": "C"}}]}),
+    ("GetBaseReport", "request", {"requestId": 1, "reportBase": "Everything"}),
+    ("GetBaseReport", "request", {"requestId": "1", "reportBase": "FullInventory"}),
+    ("GetBaseReport", "response", {"status": "Scheduled"}),
+    ("NotifyReport", "request", {"requestId": 1, "generatedAt": T1}),
+    ("NotifyReport", "request", {"requestId": 1, "generatedAt": T1, "seqNo": 0, "reportData": []}),
+    ("NotifyReport", "request", {"requestId": 1, "generatedAt": T1, "seqNo": 0, "reportData": [
+        {"component": {"name": "C"}, "variable": {"name": "V"}, "variableAttribute": [{}] * 5}]}),
+    ("NotifyReport", "request", {"requestId": 1, "generatedAt": T1, "seqNo": 0, "reportData": [
+        {"component": {"name": "C"}, "variable": {"name": "V"}, "variableAttribute": [{}],
+         "variableCharacteristics": {"dataType": "passwordString", "supportsMonitoring": False}}]}),
 ]
 
 

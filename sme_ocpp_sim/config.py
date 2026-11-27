@@ -2,6 +2,7 @@
 
 Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
+A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
 ``ev_models`` entry). Not in v0.1: ``template`` (TemplateRegistry, v0.2), the ``evses`` tree (2.0.1) and
 ``behaviors`` (v0.2).
@@ -59,6 +60,58 @@ def _key_value(v: Any) -> str:
     if isinstance(v, str):
         return v
     raise ValueError(f"config key value must be a string, integer or boolean, got {type(v).__name__}")
+
+
+def _variable_value(v: Any) -> str:
+    # variables values may be unquoted (``value: 300`` / ``value: true`` / ``value: 1.5``); keep the wire form.
+    if isinstance(v, float):
+        return repr(v)
+    return _key_value(v)
+
+
+VariableValue = Annotated[str, BeforeValidator(_variable_value)]
+Name50 = Annotated[QuotedStr, Field(min_length=1, max_length=50)]
+
+
+class VariableConfig(StrictModel):
+    """One ``variables:`` entry of a 2.0.1 charger (OCPP 2.0.1 Device Model, ``protocol.v201.device_model``).
+
+    An entry that addresses a standard variable (same component / instance / EVSE / connector / variable /
+    instance) overrides its values; any other entry is a user-defined variable and needs ``data_type``. The
+    entries are checked against the standard set when the whole config is validated (:class:`SimConfig`)."""
+
+    component: Name50
+    component_instance: Optional[Name50] = None
+    evse: Optional[int] = Field(None, ge=1)
+    connector: Optional[int] = Field(None, ge=1)
+    variable: Name50
+    variable_instance: Optional[Name50] = None
+    #: The ``Actual`` attribute value; ``target`` / ``min_set`` / ``max_set`` are the other attributes.
+    value: Optional[VariableValue] = None
+    target: Optional[VariableValue] = None
+    min_set: Optional[VariableValue] = None
+    max_set: Optional[VariableValue] = None
+    # Definition of a user-defined variable (not allowed for a standard one).
+    data_type: Optional[Literal["string", "decimal", "integer", "dateTime", "boolean", "OptionList",
+                                "SequenceList", "MemberList"]] = None
+    mutability: Optional[Literal["ReadOnly", "WriteOnly", "ReadWrite"]] = None
+    unit: Optional[Annotated[QuotedStr, Field(max_length=16)]] = None
+    min_limit: Optional[float] = None
+    max_limit: Optional[float] = None
+    values_list: Optional[List[QuotedStr]] = None
+    reboot_required: Optional[bool] = None
+    persistent: Optional[bool] = None
+    constant: Optional[bool] = None
+    #: Part of a SummaryInventory report.
+    summary: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def _shape(self) -> "VariableConfig":
+        if self.connector is not None and self.evse is None:
+            raise ValueError("variables: connector needs evse")
+        if self.data_type is not None and self.value is None:
+            raise ValueError(f"variables: {self.component}.{self.variable} needs a value")
+        return self
 
 
 class SimulationConfig(StrictModel):
@@ -192,6 +245,8 @@ class ChargerConfig(StrictModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     #: Default for MeterValueSampleInterval when ``config_keys`` does not set it (``None`` = key table default).
     meter_sample_interval_s: Optional[int] = Field(None, ge=0)
+    #: OCPP 2.0.1 Device Model overrides and user-defined variables (2.0.1 chargers only).
+    variables: List[VariableConfig] = Field(default_factory=list)
 
     @field_validator("id_tags")
     @classmethod
@@ -221,10 +276,25 @@ class SimConfig(StrictModel):
             if c.csms_url is None and self.csms_defaults.url is None:
                 raise ValueError(f"charger {c.id!r}: no csms_url and no csms_defaults.url")
             self._check_profile(c)
+            self._check_variables(c)
             if c.session.ev_model not in ev_ids and c.session.ev_model not in PRESETS:
                 raise ValueError(f"charger {c.id!r}: unknown session.ev_model {c.session.ev_model!r} "
                                  f"(not in ev_models nor presets {sorted(PRESETS)})")
         return self
+
+    def _check_variables(self, c: ChargerConfig) -> None:
+        if not c.variables:
+            return
+        version = c.ocpp_version or self.csms_defaults.ocpp_version
+        if version != "2.0.1":
+            raise ValueError(f"charger {c.id!r}: variables is for OCPP 2.0.1 chargers (this one is {version}; "
+                             "use config_keys)")
+        from .protocol.v201.device_model import check_charger  # lazy: config imports no protocol stack
+
+        try:
+            check_charger(c)
+        except ValueError as e:
+            raise ValueError(f"charger {c.id!r}: {e}") from None
 
     def resolve_ev(self, charger: ChargerConfig) -> EvModel:
         """The EV model of ``charger``'s session; an ``ev_models`` entry overrides a preset of the same id."""
