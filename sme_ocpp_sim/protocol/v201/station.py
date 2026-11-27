@@ -218,6 +218,7 @@ class _Evse:
     pending_tag: Optional[str] = None  # authorized, waiting for the cable
     pending_type: IdTokenEnumType = LOCAL_TOKEN_TYPE
     pending_remote_id: Optional[int] = None  # remoteStartId of a RequestStartTransaction token
+    pending_authorizing: bool = False  # AuthorizeRemoteStart: the token is being authorized, a plug waits
     pending_operative: Optional[bool] = None  # ChangeAvailability "Scheduled"
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0
@@ -676,6 +677,7 @@ class Station201(VersionStation):
     @staticmethod
     def _clear_pending(e: _Evse) -> None:
         e.pending_tag, e.pending_type, e.pending_remote_id = None, LOCAL_TOKEN_TYPE, None
+        e.pending_authorizing = False
 
     def _set_operative(self, e: _Evse, operative: bool) -> None:
         e.operative, e.pending_operative = operative, None
@@ -716,6 +718,7 @@ class Station201(VersionStation):
             self._clear_pending(e)
             return
         if self.dm.bool_value(dm.AUTHORIZE_REMOTE_START):
+            e.pending_authorizing = True
             if self.host.spawn(self._remote_authorize(e, remote_start_id)) is None:
                 self._clear_pending(e)  # the session ended meanwhile
             return
@@ -739,6 +742,7 @@ class Station201(VersionStation):
             log.info("%s: EVSE %d remote start token %s not started (%s)", self.cfg.id, e.id, tag, status.value)
             self._clear_pending(e)
             return
+        e.pending_authorizing = False
         self._remote_start_now(e)
 
     def _request_stop(self, req: m.RequestStopTransactionRequest) -> m.RequestStopTransactionResponse:
@@ -937,7 +941,7 @@ class Station201(VersionStation):
         if e.plugged:
             return
         e.plugged = True
-        if e.pending_tag and e.operative and not e.fault:
+        if e.pending_tag and not e.pending_authorizing and e.operative and not e.fault:
             self._start_tx(e, e.pending_tag, T.cable_plugged_in, token_type=e.pending_type,
                            remote_start_id=e.pending_remote_id)
         else:

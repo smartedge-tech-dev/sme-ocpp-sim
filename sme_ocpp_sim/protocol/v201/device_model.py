@@ -254,7 +254,7 @@ def normalize(var: Variable, value: str) -> str:
             number = float(v)
         except ValueError:
             number = math.nan
-        if not math.isfinite(number) or not v.isascii():
+        if not math.isfinite(number) or not v.isascii() or "_" in v:
             raise InvalidValue(REASON_INVALID_VALUE, f"{value!r} is not a decimal number")
         _limits(var, number, "value")
         return v
@@ -532,7 +532,7 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         ro((TX, "TxStopPoint"), DT.member_list, "PowerPathClosed", values_list=TX_POINTS),
         var(STOP_TX_ON_INVALID_ID, DT.boolean, "true"),
         ro((SECURITY, "SecurityProfile"), DT.integer, str(security_profile(cfg.password, url))),
-        ro((SECURITY, "Identity"), DT.string, cfg.id, max_limit=48),
+        ro((SECURITY, "Identity"), DT.string, cfg.id),
         var((SECURITY, "OrganizationName"), DT.string, cfg.vendor, max_limit=50),
         var((SECURITY, "BasicAuthPassword"), DT.string, cfg.password or "", mutability=MU.write_only,
             reboot_required=True, min_limit=16, max_limit=40),

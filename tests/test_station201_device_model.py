@@ -230,3 +230,21 @@ def test_message_attempts_variable_bounds_retries():
         await _online(peer, rt)
     _scenario(body, cfg_kw={"variables": [{"component": "OCPPCommCtrlr", "variable": "MessageAttempts",
                                            "variable_instance": "TransactionEvent", "value": 1}]})
+
+
+def test_authorize_remote_start_a_plug_waits_for_the_authorization():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        gate = peer.gates["Authorize"] = asyncio.Event()
+        await peer.request(CP, call.SetVariables(set_variable_data=[_sv("AuthCtrlr", "AuthorizeRemoteStart", "true")]))
+        r = await peer.request(CP, call.RequestStartTransaction(
+            id_token={"id_token": "BAD", "type": "Central"}, remote_start_id=1, evse_id=1))
+        assert r.status == "Accepted"
+        await _until(lambda: rt.snapshot()["connectors"][0]["pending_tag"] == "BAD")
+        await rt.plug(1)  # while the token is being authorized
+        await asyncio.sleep(0.2)
+        assert not rt.has_transaction(1) and s.transaction_events == []
+        gate.set()
+        await _until(lambda: rt.snapshot()["connectors"][0]["pending_tag"] is None)
+        assert not rt.has_transaction(1) and s.transaction_events == []
+    _scenario(body, {"token_statuses": {"BAD": "Blocked"}}, {"auth_mode": "csms_only"})

@@ -107,6 +107,7 @@ class PeerCS(OcppCP201):
 
     @on("Authorize")
     async def on_authorize(self, id_token, **_):
+        await self.peer.hold("Authorize")
         self.session.authorizes.append(id_token)
         return call_result.Authorize(id_token_info={"status": self.peer.token_status(id_token["id_token"])})
 

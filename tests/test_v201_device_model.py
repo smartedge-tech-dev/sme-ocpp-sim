@@ -209,6 +209,7 @@ def test_set_write_only_and_reboot_required():
     ("VendorCtrlr", "Mode", "Turbo", "NotInValuesList"),
     ("VendorCtrlr", "Limit", "10.5", "OutOfRange"),
     ("VendorCtrlr", "Limit", "nan", "InvalidValue"),
+    ("VendorCtrlr", "Limit", "1_0", "InvalidValue"),
     ("SecurityCtrlr", "OrganizationName", "O" * 51, "OutOfRange"),
 ])
 def test_set_value_validation(component, variable, value, reason):
