@@ -23,7 +23,7 @@ from sme_ocpp_sim.protocol.v201.codec import dump, parse  # noqa: E402
 from sme_ocpp_sim.protocol.v201.schema import ocpp_package_schema_dir  # noqa: E402
 from sme_ocpp_sim.rpc.errors import CallError  # noqa: E402
 
-from v201_fixtures import FIXTURES, ID_TOKEN_MIN, T1, TRANSACTION_EVENT_MIN  # noqa: E402
+from v201_fixtures import CHARGING_PROFILE_MIN, FIXTURES, ID_TOKEN_MIN, T1, TRANSACTION_EVENT_MIN  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 _env_dir = os.environ.get("OCPP201_SCHEMA_DIR")
@@ -153,6 +153,25 @@ INVALID = [
     ("Heartbeat", "request", {"foo": 1}),
     ("Authorize", "response", {"idTokenInfo": {"status": "Accepted", "foo": 1}}),
     ("Heartbeat", "request", {"customData": {"other": 1}}),
+    # M3 remote control
+    ("RequestStartTransaction", "request", {"idToken": ID_TOKEN_MIN}),
+    ("RequestStartTransaction", "request", {"idToken": ID_TOKEN_MIN, "remoteStartId": "1"}),
+    ("RequestStartTransaction", "request", {"idToken": ID_TOKEN_MIN, "remoteStartId": 1,
+                                            "chargingProfile": dict(CHARGING_PROFILE_MIN, chargingSchedule=[])}),
+    ("RequestStartTransaction", "request", {"idToken": ID_TOKEN_MIN, "remoteStartId": 1, "chargingProfile": dict(
+        CHARGING_PROFILE_MIN, chargingSchedule=CHARGING_PROFILE_MIN["chargingSchedule"] * 4)}),
+    ("RequestStartTransaction", "request", {"idToken": ID_TOKEN_MIN, "remoteStartId": 1, "chargingProfile": dict(
+        CHARGING_PROFILE_MIN, chargingProfilePurpose="Tx")}),
+    ("RequestStartTransaction", "response", {"status": "Scheduled"}),
+    ("RequestStopTransaction", "request", {"transactionId": "T" * 37}),
+    ("UnlockConnector", "request", {"evseId": 1}),
+    ("UnlockConnector", "response", {"status": "NotSupported"}),
+    ("Reset", "request", {"type": "Hard"}),
+    ("Reset", "response", {"status": "Accepted", "statusInfo": {"reasonCode": "R" * 21}}),
+    ("ChangeAvailability", "request", {"evse": {"connectorId": 1}, "operationalStatus": "Operative"}),
+    ("ChangeAvailability", "request", {"operationalStatus": "Unavailable"}),
+    ("TriggerMessage", "request", {"requestedMessage": "DiagnosticsStatusNotification"}),
+    ("TriggerMessage", "response", {"status": "NotSupported"}),
 ]
 
 

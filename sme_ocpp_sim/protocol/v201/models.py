@@ -42,20 +42,33 @@ from .enums import (
     AuthorizationStatusEnumType,
     AuthorizeCertificateStatusEnumType,
     BootReasonEnumType,
+    ChangeAvailabilityStatusEnumType,
+    ChargingProfileKindEnumType,
+    ChargingProfilePurposeEnumType,
+    ChargingRateUnitEnumType,
     ChargingStateEnumType,
     ConnectorStatusEnumType,
+    CostKindEnumType,
     DataTransferStatusEnumType,
     HashAlgorithmEnumType,
     IdTokenEnumType,
     LocationEnumType,
     MeasurandEnumType,
     MessageFormatEnumType,
+    MessageTriggerEnumType,
+    OperationalStatusEnumType,
     PhaseEnumType,
     ReadingContextEnumType,
     ReasonEnumType,
+    RecurrencyKindEnumType,
     RegistrationStatusEnumType,
+    RequestStartStopStatusEnumType,
+    ResetEnumType,
+    ResetStatusEnumType,
     TransactionEventEnumType,
+    TriggerMessageStatusEnumType,
     TriggerReasonEnumType,
+    UnlockStatusEnumType,
 )
 
 
@@ -73,6 +86,7 @@ DateTime = Annotated[datetime, PlainSerializer(format_datetime, return_type=str,
 String8 = Annotated[str, StringConstraints(max_length=8)]
 String20 = Annotated[str, StringConstraints(max_length=20)]
 String25 = Annotated[str, StringConstraints(max_length=25)]
+String32 = Annotated[str, StringConstraints(max_length=32)]
 String36 = Annotated[str, StringConstraints(max_length=36)]
 String40 = Annotated[str, StringConstraints(max_length=40)]
 String50 = Annotated[str, StringConstraints(max_length=50)]
@@ -314,6 +328,154 @@ class DataTransferResponse(OcppModel):
     data: Any = None
 
 
+# --- M3 remote control: nested types ---------------------------------------------------------
+# The charging profile of RequestStartTransaction (the same types serve SetChargingProfile in M5).
+
+
+class RelativeTimeIntervalType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    start: int
+    duration: Optional[int] = None
+
+
+class CostType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    cost_kind: CostKindEnumType
+    amount: int
+    amount_multiplier: Optional[int] = None
+
+
+class ConsumptionCostType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    start_value: float
+    cost: Annotated[list[CostType], Field(min_length=1, max_length=3)]
+
+
+class SalesTariffEntryType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    relative_time_interval: RelativeTimeIntervalType
+    e_price_level: Optional[int] = None
+    consumption_cost: Optional[Annotated[list[ConsumptionCostType], Field(min_length=1, max_length=3)]] = None
+
+
+class SalesTariffType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    id: int
+    sales_tariff_description: Optional[String32] = None
+    num_e_price_levels: Optional[int] = None
+    sales_tariff_entry: Annotated[list[SalesTariffEntryType], Field(min_length=1, max_length=1024)]
+
+
+class ChargingSchedulePeriodType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    start_period: int
+    limit: float
+    number_phases: Optional[int] = None
+    phase_to_use: Optional[int] = None
+
+
+class ChargingScheduleType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    id: int
+    start_schedule: Optional[DateTime] = None
+    duration: Optional[int] = None
+    charging_rate_unit: ChargingRateUnitEnumType
+    charging_schedule_period: Annotated[list[ChargingSchedulePeriodType], Field(min_length=1, max_length=1024)]
+    min_charging_rate: Optional[float] = None
+    sales_tariff: Optional[SalesTariffType] = None
+
+
+class ChargingProfileType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    id: int
+    stack_level: int
+    charging_profile_purpose: ChargingProfilePurposeEnumType
+    charging_profile_kind: ChargingProfileKindEnumType
+    recurrency_kind: Optional[RecurrencyKindEnumType] = None
+    valid_from: Optional[DateTime] = None
+    valid_to: Optional[DateTime] = None
+    charging_schedule: Annotated[list[ChargingScheduleType], Field(min_length=1, max_length=3)]
+    transaction_id: Optional[String36] = None
+
+
+# --- M3 remote control: messages (CSMS -> CS) -------------------------------------------------
+
+
+class RequestStartTransactionRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse_id: Optional[int] = None
+    group_id_token: Optional[IdTokenType] = None
+    id_token: IdTokenType
+    remote_start_id: int
+    charging_profile: Optional[ChargingProfileType] = None
+
+
+class RequestStartTransactionResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: RequestStartStopStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+    transaction_id: Optional[String36] = None
+
+
+class RequestStopTransactionRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    transaction_id: String36
+
+
+class RequestStopTransactionResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: RequestStartStopStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class UnlockConnectorRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse_id: int
+    connector_id: int
+
+
+class UnlockConnectorResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: UnlockStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class ResetRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    type: ResetEnumType
+    evse_id: Optional[int] = None
+
+
+class ResetResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: ResetStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class ChangeAvailabilityRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse: Optional[EVSEType] = None
+    operational_status: OperationalStatusEnumType
+
+
+class ChangeAvailabilityResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: ChangeAvailabilityStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class TriggerMessageRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    evse: Optional[EVSEType] = None
+    requested_message: MessageTriggerEnumType
+
+
+class TriggerMessageResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: TriggerMessageStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -324,6 +486,13 @@ ACTIONS = (
     "TransactionEvent",
     "MeterValues",
     "DataTransfer",
+    # M3 remote control (CSMS -> CS)
+    "RequestStartTransaction",
+    "RequestStopTransaction",
+    "UnlockConnector",
+    "Reset",
+    "ChangeAvailability",
+    "TriggerMessage",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

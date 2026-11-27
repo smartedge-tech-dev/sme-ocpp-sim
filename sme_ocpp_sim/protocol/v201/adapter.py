@@ -1,11 +1,14 @@
-"""OCPP 2.0.1 version adapter: 2.0.1 messages <-> station calls (plan §11.2, M2).
+"""OCPP 2.0.1 version adapter: 2.0.1 messages <-> station calls (plan §11.2, M2 / M3).
 
 A separate stack from ``protocol/v16``: it uses only the 2.0.1 models and codec of this package.
 
-Inbound: the only CSMS -> CS action served in M2 is DataTransfer. Every other action has no handler and is
-answered CALLERROR NotImplemented by the RPC layer (remote control is M3, the Device Model M4, smart charging
-M5; ISO 15118 messages such as Get15118EVCertificate / GetCertificateStatus stay NotImplemented in v0.2, plan
-§11.1 Q9).
+Inbound: DataTransfer (M2) and the remote-control actions (M3: RequestStartTransaction,
+RequestStopTransaction, UnlockConnector, Reset, ChangeAvailability, TriggerMessage). DataTransfer goes to the
+station as the version-neutral domain command; a remote-control request is handed to the station as its parsed
+2.0.1 request model and the station answers with the 2.0.1 response model (the semantics are 2.0.1-specific,
+plan §11.2, so there is no domain command in between). Every other action has no handler and is answered
+CALLERROR NotImplemented by the RPC layer (the Device Model is M4, smart charging M5; ISO 15118 messages such as
+Get15118EVCertificate / GetCertificateStatus stay NotImplemented in v0.2, plan §11.1 Q9).
 
 Outbound: the shell's version-neutral messages (BootNotification, Heartbeat, DataTransfer) come in as domain
 events (``protocol.base``); the transaction flow is 2.0.1-specific and is sent as ready-made
@@ -16,10 +19,12 @@ The 1.6-shaped domain transaction calls of :class:`VersionAdapter` (``send_tx_st
 
 Interpretations (not defined by the spec)
 -----------------------------------------
-- BootNotification ``reason`` is ``PowerUp`` for every boot of a session in M2 (a Reset / TriggerMessage reason
-  arrives with M3).
-- An id token presented at the charger is sent as ``type`` ``ISO14443`` (an RFID card); ``Central`` and the
-  other types arrive with RequestStartTransaction (M3).
+- BootNotification ``reason`` (M3): ``RemoteReset`` for the boots after a CSMS Reset until one is accepted,
+  ``Triggered`` for the one boot a TriggerMessage asked for, ``PowerUp`` otherwise (also after a reconnect: the
+  simulator does not model a reboot without a Reset). The station sets it (:attr:`Adapter201.boot_reason`,
+  :meth:`Adapter201.trigger_boot_reason`).
+- An id token presented at the charger is sent as ``type`` ``ISO14443`` (an RFID card); a token of a
+  RequestStartTransaction keeps the ``type`` the CSMS sent.
 - The domain ``DomainStatus`` is projected to ``connectorStatus``: Preparing / Charging / SuspendedEV /
   SuspendedEVSE / Finishing -> ``Occupied``; the finer state travels as ``chargingState`` in TransactionEvent.
 - An ``AuthorizationStatus`` the domain does not know (NoCredit, NotAllowedTypeEVSE, NotAtThisLocation,
@@ -56,6 +61,10 @@ _CONNECTOR_STATUS: Dict[d.DomainStatus, ConnectorStatusEnumType] = {
     d.DomainStatus.UNAVAILABLE: ConnectorStatusEnumType.unavailable,
     d.DomainStatus.FAULTED: ConnectorStatusEnumType.faulted,
 }
+
+#: CSMS -> CS remote-control actions (M3) answered by the station with 2.0.1 response models.
+REMOTE_ACTIONS = ("RequestStartTransaction", "RequestStopTransaction", "UnlockConnector", "Reset",
+                  "ChangeAvailability", "TriggerMessage")
 
 _DOMAIN_AUTH = {a.value for a in (d.AuthResult.ACCEPTED, d.AuthResult.BLOCKED, d.AuthResult.EXPIRED,
                                   d.AuthResult.INVALID, d.AuthResult.CONCURRENT_TX)}
@@ -99,6 +108,16 @@ class Adapter201(d.VersionAdapter):
     error_codes = OCPP201_ERRORS
     config_keys = ()  # 2.0.1 has a Device Model instead of a key table (M4)
 
+    def __init__(self, *, strict: bool = False) -> None:
+        super().__init__(strict=strict)
+        #: ``reason`` of every BootNotification (see the module docstring).
+        self.boot_reason = BootReasonEnumType.power_up
+        self._boot_reason_once: Optional[BootReasonEnumType] = None
+
+    def trigger_boot_reason(self, reason: BootReasonEnumType) -> None:
+        """Use ``reason`` for the next BootNotification only."""
+        self._boot_reason_once = reason
+
     def _parse(self, action: str, payload: Any, kind: str = "request") -> Any:
         model, ignored = parse(action, payload, kind, strict=self.strict)  # type: ignore[arg-type]
         if ignored:
@@ -108,8 +127,17 @@ class Adapter201(d.VersionAdapter):
     # ------------------------------------------------------------------ inbound
 
     def handlers(self, runtime: d.CommandSink) -> Dict[str, d.Handler]:
-        table = {"DataTransfer": self._data_transfer}
+        table: Dict[str, Any] = {"DataTransfer": self._data_transfer}
+        for action in REMOTE_ACTIONS:
+            table[action] = functools.partial(self._remote, action)
         return {a: functools.partial(h, runtime) for a, h in table.items()}
+
+    async def _remote(self, action: str, runtime: d.CommandSink, payload: dict) -> dict:
+        """A remote-control CALL: the station gets the request model and returns the response model."""
+        res = await runtime.handle(self._parse(action, payload))
+        if not isinstance(res, m.RESPONSES[action]):
+            raise TypeError(f"{action}: the station answered {type(res).__name__}")
+        return dump(res)
 
     async def _data_transfer(self, runtime: d.CommandSink, payload: dict) -> dict:
         req: m.DataTransferRequest = self._parse("DataTransfer", payload)
@@ -128,8 +156,9 @@ class Adapter201(d.VersionAdapter):
     async def send_booting(self, ev: d.Booting) -> d.BootResult:
         cs = m.ChargingStationType(vendor_name=ev.vendor, model=ev.model, serial_number=ev.serial,
                                    firmware_version=ev.firmware)
+        reason, self._boot_reason_once = self._boot_reason_once or self.boot_reason, None
         res: m.BootNotificationResponse = await self._send(
-            "BootNotification", m.BootNotificationRequest(charging_station=cs, reason=BootReasonEnumType.power_up))
+            "BootNotification", m.BootNotificationRequest(charging_station=cs, reason=reason))
         return d.BootResult(d.BootStatus(res.status.value), res.interval, res.current_time)
 
     async def send_heartbeat(self, ev: d.Heartbeat) -> Optional[datetime]:

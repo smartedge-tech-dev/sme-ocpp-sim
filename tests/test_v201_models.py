@@ -23,7 +23,9 @@ CASES = [
 
 def test_registry_holds_the_core_messages():
     assert m.ACTIONS == ("BootNotification", "Heartbeat", "StatusNotification", "Authorize",
-                         "TransactionEvent", "MeterValues", "DataTransfer")
+                         "TransactionEvent", "MeterValues", "DataTransfer", "RequestStartTransaction",
+                         "RequestStopTransaction", "UnlockConnector", "Reset", "ChangeAvailability",
+                         "TriggerMessage")
     assert set(FIXTURES) == {(a, k) for a in m.ACTIONS for k in ("request", "response")}
 
 

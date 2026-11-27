@@ -12,7 +12,8 @@ from sme_ocpp_sim.charging.power import AcSupply
 from sme_ocpp_sim.config import ChargerConfig
 from sme_ocpp_sim.protocol import base as d
 from sme_ocpp_sim.protocol.v201 import station as st
-from sme_ocpp_sim.protocol.v201.adapter import Adapter201, auth_result, connector_status
+from sme_ocpp_sim.protocol.v201 import models as m
+from sme_ocpp_sim.protocol.v201.adapter import REMOTE_ACTIONS, Adapter201, auth_result, connector_status
 from sme_ocpp_sim.protocol.v201.enums import AuthorizationStatusEnumType as Auth
 from sme_ocpp_sim.protocol.v201.schema import SchemaValidator, ocpp_package_schema_dir
 from sme_ocpp_sim.protocol.v201.station import Station201
@@ -52,12 +53,13 @@ class _Sink:
         return self.result
 
 
-def test_only_data_transfer_is_served_inbound():
+def test_data_transfer_and_remote_control_are_served_inbound():
     a = Adapter201()
     assert a.error_codes is OCPP201_ERRORS and a.subprotocol == "ocpp2.0.1"
     sink = _Sink(d.DataTransferResult(d.DataTransferStatus.ACCEPTED, "r"))
     handlers = a.handlers(sink)
-    assert set(handlers) == {"DataTransfer"}  # every other action: NotImplemented by the RPC layer
+    # every other action: NotImplemented by the RPC layer
+    assert set(handlers) == {"DataTransfer", *REMOTE_ACTIONS}
     out = asyncio.run(handlers["DataTransfer"]({"vendorId": "v", "messageId": "m", "data": {"k": [1]}}))
     assert out == {"status": "Accepted", "data": "r"}
     assert sink.cmds == [d.DataTransfer("v", "m", {"k": [1]})]
@@ -201,3 +203,33 @@ def test_unknown_fault_code_changes_nothing():
         ended = _queued(s)[-1]
         assert ended.transaction_info.stopped_reason.value == "PowerLoss" and not s.has_transaction(1)
     asyncio.run(main())
+
+
+def test_remote_control_hands_the_request_model_over_and_dumps_the_answer():
+    sink = _Sink(m.ResetResponse(status="Scheduled"))
+    handlers = Adapter201().handlers(sink)
+    assert asyncio.run(handlers["Reset"]({"type": "OnIdle"})) == {"status": "Scheduled"}
+    assert sink.cmds == [m.ResetRequest(type="OnIdle")]
+    with pytest.raises(CallError) as ei:  # parsed before the station sees it
+        asyncio.run(handlers["Reset"]({"type": "Hard"}))
+    assert ei.value.code == "PropertyConstraintViolation" and len(sink.cmds) == 1
+    with pytest.raises(TypeError, match="UnlockConnector: the station answered ResetResponse"):
+        asyncio.run(handlers["UnlockConnector"]({"evseId": 1, "connectorId": 1}))
+
+
+def test_boot_reason_is_sticky_or_once():
+    a = Adapter201()
+    sent = []
+
+    async def call(action, payload):
+        sent.append(payload["reason"])
+        return {"currentTime": "2026-11-27T00:00:00.000Z", "interval": 10, "status": "Accepted"}
+
+    a.bind(call)
+    boot = d.Booting("V", "M")
+    a.trigger_boot_reason(m.BootReasonEnumType.triggered)
+    asyncio.run(a.send_booting(boot))
+    asyncio.run(a.send_booting(boot))
+    a.boot_reason = m.BootReasonEnumType.remote_reset
+    asyncio.run(a.send_booting(boot))
+    assert sent == ["Triggered", "PowerUp", "RemoteReset"]

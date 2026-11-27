@@ -2,8 +2,8 @@
 
 Wire values are exactly those of the OCPP 2.0.1 JSON schemas (checked by
 ``tests/test_v201_schema_conformance.py``); class names are the spec data type names
-(``...EnumType``). Only the enumerations of the core messages in ``models.py`` are here;
-later milestones add the ones their messages need.
+(``...EnumType``). Only the enumerations of the messages in ``models.py`` are here (M2 core, M3 remote
+control); later milestones add the ones their messages need.
 """
 
 from __future__ import annotations
@@ -209,3 +209,89 @@ class TriggerReasonEnumType(str, Enum):
     abnormal_condition = "AbnormalCondition"
     signed_data_received = "SignedDataReceived"
     reset_command = "ResetCommand"
+
+
+# --- M3 remote control -------------------------------------------------------------------
+
+
+class ChangeAvailabilityStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    scheduled = "Scheduled"
+
+
+class ChargingProfileKindEnumType(str, Enum):
+    absolute = "Absolute"
+    recurring = "Recurring"
+    relative = "Relative"
+
+
+class ChargingProfilePurposeEnumType(str, Enum):
+    charging_station_external_constraints = "ChargingStationExternalConstraints"
+    charging_station_max_profile = "ChargingStationMaxProfile"
+    tx_default_profile = "TxDefaultProfile"
+    tx_profile = "TxProfile"
+
+
+class ChargingRateUnitEnumType(str, Enum):
+    w = "W"
+    a = "A"
+
+
+class CostKindEnumType(str, Enum):
+    carbon_dioxide_emission = "CarbonDioxideEmission"
+    relative_price_percentage = "RelativePricePercentage"
+    renewable_generation_percentage = "RenewableGenerationPercentage"
+
+
+class MessageTriggerEnumType(str, Enum):
+    boot_notification = "BootNotification"
+    log_status_notification = "LogStatusNotification"
+    firmware_status_notification = "FirmwareStatusNotification"
+    heartbeat = "Heartbeat"
+    meter_values = "MeterValues"
+    sign_charging_station_certificate = "SignChargingStationCertificate"
+    sign_v2g_certificate = "SignV2GCertificate"
+    status_notification = "StatusNotification"
+    transaction_event = "TransactionEvent"
+    sign_combined_certificate = "SignCombinedCertificate"
+    publish_firmware_status_notification = "PublishFirmwareStatusNotification"
+
+
+class OperationalStatusEnumType(str, Enum):
+    inoperative = "Inoperative"
+    operative = "Operative"
+
+
+class RecurrencyKindEnumType(str, Enum):
+    daily = "Daily"
+    weekly = "Weekly"
+
+
+class RequestStartStopStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+
+
+class ResetEnumType(str, Enum):
+    immediate = "Immediate"
+    on_idle = "OnIdle"
+
+
+class ResetStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    scheduled = "Scheduled"
+
+
+class TriggerMessageStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    not_implemented = "NotImplemented"
+
+
+class UnlockStatusEnumType(str, Enum):
+    unlocked = "Unlocked"
+    unlock_failed = "UnlockFailed"
+    ongoing_authorized_transaction = "OngoingAuthorizedTransaction"
+    unknown_connector = "UnknownConnector"
