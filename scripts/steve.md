@@ -42,3 +42,18 @@ Start -> MeterValues -> Stop (rows in the SteVe DB) / GetConfiguration / ChangeC
 RemoteStart / Reset Soft / SetChargingProfile / GetCompositeSchedule / ClearChargingProfile all passed;
 unregistered id and wrong subprotocol rejected at the handshake. Not exercised: RemoteStop
 (no open transaction at that point), Security Profile 1 against SteVe.
+
+v0.1.0 follow-up run (2026-11-28, SteVe 3.15.0, main @ 6228de9; issue #28): the two gaps above now pass.
+- RemoteStopTransaction: a second transaction is started by swipe, then stopped from the web UI
+  (`/manager/operations/v1.6/RemoteStopTransaction`, transactionId from the DB). The CP receives the call,
+  sends StopTransaction, and SteVe stores `stop_event_actor=station`, `stop_reason=Remote`.
+- Security Profile 1: the charge box is created through the web UI (`/manager/chargepoints/add/single`,
+  securityProfile `Profile_1`, registrationStatus `ACCEPTED`, authPassword 16-20 chars, empty `address.*`
+  fields - omitting them gives a NullPointerException page; SteVe stores a bcrypt hash). Right password ->
+  online; wrong password -> HTTP 401, shown by the simulator as last_error `unauthorized`.
+  The create step is not idempotent (a re-run fails on the duplicate id; the existing row keeps working).
+- SteVe 3.15.0 schema notes for the script: `transaction` is a view over `transaction_start` / `transaction_stop`
+  (open = `stop_value IS NULL`; stop an orphan with an INSERT into `transaction_stop`), transactions join
+  `evse` (not `connector`). The script closes orphans of the test charge box at start, since an
+  aborted run leaves a transaction that makes the next swipe answer ConcurrentTx.
+- No simulator bug found. The script itself needed `rt.station.store` (was `rt.store`) for current main.
