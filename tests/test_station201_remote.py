@@ -170,7 +170,8 @@ def test_reset_immediate_reboots_with_remote_reset_reason():
         s2 = await _online(peer, rt, 1)
         assert [b["reason"] for b in s.boot_requests] == ["PowerUp"]
         assert [b["reason"] for b in s2.boot_requests] == ["RemoteReset"]
-        assert rt.station.adapter.boot_reason.value == "PowerUp"  # accepted: the next boot is a plain one
+        # Accepted: the next boot is a plain one (set once the state report after the boot went out).
+        await _until(lambda: rt.station.adapter.boot_reason.value == "PowerUp")
     _scenario(body)
 
 

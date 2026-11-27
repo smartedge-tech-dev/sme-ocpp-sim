@@ -124,5 +124,50 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `session.initial_soc` | `30.0` | 各トランザクション開始時の SoC（%） |
 | `session.target_soc` | `90.0` | この SoC に達すると EV は電力を受け付けなくなります（SuspendedEV） |
 | `meter_sample_interval_s` | キーの既定値 | `config_keys` で指定していない場合の `MeterValueSampleInterval` の既定値 |
+| `variables` | `[]` | OCPP 2.0.1 の充電器のみ: Device Model の値の上書きとユーザー定義変数（下記） |
+
+### variables（OCPP 2.0.1） { #variables }
+
+2.0.1 の充電器は `config_keys` の代わりに Device Model を持ちます。シミュレーターが動作に使う最小限の標準変数を
+備えています。例: `OCPPCommCtrlr.HeartbeatInterval`、`SampledDataCtrlr.TxUpdatedInterval`（初期値は
+`meter_sample_interval_s`、未指定なら 60）と `TxUpdatedMeasurands`、`AuthCtrlr.AuthorizeRemoteStart`、
+`TxCtrlr.StopTxOnInvalidId`、`OCPPCommCtrlr.MessageAttempts[TransactionEvent]`、
+`DeviceDataCtrlr.ItemsPerMessage[GetReport|GetVariables|SetVariables]`、`auth_mode` を反映する読み取り専用の変数
+（`AuthCtrlr.LocalPreAuthorize` など）、`SecurityCtrlr.SecurityProfile` / `Identity`、EVSE ごとの
+`EVSE.AvailabilityState`。CSMS は GetVariables / SetVariables で読み書きし、GetBaseReport で一覧を取得します。
+`GET /api/chargers/{id}/configuration` では `variables` に表示されます。SetVariables による変更は YAML
+ファイルには書き戻されません。
+
+`variables` の各エントリは 1 つの変数を指します: `component`、任意の `component_instance`・`evse`・`connector`、
+`variable`、任意の `variable_instance`。
+
+- 標準変数を指すエントリは、その `value`（`Actual` 属性）を設定します。他の設定から導出される変数
+  （`auth_mode`、充電器 ID、CSMS URL、EVSE の状態、トランザクションの開始 / 終了点）は設定できません。
+- それ以外のエントリはユーザー定義変数で、`data_type`（`string`、`decimal`、`integer`、`dateTime`、`boolean`、
+  `OptionList`、`SequenceList`、`MemberList`）と `value` が必要です。任意: `mutability`（既定 `ReadWrite`、
+  `ReadOnly`、`WriteOnly`）、`unit`、`min_limit` / `max_limit`（数値の範囲。`string` では長さ）、`values_list`
+  （リスト型では必須）、`target` / `min_set` / `max_set`（追加の属性）、`reboot_required`（SetVariables が
+  `RebootRequired` を返す）、`persistent`、`constant`、`summary`（SummaryInventory レポートに含める）。
+
+```yaml
+chargers:
+  - id: "CP201"
+    ocpp_version: "2.0.1"
+    variables:
+      - component: OCPPCommCtrlr
+        variable: HeartbeatInterval
+        value: 120
+      - component: DeviceDataCtrlr
+        variable: ItemsPerMessage
+        variable_instance: GetReport
+        value: 10
+      - component: VendorCtrlr
+        variable: ChargeMode
+        data_type: OptionList
+        values_list: [Eco, Fast]
+        value: Eco
+```
+
+値は設定の読み込み時に検証されます（型、範囲、`values_list`）。1.6 の充電器に `variables` を書くとエラーです。
 
 v0.1 の対象外: 充電器テンプレート、2.0.1 の `evses` ツリー、`behaviors`（v0.2 で対応予定）。

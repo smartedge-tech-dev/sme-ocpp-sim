@@ -102,6 +102,8 @@ class ChargerRuntime:
         self._reset_done = asyncio.Event()
         self._abort = asyncio.Event()  # a session task failed unexpectedly: drop the connection
 
+        #: The CSMS url this charger connects to (before the station: a station may read it).
+        self.csms_url = csms_url
         station_cls = station or get_station_class(ocpp_version)
         self.station: VersionStation = station_cls(self, strict=strict)
         self.adapter: d.VersionAdapter = self.station.adapter
@@ -427,6 +429,10 @@ class ChargerRuntime:
     def configuration(self) -> List[d.ConfigEntry]:
         """Run-time configuration keys as the CSMS would read them."""
         return self.station.configuration()
+
+    def variables(self) -> Optional[List[Dict[str, Any]]]:
+        """Run-time Device Model variables of a version that has one (2.0.1), else ``None``."""
+        return self.station.variables()
 
     async def send_data_transfer(self, vendor_id: str, message_id: Optional[str] = None,
                                  data: Optional[str] = None) -> d.DataTransferResult:

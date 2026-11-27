@@ -2,12 +2,14 @@
 
 A separate stack from ``protocol/v16``: it uses only the 2.0.1 models and codec of this package.
 
-Inbound: DataTransfer (M2) and the remote-control actions (M3: RequestStartTransaction,
-RequestStopTransaction, UnlockConnector, Reset, ChangeAvailability, TriggerMessage). DataTransfer goes to the
+Inbound: DataTransfer (M2), the remote-control actions (M3: RequestStartTransaction,
+RequestStopTransaction, UnlockConnector, Reset, ChangeAvailability, TriggerMessage) and the Device Model
+actions (M4: GetVariables, SetVariables, GetBaseReport; the NotifyReport parts go out with
+:meth:`Adapter201.send_notify_report`). DataTransfer goes to the
 station as the version-neutral domain command; a remote-control request is handed to the station as its parsed
 2.0.1 request model and the station answers with the 2.0.1 response model (the semantics are 2.0.1-specific,
 plan §11.2, so there is no domain command in between). Every other action has no handler and is answered
-CALLERROR NotImplemented by the RPC layer (the Device Model is M4, smart charging M5; ISO 15118 messages such as
+CALLERROR NotImplemented by the RPC layer (smart charging is M5; ISO 15118 messages such as
 Get15118EVCertificate / GetCertificateStatus stay NotImplemented in v0.2, plan §11.1 Q9).
 
 Outbound: the shell's version-neutral messages (BootNotification, Heartbeat, DataTransfer) come in as domain
@@ -64,7 +66,9 @@ _CONNECTOR_STATUS: Dict[d.DomainStatus, ConnectorStatusEnumType] = {
 
 #: CSMS -> CS remote-control actions (M3) answered by the station with 2.0.1 response models.
 REMOTE_ACTIONS = ("RequestStartTransaction", "RequestStopTransaction", "UnlockConnector", "Reset",
-                  "ChangeAvailability", "TriggerMessage")
+                  "ChangeAvailability", "TriggerMessage",
+                  # M4 Device Model, answered the same way
+                  "GetVariables", "SetVariables", "GetBaseReport")
 
 _DOMAIN_AUTH = {a.value for a in (d.AuthResult.ACCEPTED, d.AuthResult.BLOCKED, d.AuthResult.EXPIRED,
                                   d.AuthResult.INVALID, d.AuthResult.CONCURRENT_TX)}
@@ -106,7 +110,7 @@ class Adapter201(d.VersionAdapter):
     version = "2.0.1"
     subprotocol = "ocpp2.0.1"
     error_codes = OCPP201_ERRORS
-    config_keys = ()  # 2.0.1 has a Device Model instead of a key table (M4)
+    config_keys = ()  # 2.0.1 has a Device Model instead of a key table (``device_model``)
 
     def __init__(self, *, strict: bool = False) -> None:
         super().__init__(strict=strict)
@@ -182,6 +186,10 @@ class Adapter201(d.VersionAdapter):
         """MeterValues outside the transaction flow (2.0.1 sends transaction readings in TransactionEvent)."""
         await self._send("MeterValues", m.MeterValuesRequest(
             evse_id=ev.evse_id, meter_value=[meter_value(ev.timestamp, ev.samples, ev.context)]))
+
+    async def send_notify_report(self, req: m.NotifyReportRequest) -> m.NotifyReportResponse:
+        """One NotifyReport part of a GetBaseReport (built by ``Station201``)."""
+        return await self._send("NotifyReport", req)
 
     async def send_data_transfer(self, cmd: d.DataTransfer) -> d.DataTransferResult:
         res: m.DataTransferResponse = await self._send(

@@ -32,6 +32,8 @@ class StationHost(Protocol):
     call_timeout: float
     #: Registration status of the last (not triggered) BootNotification, ``None`` before the first answer.
     registration: Optional[str]
+    #: The CSMS url the shell connects to.
+    csms_url: str
 
     @property
     def connected(self) -> bool: ...
@@ -141,6 +143,10 @@ class VersionStation(ABC):
     @abstractmethod
     def configuration(self) -> List[ConfigEntry]:
         """Run-time configuration as the CSMS would read it (1.6: GetConfiguration without keys)."""
+
+    def variables(self) -> Optional[List[Dict[str, Any]]]:
+        """Run-time Device Model variables (JSON view) of a version that has one (2.0.1); ``None`` = none."""
+        return None
 
     # ------------------------------------------------------------------ operator (engine / Web API)
 

@@ -1,6 +1,6 @@
-"""OCPP 2.0.1 station: connector states, authorization, the TransactionEvent flow (plan §11.2, M2) and the
+"""OCPP 2.0.1 station: connector states, authorization, the TransactionEvent flow (plan §11.2, M2), the
 CSMS remote control (M3: RequestStartTransaction / RequestStopTransaction / UnlockConnector / Reset /
-ChangeAvailability / TriggerMessage).
+ChangeAvailability / TriggerMessage) and the Device Model (M4: GetVariables / SetVariables / GetBaseReport).
 
 One :class:`Station201` per 2.0.1 charging station, hosted by the shared shell ``runtime.charger.ChargerRuntime``
 through :class:`~sme_ocpp_sim.protocol.station.StationHost`. It is a separate stack from ``protocol/v16``: it uses
@@ -59,16 +59,28 @@ Interpretations (not defined by the spec)
   ``csms_only`` answers ``Offline`` then.
 - The operator API returns once ``Started`` is queued (2.0.1 needs no CSMS answer to know the transaction id); a
   later refusal of the token in the answer ends the transaction (see above).
-- Periodic ``Updated`` interval: ``meter_sample_interval_s`` of the charger (0 = none), default
-  :data:`DEFAULT_TX_UPDATED_INTERVAL_S`; readings: :data:`TX_UPDATED_MEASURANDS`. The Device Model variables
-  (SampledDataCtrlr, OCPPCommCtrlr, ...) arrive with M4; ``config_keys`` (the 1.6 key table) is not used.
+- Device Model (M4, :mod:`.device_model`): the station reads its settings from the standard variables, so a
+  SetVariables change applies at once: HeartbeatInterval (also set by an accepted BootNotification),
+  SampledDataCtrlr.TxUpdatedInterval (periodic ``Updated``, 0 = none; initial value ``meter_sample_interval_s``
+  of the charger; a change applies after the current wait, and an empty TxUpdatedMeasurands sends no periodic
+  ``Updated``), Tx{Started,Updated,Ended}Measurands (readings of the TransactionEvents), OCPPCommCtrlr
+  MessageAttempts / MessageAttemptInterval [TransactionEvent] (the retry policy below), AuthCtrlr
+  AuthorizeRemoteStart and TxCtrlr.StopTxOnInvalidId. ``config_keys`` (the 1.6 key table) is not used.
+  GetVariables / SetVariables with more items than DeviceDataCtrlr.ItemsPerMessage [GetVariables /
+  SetVariables] are answered CALLERROR ``OccurenceConstraintViolation``. GetBaseReport is answered first; the
+  NotifyReport parts (ItemsPerMessage [GetReport] ``reportData`` each, ``seqNo`` from 0, ``tbc`` on all but the
+  last, one ``generatedAt``) follow, also while the boot is Pending (they answer a CSMS request), and stop at the
+  first part that fails. A report holds the values at the time of the request.
+- Triggered / operator MeterValues (outside the transaction flow) report :data:`TX_UPDATED_MEASURANDS`, not the
+  TxUpdatedMeasurands variable.
 - Operator fault codes are the fault-type values of ``ReasonEnumType`` (:attr:`Station201.fault_codes`): a 2.0.1
   StatusNotification has no error code, so the code is only the ``stoppedReason`` of an interrupted transaction
-  (NotifyEvent reporting arrives with the Device Model, M4).
+  (NotifyEvent is not sent).
 - Smart charging is M5: no charging profiles are installed and no limit applies (the hardware maximum only).
-- RequestStartTransaction (M3): the CSMS has authorized the token, so it is not authorized again
-  (AuthorizeRemoteStart = false until the Device Model, M4). Without ``evseId`` the first startable EVSE with a
-  plugged cable is used, else the first startable one. A faulted, inoperative or busy EVSE (or none free) is
+- RequestStartTransaction (M3): with AuthorizeRemoteStart ``false`` (the default) the CSMS has authorized the
+  token, so it is not authorized again; with ``true`` it is authorized like a presented token (``auth_mode``)
+  after the answer and dropped from the EVSE when that is not ``Accepted``. Without ``evseId`` the first
+  startable EVSE with a plugged cable is used, else the first startable one. A faulted, inoperative or busy EVSE (or none free) is
   ``Rejected``; so is a ``chargingProfile`` that is not a ``TxProfile`` or that carries a ``transactionId``. An
   accepted ``chargingProfile`` is not applied before smart charging (M5). An accepted token waits on an unplugged
   EVSE like a local one; the transaction starts at once when the cable is plugged (``triggerReason``
@@ -126,21 +138,18 @@ from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
 from ..station import StationHost, VersionStation
+from . import device_model as dm
 from . import models as m
 from .adapter import LOCAL_TOKEN_TYPE, Adapter201, connector_status, id_token, meter_value
 from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingProfilePurposeEnumType,
-                    ChargingStateEnumType, ConnectorStatusEnumType, IdTokenEnumType, MessageTriggerEnumType,
-                    OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType,
+                    ChargingStateEnumType, ConnectorStatusEnumType, GenericDeviceModelStatusEnumType,
+                    IdTokenEnumType, MessageTriggerEnumType, OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType,
                     RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
                     TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
 
 log = logging.getLogger(__name__)
 
-ENERGY = "Energy.Active.Import.Register"
-POWER = "Power.Active.Import"
-CURRENT = "Current.Import"
-VOLTAGE = "Voltage"
-SOC = "SoC"
+ENERGY, POWER, CURRENT, VOLTAGE, SOC = dm.ENERGY, dm.POWER, dm.CURRENT, dm.VOLTAGE, dm.SOC
 POWER_DECIMALS = 1
 CURRENT_DECIMALS = 3
 SOC_DECIMALS = 1
@@ -149,14 +158,8 @@ SOC_LOCATION = "EV"
 
 #: Connector id of every EVSE (one connector per EVSE, plan §11.1 Q11).
 CONNECTOR_ID = 1
-#: Heartbeat interval until a BootNotification answer sets one.
-DEFAULT_HEARTBEAT_S = 300
-DEFAULT_TX_UPDATED_INTERVAL_S = 60
-TX_UPDATED_MEASURANDS: Tuple[str, ...] = (ENERGY, POWER)
-TX_ENDED_MEASURANDS: Tuple[str, ...] = (ENERGY,)
-#: Retry policy of a TransactionEvent the CSMS failed to process (OCPPCommCtrlr.MessageAttempts* in M4).
-TX_MESSAGE_ATTEMPTS = 3
-TX_MESSAGE_RETRY_INTERVAL_S = 10
+#: Readings of a triggered / operator MeterValues (outside the transaction flow).
+TX_UPDATED_MEASURANDS: Tuple[str, ...] = dm.DEFAULT_TX_UPDATED
 #: Maximum number of queued periodic TransactionEvent Updated; the oldest is dropped first.
 MAX_TX_QUEUE = 1000
 
@@ -250,10 +253,12 @@ class Station201(VersionStation):
         self.ev, self.supply = host.ev, host.supply
         self._adapter = Adapter201(strict=strict)
         self.evses: Dict[int, _Evse] = {i: _Evse(i) for i in range(1, cfg.connectors + 1)}
-        interval = cfg.meter_sample_interval_s
-        self.tx_updated_interval_s = DEFAULT_TX_UPDATED_INTERVAL_S if interval is None else interval
-        self.heartbeat_interval_s = DEFAULT_HEARTBEAT_S
+        #: The Device Model (M4); ``ValueError`` when the charger's ``variables`` do not apply.
+        self.dm = dm.build(cfg, message_timeout_s=host.call_timeout, url=getattr(host, "csms_url", "") or "",
+                           availability=lambda i: connector_status(self.evses[i].status).value)
         self._hb_wake = asyncio.Event()
+        self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
+        self.dm.on_change(dm.TX_UPDATED_INTERVAL, lambda v: self._restart_meters())
         #: (vendorId, messageId or None) -> answer for inbound DataTransfer; default UnknownVendorId.
         self.data_transfer_rules: Dict[Tuple[str, Optional[str]], d.DataTransferResult] = {}
         self._outq: Deque[_Out] = deque()
@@ -272,6 +277,9 @@ class Station201(VersionStation):
             m.ResetRequest: self._reset,
             m.ChangeAvailabilityRequest: self._change_availability,
             m.TriggerMessageRequest: self._trigger,
+            m.GetVariablesRequest: self._get_variables,
+            m.SetVariablesRequest: self._set_variables,
+            m.GetBaseReportRequest: self._get_base_report,
         }
 
     # ================================================================== session (called by the shell)
@@ -307,12 +315,25 @@ class Station201(VersionStation):
         for item in [x for x in self._outq if not x.transactional]:
             self._outq.remove(item)
 
+    @property
+    def heartbeat_interval_s(self) -> int:
+        """OCPPCommCtrlr.HeartbeatInterval (0 = no heartbeats)."""
+        return self.dm.int_value(dm.HEARTBEAT_INTERVAL)
+
+    @property
+    def tx_updated_interval_s(self) -> int:
+        """SampledDataCtrlr.TxUpdatedInterval (0 = no periodic Updated)."""
+        return self.dm.int_value(dm.TX_UPDATED_INTERVAL)
+
     async def wait_heartbeat(self) -> bool:
         interval = self.heartbeat_interval_s
         return await wait_event(self._hb_wake, interval if interval > 0 else None)
 
     def set_heartbeat_interval(self, seconds: int) -> None:
-        self.heartbeat_interval_s = seconds
+        self.dm.put(dm.HEARTBEAT_INTERVAL, str(seconds))
+        self._wake_heartbeat()
+
+    def _wake_heartbeat(self) -> None:
         self._hb_wake.set()  # broadcast to the waiting loop, then re-arm
         self._hb_wake = asyncio.Event()
 
@@ -339,7 +360,10 @@ class Station201(VersionStation):
         }
 
     def configuration(self) -> List[d.ConfigEntry]:
-        return []  # the Device Model arrives with M4
+        return []  # no 1.6 configuration keys: see variables()
+
+    def variables(self) -> List[Dict[str, Any]]:
+        return self.dm.view()
 
     # ================================================================== outbox
 
@@ -362,7 +386,8 @@ class Station201(VersionStation):
                 self._outq_busy = item
                 try:
                     if item.failures:
-                        await asyncio.sleep(TX_MESSAGE_RETRY_INTERVAL_S * item.failures)
+                        await asyncio.sleep(self.dm.int_value(dm.MESSAGE_ATTEMPT_INTERVAL, dm.INSTANCE_TX_EVENT)
+                                            * item.failures)
                     delivery, value = await self._deliver(item)
                 finally:
                     self._outq_busy = None
@@ -390,12 +415,12 @@ class Station201(VersionStation):
                 log.warning("%s: %s failed: %r", self.cfg.id, item.what, e)
                 return _Delivery.DONE, None
             item.failures += 1
-            if item.failures >= TX_MESSAGE_ATTEMPTS:
+            attempts = self.dm.int_value(dm.MESSAGE_ATTEMPTS, dm.INSTANCE_TX_EVENT)
+            if item.failures >= attempts:
                 log.warning("%s: %s discarded after %d failed attempts: %r", self.cfg.id, item.what,
                             item.failures, e)
                 return _Delivery.DONE, None
-            log.warning("%s: %s failed (%d/%d): %r", self.cfg.id, item.what, item.failures,
-                        TX_MESSAGE_ATTEMPTS, e)
+            log.warning("%s: %s failed (%d/%d): %r", self.cfg.id, item.what, item.failures, attempts, e)
             return _Delivery.RETRY, None
         except Exception:  # noqa: BLE001 - a local bug, not the CSMS: drop the item, keep the worker alive
             log.exception("%s: %s dropped (internal error)", self.cfg.id, item.what)
@@ -413,12 +438,12 @@ class Station201(VersionStation):
             return False
 
     def _on_tx_answer(self, item: _Out, res: m.TransactionEventResponse) -> None:
-        """A CSMS that does not accept the token of a running transaction ends it (StopTxOnInvalidId)."""
+        """A CSMS that does not accept the token of a running transaction ends it (TxCtrlr.StopTxOnInvalidId)."""
         e, tx, req = item.evse, item.tx, item.req
         if res.id_token_info is None or e is None or tx is None or req is None or req.id_token is None:
             return
         status = res.id_token_info.status.value
-        if status != A.ACCEPTED.value and e.tx is tx:
+        if status != A.ACCEPTED.value and e.tx is tx and self.dm.bool_value(dm.STOP_TX_ON_INVALID_ID):
             log.info("%s: EVSE %d token %s answered %s: transaction %s ends", self.cfg.id, e.id, tx.id_token,
                      status, tx.tx_id)
             self._end_tx(e, T.deauthorized, ReasonEnumType.de_authorized)
@@ -535,7 +560,8 @@ class Station201(VersionStation):
         self._queue_event(e, tx, TransactionEventEnumType.started, trigger,
                           m.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state,
                                             remote_start_id=remote_start_id),
-                          samples=self._samples(e, (ENERGY,)), context=ReadingContextEnumType.transaction_begin,
+                          samples=self._samples(e, self.dm.list_value(dm.TX_STARTED_MEASURANDS)),
+                          context=ReadingContextEnumType.transaction_begin,
                           token=tag, token_type=token_type)
         self._refresh(e)
         if self.host.online:
@@ -548,7 +574,7 @@ class Station201(VersionStation):
         if tx is None:
             return
         self._advance(e)
-        samples = self._samples(e, TX_ENDED_MEASURANDS)
+        samples = self._samples(e, self.dm.list_value(dm.TX_ENDED_MEASURANDS))
         if e.meter_task is not None and e.meter_task is not asyncio.current_task():
             e.meter_task.cancel()
         e.meter_task = None
@@ -562,6 +588,14 @@ class Station201(VersionStation):
         self._refresh(e)
         self._maybe_idle_reset()
 
+    def _restart_meters(self) -> None:
+        """TxUpdatedInterval changed: the running meter loops pick it up after their current wait; start the
+        missing ones (the interval was 0)."""
+        if self.host.online:
+            for e in self.evses.values():
+                if e.tx is not None:
+                    self._start_meter(e)
+
     def _start_meter(self, e: _Evse) -> None:
         if self.tx_updated_interval_s > 0 and (e.meter_task is None or e.meter_task.done()):
             e.meter_task = self.host.spawn(self._meter_loop(e))
@@ -572,10 +606,14 @@ class Station201(VersionStation):
             tx = e.tx
             if tx is None:
                 return
+            if self.tx_updated_interval_s <= 0:
+                return  # switched off meanwhile (SetVariables)
             self._advance(e)
+            samples = self._samples(e, self.dm.list_value(dm.TX_UPDATED_MEASURANDS))
+            if not samples:
+                continue  # TxUpdatedMeasurands is empty: nothing to report
             self._queue_event(e, tx, TransactionEventEnumType.updated, T.meter_value_periodic,
-                              m.TransactionType(transaction_id=tx.tx_id),
-                              samples=self._samples(e, TX_UPDATED_MEASURANDS),
+                              m.TransactionType(transaction_id=tx.tx_id), samples=samples,
                               context=ReadingContextEnumType.sample_periodic, droppable=True)
 
     # ================================================================== authorization
@@ -677,10 +715,31 @@ class Station201(VersionStation):
         if e.fault or not e.operative or self._resetting:
             self._clear_pending(e)
             return
-        if e.plugged:
+        if self.dm.bool_value(dm.AUTHORIZE_REMOTE_START):
+            if self.host.spawn(self._remote_authorize(e, remote_start_id)) is None:
+                self._clear_pending(e)  # the session ended meanwhile
+            return
+        self._remote_start_now(e)
+
+    def _remote_start_now(self, e: _Evse) -> None:
+        if e.plugged and e.pending_tag is not None:
             self._start_tx(e, e.pending_tag, T.remote_start, token_type=e.pending_type,
                            remote_start_id=e.pending_remote_id)
         # else the token waits for the cable (plug starts the transaction)
+
+    async def _remote_authorize(self, e: _Evse, remote_start_id: int) -> None:
+        """AuthorizeRemoteStart: the token of a RequestStartTransaction is authorized like a local one first."""
+        tag = e.pending_tag
+        if tag is None:
+            return
+        status = await self._authorize(tag)
+        if e.pending_remote_id != remote_start_id or e.pending_tag != tag or e.tx is not None:
+            return  # replaced, started or dropped meanwhile
+        if status is not A.ACCEPTED or e.fault or not e.operative or self._resetting:
+            log.info("%s: EVSE %d remote start token %s not started (%s)", self.cfg.id, e.id, tag, status.value)
+            self._clear_pending(e)
+            return
+        self._remote_start_now(e)
 
     def _request_stop(self, req: m.RequestStopTransactionRequest) -> m.RequestStopTransactionResponse:
         for e in self.evses.values():
@@ -828,6 +887,42 @@ class Station201(VersionStation):
             self._queue_event(e, tx, TransactionEventEnumType.updated, T.trigger,
                               m.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state),
                               samples=self._samples(e, TX_UPDATED_MEASURANDS), context=ReadingContextEnumType.trigger)
+
+    # ================================================================== Device Model (M4)
+
+    def _check_items(self, count: int, instance: str) -> None:
+        limit = self.dm.int_value(dm.ITEMS_PER_MESSAGE, instance)
+        if count > limit:
+            raise CallError(self._adapter.error_codes.occurrence_constraint_violation,
+                            f"{count} items, ItemsPerMessage[{instance}] is {limit}")
+
+    def _get_variables(self, req: m.GetVariablesRequest) -> m.GetVariablesResponse:
+        self._check_items(len(req.get_variable_data), dm.INSTANCE_GET_VARIABLES)
+        return m.GetVariablesResponse(get_variable_result=[self.dm.get(x) for x in req.get_variable_data])
+
+    def _set_variables(self, req: m.SetVariablesRequest) -> m.SetVariablesResponse:
+        self._check_items(len(req.set_variable_data), dm.INSTANCE_SET_VARIABLES)
+        return m.SetVariablesResponse(set_variable_result=[self.dm.set(x) for x in req.set_variable_data])
+
+    def _get_base_report(self, req: m.GetBaseReportRequest) -> m.GetBaseReportResponse:
+        data = self.dm.report(req.report_base)
+        if not data:
+            return m.GetBaseReportResponse(status=GenericDeviceModelStatusEnumType.empty_result_set)
+        per = self.dm.int_value(dm.ITEMS_PER_MESSAGE, dm.INSTANCE_GET_REPORT)
+        parts = [data[i:i + per] for i in range(0, len(data), per)]
+        self.host.after_reply(functools.partial(self._send_report, req.request_id, parts, self.host.clock()))
+        return m.GetBaseReportResponse(status=GenericDeviceModelStatusEnumType.accepted)
+
+    async def _send_report(self, request_id: int, parts: Sequence[Sequence[m.ReportDataType]],
+                           generated_at: datetime) -> None:
+        """NotifyReport parts ``seqNo`` 0.. with ``tbc`` on all but the last; stops at the first failed part."""
+        for seq, part in enumerate(parts):
+            req = m.NotifyReportRequest(request_id=request_id, generated_at=generated_at, seq_no=seq,
+                                        report_data=list(part), tbc=True if seq < len(parts) - 1 else None)
+            if await self.host.safe(self._adapter.send_notify_report(req), "NotifyReport") is None:
+                log.info("%s: NotifyReport %d stopped at part %d of %d", self.cfg.id, request_id, seq,
+                         len(parts))
+                return
 
     # ================================================================== operator API (engine / Web API)
 

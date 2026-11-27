@@ -25,7 +25,10 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
   (:data:`SETTINGS_FIELDS`, the password masked). PATCH changes only the fields it contains (``null`` = unset;
   the mask keeps the stored password) and leaves every other field of the charger as it is;
 * ``GET /api/chargers/{id}/configuration`` - the run-time configuration keys (what the CSMS sees with
-  GetConfiguration, incl. values it changed with ChangeConfiguration and the ``readonly`` flags).
+  GetConfiguration, incl. values it changed with ChangeConfiguration and the ``readonly`` flags). A 2.0.1
+  charger has no keys (``keys`` is empty) and adds ``ocpp_version`` and ``variables``: its Device Model, one
+  entry per variable with its ``attributes`` (``Actual`` / ``Target`` / ``MinSet`` / ``MaxSet`` values;
+  ``WriteOnly`` values are ``null``), incl. values the CSMS changed with SetVariables.
 
 The JSON config routes validate with the pydantic models (the whole :class:`SimConfig` again, so cross-field rules
 such as the security profile apply) and go through ``engine.reload`` (the engine lock; a changed charger restarts).
@@ -503,8 +506,13 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.get("/chargers/{cid}/configuration", summary="Run-time configuration keys (as GetConfiguration sees them)")
     async def configuration(cid: str):
-        known = runtime(cid).configuration()
-        return {"keys": [{"key": e.key, "readonly": e.readonly, "value": e.value} for e in known]}
+        rt = runtime(cid)
+        out: Dict[str, Any] = {"keys": [{"key": e.key, "readonly": e.readonly, "value": e.value}
+                                        for e in rt.configuration()]}
+        variables = rt.variables()
+        if variables is not None:  # a Device Model version (2.0.1): tagged, ``keys`` stays empty
+            out.update(ocpp_version=rt.adapter.version, variables=variables)
+        return out
 
     def frame_filters(charger, action, dir_):
         if dir_ not in (None, "rx", "tx"):

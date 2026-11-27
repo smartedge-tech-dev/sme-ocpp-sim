@@ -3,7 +3,7 @@
 Wire values are exactly those of the OCPP 2.0.1 JSON schemas (checked by
 ``tests/test_v201_schema_conformance.py``); class names are the spec data type names
 (``...EnumType``). Only the enumerations of the messages in ``models.py`` are here (M2 core, M3 remote
-control); later milestones add the ones their messages need.
+control, M4 Device Model); later milestones add the ones their messages need.
 """
 
 from __future__ import annotations
@@ -295,3 +295,62 @@ class UnlockStatusEnumType(str, Enum):
     unlock_failed = "UnlockFailed"
     ongoing_authorized_transaction = "OngoingAuthorizedTransaction"
     unknown_connector = "UnknownConnector"
+
+
+# --- M4 Device Model (GetVariables / SetVariables / GetBaseReport / NotifyReport) ----------------------------
+
+
+class AttributeEnumType(str, Enum):
+    actual = "Actual"
+    target = "Target"
+    min_set = "MinSet"
+    max_set = "MaxSet"
+
+
+class MutabilityEnumType(str, Enum):
+    read_only = "ReadOnly"
+    write_only = "WriteOnly"
+    read_write = "ReadWrite"
+
+
+class DataEnumType(str, Enum):
+    """The 2.0.1 schema value set (``passwordString`` is not in the 2.0.1 schemas)."""
+
+    string = "string"
+    decimal = "decimal"
+    integer = "integer"
+    date_time = "dateTime"
+    boolean = "boolean"
+    option_list = "OptionList"
+    sequence_list = "SequenceList"
+    member_list = "MemberList"
+
+
+class GetVariableStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    unknown_component = "UnknownComponent"
+    unknown_variable = "UnknownVariable"
+    not_supported_attribute_type = "NotSupportedAttributeType"
+
+
+class SetVariableStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    unknown_component = "UnknownComponent"
+    unknown_variable = "UnknownVariable"
+    not_supported_attribute_type = "NotSupportedAttributeType"
+    reboot_required = "RebootRequired"
+
+
+class ReportBaseEnumType(str, Enum):
+    configuration_inventory = "ConfigurationInventory"
+    full_inventory = "FullInventory"
+    summary_inventory = "SummaryInventory"
+
+
+class GenericDeviceModelStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    not_supported = "NotSupported"
+    empty_result_set = "EmptyResultSet"

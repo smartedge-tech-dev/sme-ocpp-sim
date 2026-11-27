@@ -118,6 +118,8 @@ CHARGING_PROFILE_FULL = {
     "transactionId": "T" * 36,
 }
 EVSE_FULL = {"customData": CUSTOM, "id": 1, "connectorId": 1}
+COMPONENT_FULL = {"customData": CUSTOM, "evse": EVSE_FULL, "name": "EVSE", "instance": "Main"}
+VARIABLE_FULL = {"customData": CUSTOM, "name": "AvailabilityState", "instance": "Default"}
 
 
 FIXTURES: dict = {
@@ -279,5 +281,56 @@ FIXTURES: dict = {
     ("TriggerMessage", "response"): {
         "min": {"status": "NotImplemented"},
         "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL},
+    },
+    # M4 Device Model
+    ("GetVariables", "request"): {
+        "min": {"getVariableData": [{"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "HeartbeatInterval"}}]},
+        "full": {"customData": CUSTOM, "getVariableData": [
+            {"customData": CUSTOM, "attributeType": "Target", "component": COMPONENT_FULL, "variable": VARIABLE_FULL}]},
+    },
+    ("GetVariables", "response"): {
+        "min": {"getVariableResult": [{"attributeStatus": "UnknownComponent", "component": {"name": "X"},
+                                       "variable": {"name": "Y"}}]},
+        "full": {"customData": CUSTOM, "getVariableResult": [
+            {"customData": CUSTOM, "attributeStatusInfo": STATUS_INFO_FULL, "attributeStatus": "Accepted",
+             "attributeType": "Actual", "attributeValue": "300", "component": COMPONENT_FULL,
+             "variable": VARIABLE_FULL}]},
+    },
+    ("SetVariables", "request"): {
+        "min": {"setVariableData": [{"attributeValue": "60", "component": {"name": "OCPPCommCtrlr"},
+                                     "variable": {"name": "HeartbeatInterval"}}]},
+        "full": {"customData": CUSTOM, "setVariableData": [
+            {"customData": CUSTOM, "attributeType": "MaxSet", "attributeValue": "x", "component": COMPONENT_FULL,
+             "variable": VARIABLE_FULL}]},
+    },
+    ("SetVariables", "response"): {
+        "min": {"setVariableResult": [{"attributeStatus": "RebootRequired", "component": {"name": "X"},
+                                       "variable": {"name": "Y"}}]},
+        "full": {"customData": CUSTOM, "setVariableResult": [
+            {"customData": CUSTOM, "attributeType": "Actual", "attributeStatus": "Rejected",
+             "attributeStatusInfo": STATUS_INFO_FULL, "component": COMPONENT_FULL, "variable": VARIABLE_FULL}]},
+    },
+    ("GetBaseReport", "request"): {
+        "min": {"requestId": 1, "reportBase": "FullInventory"},
+        "full": {"customData": CUSTOM, "requestId": 2, "reportBase": "SummaryInventory"},
+    },
+    ("GetBaseReport", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "EmptyResultSet", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("NotifyReport", "request"): {
+        "min": {"requestId": 1, "generatedAt": T1, "seqNo": 0},
+        "full": {"customData": CUSTOM, "requestId": 1, "generatedAt": T1, "tbc": True, "seqNo": 3, "reportData": [{
+            "customData": CUSTOM, "component": COMPONENT_FULL, "variable": VARIABLE_FULL,
+            "variableAttribute": [
+                {"customData": CUSTOM, "type": "Actual", "value": "60", "mutability": "ReadWrite",
+                 "persistent": True, "constant": False},
+                {"type": "MaxSet"}, {"type": "MinSet"}, {"type": "Target"}],
+            "variableCharacteristics": {"customData": CUSTOM, "unit": "s", "dataType": "integer", "minLimit": 0,
+                                        "maxLimit": 86400.5, "valuesList": "a,b", "supportsMonitoring": False}}]},
+    },
+    ("NotifyReport", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
     },
 }
