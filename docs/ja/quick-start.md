@@ -7,8 +7,11 @@ OCPP 1.6J に対応した CSMS であれば何でも使えます。
 ## Windows 実行ファイル
 
 [最新リリース](https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest) から
-`sme-ocpp-sim-vX.Y.Z-windows.exe` をダウンロードして実行します。`-c` を指定しない場合は同梱のデモ設定
-（`configs/demo-site.yaml`）で起動し、<http://127.0.0.1:8082/> の Web UI を開きます。
+`sme-ocpp-sim-vX.Y.Z-windows.exe` をダウンロードして実行します。`-c` を指定しない場合はユーザーごとの
+`%USERPROFILE%\.sme-ocpp-sim\config.yaml` を使います（初回起動時に同梱のデモ設定 `configs/demo-site.yaml` から作成）。
+<http://127.0.0.1:8082/> の Web UI を開きます。Web UI からの保存はこのファイルに書き戻されるため、再起動後も変更が
+残ります。デモ設定からやり直すにはこのファイルを削除してください。`-c FILE` を指定した場合はそのファイルを使い、
+保存もそのファイルに書き戻します。使用中の設定ファイルは起動時のコンソールログ（`config file: ...`）に表示されます。
 
 ```powershell
 .\sme-ocpp-sim-v0.2.0-windows.exe -c my-site.yaml
@@ -54,7 +57,7 @@ docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway \
 
 | オプション | 意味 |
 |---|---|
-| `-c, --config FILE` | YAML 設定ファイル（既定: 同梱の `configs/demo-site.yaml`） |
+| `-c, --config FILE` | YAML 設定ファイル（既定: 同梱の `configs/demo-site.yaml`。Windows 実行ファイルでは `~/.sme-ocpp-sim/config.yaml`、上記参照） |
 | `--host 127.0.0.1` | Web UI の待ち受けアドレス（既定は localhost のみ。`0.0.0.0` で LAN に公開） |
 | `--http-port 8082` | Web UI のポート |
 | `--no-browser` | 起動時にブラウザを開かない |

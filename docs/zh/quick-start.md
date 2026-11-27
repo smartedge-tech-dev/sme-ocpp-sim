@@ -6,8 +6,10 @@ OCPP 1.6 CSMS [SteVe](https://github.com/steve-community/steve)；任何支持 O
 ## Windows 可执行文件
 
 从 [最新发布](https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest) 下载
-`sme-ocpp-sim-vX.Y.Z-windows.exe` 并运行。不指定 `-c` 时使用内置的演示配置（`configs/demo-site.yaml`）启动，
-并打开 <http://127.0.0.1:8082/> 的 Web UI。
+`sme-ocpp-sim-vX.Y.Z-windows.exe` 并运行。不指定 `-c` 时使用用户目录下的 `%USERPROFILE%\.sme-ocpp-sim\config.yaml`
+（首次运行时由内置的演示配置 `configs/demo-site.yaml` 复制生成），并打开 <http://127.0.0.1:8082/> 的 Web UI。
+在 Web UI 中保存会写回该文件，因此重启后修改仍然保留；删除该文件即可从演示配置重新开始。指定 `-c FILE` 时使用并
+写回该文件。启动时控制台日志会显示正在使用的配置文件（`config file: ...`）。
 
 ```powershell
 .\sme-ocpp-sim-v0.2.0-windows.exe -c my-site.yaml
@@ -52,7 +54,7 @@ docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway \
 
 | 选项 | 含义 |
 |---|---|
-| `-c, --config FILE` | YAML 配置文件（默认：内置的 `configs/demo-site.yaml`） |
+| `-c, --config FILE` | YAML 配置文件（默认：内置的 `configs/demo-site.yaml`；Windows 可执行文件为 `~/.sme-ocpp-sim/config.yaml`，见上文） |
 | `--host 127.0.0.1` | Web UI 绑定地址（默认仅本机；`0.0.0.0` 对局域网开放） |
 | `--http-port 8082` | Web UI 端口 |
 | `--no-browser` | 启动时不打开浏览器 |

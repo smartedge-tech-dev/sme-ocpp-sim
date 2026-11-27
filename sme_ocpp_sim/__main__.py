@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
 from sme_sim_common.cli import add_common_args, run_web
 
@@ -29,6 +31,31 @@ _PKG = Path(__file__).resolve().parent
 # package under sys._MEIPASS, so __file__ resolves there): configs/ beside the package.
 DEFAULT_CONFIG = next((p for p in (_PKG / "configs" / "demo-site.yaml", _PKG.parent / "configs" / "demo-site.yaml")
                        if p.exists()), _PKG.parent / "configs" / "demo-site.yaml")
+USER_CONFIG_NAME = "config.yaml"
+
+log = logging.getLogger(APP_NAME)
+
+
+def default_config_path() -> Optional[Path]:
+    """Config file used when started without ``-c``.
+
+    Windows executable (PyInstaller onefile, ``sys.frozen``): the bundled config lives in the temporary
+    extraction directory (``sys._MEIPASS``) that is deleted when the exe exits, so saving from the web UI there
+    would be lost (#27). The default is the per-user ``~/.sme-ocpp-sim/config.yaml`` instead; on the first run it
+    is created as a copy of the bundled demo config. Nothing is ever written below ``sys._MEIPASS``.
+
+    Everything else (pip, source tree, Docker): the bundled demo config itself, as before.
+    """
+    if not getattr(sys, "frozen", False):
+        return DEFAULT_CONFIG if DEFAULT_CONFIG.exists() else None
+    from .templates_builtin import user_data_dir
+
+    user = user_data_dir() / USER_CONFIG_NAME
+    if not user.exists() and DEFAULT_CONFIG.exists():
+        user.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(DEFAULT_CONFIG, user)
+        log.info("created %s from the bundled %s", user, DEFAULT_CONFIG.name)
+    return user if user.exists() else None
 
 
 def main(argv=None) -> int:
@@ -37,7 +64,8 @@ def main(argv=None) -> int:
         rest = rest[1:]
     ap = argparse.ArgumentParser(prog=APP_NAME,
                                  description="OCPP charging station simulator with a web UI; "
-                                             "default config: the bundled configs/demo-site.yaml")
+                                             "default config: the bundled configs/demo-site.yaml "
+                                             "(Windows exe: ~/.sme-ocpp-sim/config.yaml, created from it)")
     add_common_args(ap, default_http_port=DEFAULT_HTTP_PORT, app_name=APP_NAME, version=__version__,
                     templates=False)
     g = ap.add_argument_group("Mini CSMS (built-in simple CSMS, overrides the mini_csms block)")
@@ -55,9 +83,11 @@ def main(argv=None) -> int:
     from .engine import OcppEngine
 
     path = args.config
-    if path is None and DEFAULT_CONFIG.exists():
-        path = str(DEFAULT_CONFIG)
     try:
+        if path is None:
+            default = default_config_path()
+            path = str(default) if default else None
+        log.info("config file: %s", path or "(none, built-in defaults)")
         cfg = load_file(path) if path else SimConfig()
         override = {k: v for k, v in (("enabled", args.mini_csms), ("host", args.csms_host),
                                       ("port", args.csms_port)) if v is not None}
@@ -65,6 +95,8 @@ def main(argv=None) -> int:
             cfg = SimConfig.model_validate({**cfg.model_dump(), "mini_csms": {**cfg.mini_csms.model_dump(), **override}})
         text = Path(path).read_text(encoding="utf-8") if path else None
         engine = OcppEngine(cfg, config_text=text, config_path=path)
+        if path:
+            engine.log_event("config", f"config file: {path}")  # also in the web UI event log
     except Exception as e:  # noqa: BLE001
         print(f"config error: {e}", file=sys.stderr)
         return 2
