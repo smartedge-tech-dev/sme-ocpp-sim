@@ -40,6 +40,9 @@ from pydantic.alias_generators import to_camel
 
 from .enums import (
     FirmwareStatusEnumType,
+    LogEnumType,
+    LogStatusEnumType,
+    UpdateFirmwareStatusEnumType,
     UploadLogStatusEnumType,
     SetVariableStatusEnumType,
     ReportBaseEnumType,
@@ -116,6 +119,7 @@ String50 = Annotated[str, StringConstraints(max_length=50)]
 String128 = Annotated[str, StringConstraints(max_length=128)]
 String255 = Annotated[str, StringConstraints(max_length=255)]
 String512 = Annotated[str, StringConstraints(max_length=512)]
+String800 = Annotated[str, StringConstraints(max_length=800)]
 String1000 = Annotated[str, StringConstraints(max_length=1000)]
 String16 = Annotated[str, StringConstraints(max_length=16)]
 String2500 = Annotated[str, StringConstraints(max_length=2500)]
@@ -840,6 +844,55 @@ class ReservationStatusUpdateResponse(OcppModel):
     custom_data: Optional[CustomDataType] = None
 
 
+# --- M7: firmware management, diagnostics -------------------------------------------------------------
+
+
+class FirmwareType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    location: String512
+    retrieve_date_time: DateTime
+    install_date_time: Optional[DateTime] = None
+    signing_certificate: Optional[String5500] = None
+    signature: Optional[String800] = None
+
+
+class UpdateFirmwareRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    retries: Optional[int] = None
+    retry_interval: Optional[int] = None
+    request_id: int
+    firmware: FirmwareType
+
+
+class UpdateFirmwareResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: UpdateFirmwareStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+
+
+class LogParametersType(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    remote_location: String512
+    oldest_timestamp: Optional[DateTime] = None
+    latest_timestamp: Optional[DateTime] = None
+
+
+class GetLogRequest(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    log: LogParametersType
+    log_type: LogEnumType
+    request_id: int
+    retries: Optional[int] = None
+    retry_interval: Optional[int] = None
+
+
+class GetLogResponse(OcppModel):
+    custom_data: Optional[CustomDataType] = None
+    status: LogStatusEnumType
+    status_info: Optional[StatusInfoType] = None
+    filename: Optional[String255] = None
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -880,6 +933,9 @@ ACTIONS = (
     "ReserveNow",
     "CancelReservation",
     "ReservationStatusUpdate",
+    # M7 firmware management, diagnostics
+    "UpdateFirmware",
+    "GetLog",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

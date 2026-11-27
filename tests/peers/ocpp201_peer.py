@@ -64,6 +64,8 @@ class Session:
     cleared_limits: list = field(default_factory=list)     # dict per ClearedChargingLimit
     log_statuses: list = field(default_factory=list)       # status per LogStatusNotification
     firmware_statuses: list = field(default_factory=list)  # status per FirmwareStatusNotification
+    log_request_ids: list = field(default_factory=list)       # requestId per LogStatusNotification
+    firmware_request_ids: list = field(default_factory=list)  # requestId per FirmwareStatusNotification
     reservation_updates: list = field(default_factory=list)  # (reservationId, status) per ReservationStatusUpdate
     cs: object = None
 
@@ -161,13 +163,15 @@ class PeerCS(OcppCP201):
         return call_result.ClearedChargingLimit()
 
     @on("LogStatusNotification")
-    async def on_log_status(self, status, **_):
+    async def on_log_status(self, status, request_id=None, **_):
         self.session.log_statuses.append(status)
+        self.session.log_request_ids.append(request_id)
         return call_result.LogStatusNotification()
 
     @on("FirmwareStatusNotification")
-    async def on_firmware_status(self, status, **_):
+    async def on_firmware_status(self, status, request_id=None, **_):
         self.session.firmware_statuses.append(status)
+        self.session.firmware_request_ids.append(request_id)
         return call_result.FirmwareStatusNotification()
 
     @on("ReservationStatusUpdate")

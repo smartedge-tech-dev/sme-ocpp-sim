@@ -468,4 +468,26 @@ FIXTURES: dict = {
         "min": {},
         "full": {"customData": CUSTOM},
     },
+    ("UpdateFirmware", "request"): {
+        "min": {"requestId": 1, "firmware": {"location": "https://fw.example.com/fw.bin", "retrieveDateTime": T1}},
+        "full": {"customData": CUSTOM, "retries": 2, "retryInterval": 30, "requestId": 2147483647,
+                 "firmware": {"customData": CUSTOM, "location": "ftp://fw.example.com/fw.bin", "retrieveDateTime": T1,
+                              "installDateTime": T1, "signingCertificate": "-----BEGIN CERTIFICATE-----",
+                              "signature": "c2lnbmF0dXJl"}},
+    },
+    ("UpdateFirmware", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "AcceptedCanceled", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("GetLog", "request"): {
+        "min": {"log": {"remoteLocation": "https://logs.example.com/"}, "logType": "DiagnosticsLog", "requestId": 1},
+        "full": {"customData": CUSTOM, "log": {"customData": CUSTOM, "remoteLocation": "ftp://logs.example.com/",
+                                                "oldestTimestamp": T1, "latestTimestamp": T1},
+                 "logType": "SecurityLog", "requestId": 7, "retries": 1, "retryInterval": 5},
+    },
+    ("GetLog", "response"): {
+        "min": {"status": "Rejected"},
+        "full": {"customData": CUSTOM, "status": "AcceptedCanceled", "statusInfo": STATUS_INFO_FULL,
+                 "filename": "CS1_DiagnosticsLog_20261127T000000Z.log"},
+    },
 }

@@ -132,9 +132,10 @@ Interpretations (not defined by the spec)
 - RequestStartTransaction (M3): with AuthorizeRemoteStart ``false`` (the default) the CSMS has authorized the
   token, so it is not authorized again; with ``true`` it is authorized like a presented token (``auth_mode``)
   after the answer and dropped from the EVSE when that is not ``Accepted`` (F01.FR.01), except a token of
-  ``type`` ``Central`` or ``NoAuthorization``, which is never authorized (F01.FR.02, F02.FR.09 / FR.10). Without ``evseId`` the first
-  startable EVSE with a plugged cable is used, else the first startable one. A faulted, inoperative or busy EVSE (or none free) is
-  ``Rejected``; so is a ``chargingProfile`` that is not a valid ``TxProfile`` or that carries a ``transactionId``.
+  ``type`` ``Central`` or ``NoAuthorization``, which is never authorized (F01.FR.02, F02.FR.09 / FR.10). Without
+  ``evseId`` the first startable EVSE with a plugged cable is used, else the first startable one. A faulted,
+  inoperative or busy EVSE (or none free) is ``Rejected``; so is a ``chargingProfile`` that is not a valid
+  ``TxProfile`` or that carries a ``transactionId``.
   An accepted ``chargingProfile`` is installed, bound to the new ``transactionId``, when the transaction starts
   (M5); it is discarded with the token. An accepted token waits on an unplugged
   EVSE like a local one; the transaction starts at once when the cable is plugged or when it comes, with
@@ -173,10 +174,30 @@ Interpretations (not defined by the spec)
   ``Trigger``, the TxUpdatedMeasurands readings) for the transaction of the addressed EVSE, or of every EVSE, and
   is ``Rejected`` when there is none. While Pending the StatusNotifications are sent directly; the
   TransactionEvent joins the outbox and goes out after the boot is accepted, so ``seqNo`` stays in order.
-  LogStatusNotification and FirmwareStatusNotification send status ``Idle`` (no log upload or firmware update
-  is modelled, F06.FR.14 / FR.16). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
+  LogStatusNotification sends ``Uploading`` (with the requestId) while a log upload runs, else ``Idle`` (F06.FR.13 /
+  FR.14, N01.FR.13); FirmwareStatusNotification sends the last sent status with its requestId, ``Idle`` when that
+  was ``Installed`` or none was sent (L02.FR.16 / FR.17, F06.FR.16; a stopped charger forgets an unfinished
+  update, so it answers ``Idle``). An unknown EVSE or a connector other than 1 is ``Rejected``. The other
   ``requestedMessage`` values (the certificate messages, PublishFirmwareStatusNotification) answer
   ``NotImplemented``.
+- Firmware update (M7, L01 / L02; ``runtime.maintenance`` has the shared interpretations): UpdateFirmware is
+  ``Accepted``, or ``AcceptedCanceled`` when it cancels an update that has not started installing (L02.FR.15, no
+  status is sent for the cancelled one); one received while ``Installing`` or later is ``Rejected`` (L02.FR.18,
+  reasonCode ``Installing``). Steps, each a FirmwareStatusNotification with the request's ``requestId``
+  (L02.FR.01 / FR.06): ``DownloadScheduled`` (retrieveDateTime in the future, L02.FR.07) -> ``Downloading`` ->
+  ``Downloaded`` / ``DownloadFailed`` -> ``SignatureVerified`` (only when the request has a ``signature``; it is
+  taken as valid, no certificate or signature is checked, so ``InvalidCertificate`` / ``InvalidSignature`` are never
+  used) -> ``InstallScheduled`` (installDateTime in the future, L02.FR.10) -> [EVSEs without a transaction
+  Unavailable until no transaction is left, L02.FR.03 / FR.04] -> ``Installing`` -> ``InstallationFailed`` or
+  ``InstallRebooting`` -> reboot (as a Reset, BootNotification reason ``FirmwareUpdate``) -> ``Installed`` after the
+  boot is accepted (L02.FR.21 option (a)). DownloadPaused and InstallVerificationFailed are never sent; the
+  optional InstallScheduled while waiting for transactions (L02.FR.23) is not sent.
+- Log upload (M7, N01): GetLog is always ``Accepted`` (the log is "available", N01.FR.01) with ``filename``
+  ``<charger id>_<logType>_<UTC time>.log``; a GetLog while an upload runs cancels it, answers
+  ``AcceptedCanceled`` (N01.FR.12) and sends LogStatusNotification ``AcceptedCanceled`` for the old requestId
+  before the new upload starts (N01.FR.20). Steps: ``Uploading`` -> ``Uploaded`` / ``UploadFailure`` (the failure
+  injection; BadMessage / PermissionDenied / NotSupportedOperation are never sent). ``oldestTimestamp`` /
+  ``latestTimestamp`` are not used; SecurityLog and DiagnosticsLog behave the same.
 - Local Authorization List / Authorization Cache (M6, C10 - C14, D01, D02; ``runtime.local_auth``, in memory, kept
   across reconnects and Resets): with the list (LocalAuthListCtrlr.Enabled) or the cache
   (AuthCacheCtrlr.Enabled) a token is looked up there too, the list first (C13.FR.01 / C14.FR.01; a token in the
@@ -216,7 +237,8 @@ Interpretations (not defined by the spec)
   stays stored but holds no EVSE, ends when the transaction starts (``reservationId`` in the ``Started`` event,
   H01.FR.15) and holds its EVSE again when the token is dropped (failed authorization, EVConnectionTimeOut,
   unplug, Reset, availability change; no ReservationStatusUpdate, the reservation did not end). Stopping the
-  charger cancels the expiry timers; the next accepted boot re-arms them. It ends at ``expiryDateTime`` (ReservationStatusUpdate ``Expired``, H04), by
+  charger cancels the expiry timers; the next accepted boot re-arms them. It ends at ``expiryDateTime``
+  (ReservationStatusUpdate ``Expired``, H04), by
   CancelReservation (H02, no ReservationStatusUpdate) or when its EVSE (no ``evseId``: the station) becomes
   Faulted / Unavailable (``Removed``, H01.FR.16 / FR.17). A ReservationStatusUpdate goes through the outbox like
   a StatusNotification (dropped at the end of a session, never resent). The expiry timer runs on the wall clock.
@@ -233,32 +255,34 @@ import logging
 import uuid
 from collections import deque
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
 from ...charging import power
 from ...charging.power import PowerState
 from ...rpc import CallError, wait_event
+from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
+from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
 from ..station import StationHost, VersionStation
-from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
 from . import device_model as dm
 from . import models as m
 from .adapter import (LOCAL_TOKEN_TYPE, Adapter201, charging_profile, charging_profile_type, charging_schedule_type,
                       composite_schedule_type, connector_status, id_token, id_token_info, meter_value)
 from .composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
-from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingLimitSourceEnumType,
-                    ChargingProfileKindEnumType, ChargingProfilePurposeEnumType, ChargingProfileStatusEnumType,
-                    ChargingRateUnitEnumType, ChargingStateEnumType, ClearChargingProfileStatusEnumType,
-                    ConnectorStatusEnumType, GenericDeviceModelStatusEnumType, GenericStatusEnumType,
-                    GetChargingProfileStatusEnumType, IdTokenEnumType, MessageTriggerEnumType,
-                    OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
-                    TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
-from .enums import FirmwareStatusEnumType, UploadLogStatusEnumType
-from .enums import (CancelReservationStatusEnumType, ClearCacheStatusEnumType, ReservationUpdateStatusEnumType,
-                    ReserveNowStatusEnumType, SendLocalListStatusEnumType, UpdateEnumType)
+from .enums import (BootReasonEnumType, CancelReservationStatusEnumType, ChangeAvailabilityStatusEnumType,
+                    ChargingLimitSourceEnumType, ChargingProfileKindEnumType, ChargingProfilePurposeEnumType,
+                    ChargingProfileStatusEnumType, ChargingRateUnitEnumType, ChargingStateEnumType,
+                    ClearCacheStatusEnumType, ClearChargingProfileStatusEnumType, ConnectorStatusEnumType,
+                    FirmwareStatusEnumType, GenericDeviceModelStatusEnumType, GenericStatusEnumType,
+                    GetChargingProfileStatusEnumType, IdTokenEnumType, LogStatusEnumType, MessageTriggerEnumType,
+                    OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType,
+                    ReservationUpdateStatusEnumType, ReserveNowStatusEnumType, ResetEnumType, ResetStatusEnumType,
+                    SendLocalListStatusEnumType, TransactionEventEnumType, TriggerMessageStatusEnumType,
+                    TriggerReasonEnumType, UnlockStatusEnumType, UpdateEnumType, UpdateFirmwareStatusEnumType,
+                    UploadLogStatusEnumType)
 from .profiles import (REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT, ChargingProfile, ChargingSchedule, ClearStatus,
                        InstalledProfile, Limits, ProfileStatus, ProfileStore, SchedulePeriod)
 
@@ -278,6 +302,10 @@ MAX_TX_QUEUE = 1000
 
 #: Poll step while a Reset waits for the outbox to drain.
 RESET_DRAIN_POLL_S = 0.05
+#: The firmware steps this station reports (M7): every ``FirmwareStatusEnumType`` step the simulation has.
+FIRMWARE_STATES = frozenset(d.FirmwareState) - {d.FirmwareState.IDLE}
+#: statusInfo reasonCode of an UpdateFirmware refused while installing (L02.FR.18).
+REASON_INSTALLING = "Installing"
 #: ``statusInfo.reasonCode`` of a refused remote-control request (see the module docstring).
 REASON_UNKNOWN_EVSE = "UnknownEvse"
 REASON_OCCUPIED = "Occupied"
@@ -301,6 +329,11 @@ W = ChargingRateUnitEnumType.w
 #: ``chargingLimitSource`` of the profiles the CSMS sets / of the operator's external constraints.
 CSMS_LIMIT_SOURCE = ChargingLimitSourceEnumType.cso
 EXTERNAL_LIMIT_SOURCE = ChargingLimitSourceEnumType.ems
+
+
+def _aware(t: Optional[datetime]) -> Optional[datetime]:
+    """A naive request time is taken as UTC (like the charging profiles)."""
+    return t.replace(tzinfo=timezone.utc) if t is not None and t.tzinfo is None else t
 
 
 def external_profile_id(evse_id: int) -> int:
@@ -429,6 +462,13 @@ class Station201(VersionStation):
         self._resetting = False
         #: The station's own availability (ChangeAvailability without EVSE), apart from the EVSEs' (G04).
         self.station_operative = True
+        #: Firmware update / log upload (M7).
+        self.maint = Maintenance(
+            cfg.maintenance, clock=lambda: self.host.clock(), firmware_states=FIRMWARE_STATES,
+            send_firmware=self._send_firmware_status, send_log=self._send_log_status,
+            busy=lambda: any(e.tx is not None for e in self.evses.values()),
+            hold_changed=self._refresh_all,
+            reboot=functools.partial(self._do_reset, reason=BootReasonEnumType.firmware_update))
         self._remote: Dict[type, Callable[[Any], m.OcppModel]] = {
             m.RequestStartTransactionRequest: self._request_start,
             m.RequestStopTransactionRequest: self._request_stop,
@@ -448,6 +488,8 @@ class Station201(VersionStation):
             m.ClearCacheRequest: self._clear_cache,
             m.ReserveNowRequest: self._reserve_now,
             m.CancelReservationRequest: self._cancel_reservation,
+            m.UpdateFirmwareRequest: self._update_firmware,
+            m.GetLogRequest: self._get_log,
         }
 
     # ================================================================== session (called by the shell)
@@ -478,6 +520,7 @@ class Station201(VersionStation):
         for r in list(self.reservations.values()):
             if r.timer is None:  # cancelled by close(): the charger was stopped and started again
                 self._arm(r)
+        self.maint.on_online()
 
     def on_session_ended(self) -> None:
         for e in self.evses.values():
@@ -532,6 +575,7 @@ class Station201(VersionStation):
             "station": {"status": S.AVAILABLE.value if self.station_operative else S.UNAVAILABLE.value,
                         "operative": self.station_operative},
             "connectors": [evse(e) for e in self.evses.values()],
+            **self.maint.snapshot(),
         }
 
     def configuration(self) -> List[d.ConfigEntry]:
@@ -640,7 +684,8 @@ class Station201(VersionStation):
     def _operative(self, e: _Evse) -> bool:
         """The EVSE is operative: its own and the station's availability (a running transaction keeps a station
         ``Inoperative`` scheduled for it, see ChangeAvailability)."""
-        return e.operative and (self.station_operative or e.tx is not None)
+        return (e.operative and (self.station_operative or e.tx is not None)
+                and not (self.maint.hold and e.tx is None))  # L02.FR.04: held Unavailable for a firmware install
 
     def _target(self, e: _Evse) -> S:
         if e.fault:
@@ -823,6 +868,7 @@ class Station201(VersionStation):
             self._set_operative(e, e.pending_operative)
         self._refresh(e)
         self._maybe_idle_reset()
+        self.maint.wake()
 
     def _restart_meters(self) -> None:
         """TxUpdatedInterval changed: the running meter loops pick it up after their current wait; start the
@@ -1008,6 +1054,7 @@ class Station201(VersionStation):
             if e.pending_timer is not None:
                 e.pending_timer.cancel()
                 e.pending_timer = None
+        self.maint.close()
 
     def _drop_reservation(self, r: Reservation, update: Optional[ReservationUpdateStatusEnumType]) -> None:
         """End ``r``; ``update`` = the ReservationStatusUpdate to send (before the StatusNotifications)."""
@@ -1331,7 +1378,8 @@ class Station201(VersionStation):
             self._end_tx(e, T.reset_command, ReasonEnumType.immediate_reset)
             self._clear_pending(e)
 
-    async def _do_reset(self, *, on_idle: bool = False) -> None:
+    async def _do_reset(self, *, on_idle: bool = False,
+                        reason: BootReasonEnumType = BootReasonEnumType.remote_reset) -> None:
         if self._resetting:
             return
         if on_idle and any(e.tx is not None for e in self.evses.values()):
@@ -1350,7 +1398,7 @@ class Station201(VersionStation):
             except TimeoutError:
                 log.info("%s: Reset closes with %d queued message(s)", self.cfg.id, len(self._outq))
             self._end_all_for_reset()  # e.g. a transaction a CSMS answer ended / started meanwhile
-            self._adapter.boot_reason = BootReasonEnumType.remote_reset
+            self._adapter.boot_reason = reason
         finally:
             self._resetting = False
             self.host.end_session_for_reset()
@@ -1406,15 +1454,17 @@ class Station201(VersionStation):
             return answer(TriggerMessageStatusEnumType.accepted)
         if not self.host.connected or self.host.registration not in (_ACCEPTED, _PENDING):  # B02.FR.02
             return answer(TriggerMessageStatusEnumType.rejected, REASON_NOT_REGISTERED)
-        if what is MT.log_status_notification:  # F06.FR.14
-            self.host.after_reply(functools.partial(
-                self._trigger_send, "LogStatusNotification", lambda: self._adapter.send_log_status_notification(
-                    m.LogStatusNotificationRequest(status=UploadLogStatusEnumType.idle))))
-        elif what is MT.firmware_status_notification:  # F06.FR.16
-            self.host.after_reply(functools.partial(
-                self._trigger_send, "FirmwareStatusNotification",
-                lambda: self._adapter.send_firmware_status_notification(
-                    m.FirmwareStatusNotificationRequest(status=FirmwareStatusEnumType.idle))))
+        if what is MT.log_status_notification:
+            # F06.FR.13 / FR.14: Uploading while an upload runs, else Idle (without requestId, N01.FR.13).
+            log_ev = (d.LogStatus(d.LogState.UPLOADING, self.maint.log_request_id) if self.maint.log_busy
+                      else d.LogStatus(d.LogState.IDLE))
+            self.host.after_reply(functools.partial(self._send_log_status, log_ev, triggered=True))
+        elif what is MT.firmware_status_notification:
+            # L02.FR.16 / FR.17 (F06.FR.16): the last sent status; Idle when it was Installed or there was none.
+            last = self.maint.firmware_status
+            fw_ev = (d.FirmwareStatus(last, self.maint.firmware_request_id)
+                     if last not in (None, d.FirmwareState.INSTALLED) else d.FirmwareStatus(d.FirmwareState.IDLE))
+            self.host.after_reply(functools.partial(self._send_firmware_status, fw_ev, triggered=True))
         elif what is MT.heartbeat:
             self.host.after_reply(self.host.heartbeat)
         elif what is MT.status_notification:
@@ -1427,6 +1477,55 @@ class Station201(VersionStation):
                 return answer(TriggerMessageStatusEnumType.rejected, REASON_NO_TX)
             self.host.after_reply(functools.partial(self._trigger_tx_events, with_tx))
         return answer(TriggerMessageStatusEnumType.accepted)
+
+    # ================================================================== firmware / log (M7)
+
+    async def _send_firmware_status(self, ev: d.FirmwareStatus, *, triggered: bool = False) -> None:
+        """Progress needs an accepted boot; a triggered one may also go out while Pending (B02.FR.02)."""
+        req = m.FirmwareStatusNotificationRequest(status=FirmwareStatusEnumType(ev.status.value),
+                                                  request_id=ev.request_id)
+        if self.host.connected if triggered else self.host.online:
+            await self.host.safe(self._adapter.send_firmware_status_notification(req), "FirmwareStatusNotification")
+        else:
+            log.info("%s: FirmwareStatusNotification %s not sent (not online)", self.cfg.id, ev.status.value)
+
+    async def _send_log_status(self, ev: d.LogStatus, *, triggered: bool = False) -> None:
+        status = (UploadLogStatusEnumType.upload_failure if ev.status is d.LogState.UPLOAD_FAILED
+                  else UploadLogStatusEnumType(ev.status.value))
+        req = m.LogStatusNotificationRequest(status=status, request_id=ev.request_id)
+        if self.host.connected if triggered else self.host.online:
+            await self.host.safe(self._adapter.send_log_status_notification(req), "LogStatusNotification")
+        else:
+            log.info("%s: LogStatusNotification %s not sent (not online)", self.cfg.id, ev.status.value)
+
+    def _update_firmware(self, req: m.UpdateFirmwareRequest) -> m.UpdateFirmwareResponse:
+        if self.maint.installing:  # L02.FR.18: the installation cannot be cancelled
+            return m.UpdateFirmwareResponse(status=UpdateFirmwareStatusEnumType.rejected,
+                                            status_info=self._info(REASON_INSTALLING))
+        fw = req.firmware
+        job = FirmwareJob(fw.location, _aware(fw.retrieve_date_time), install_at=_aware(fw.install_date_time),
+                          retries=req.retries, retry_interval_s=req.retry_interval, request_id=req.request_id,
+                          signed=fw.signature is not None)
+        canceled = self.maint.cancel_firmware()  # L02.FR.15
+        self.host.after_reply(functools.partial(self.maint.start_firmware, job))
+        return m.UpdateFirmwareResponse(status=UpdateFirmwareStatusEnumType.accepted_canceled if canceled
+                                        else UpdateFirmwareStatusEnumType.accepted)
+
+    def _get_log(self, req: m.GetLogRequest) -> m.GetLogResponse:
+        name = f"{self.cfg.id}_{req.log_type.value}_{self.host.clock().strftime('%Y%m%dT%H%M%SZ')}.log"
+        job = LogJob(req.log.remote_location, name, retries=req.retries, retry_interval_s=req.retry_interval,
+                     request_id=req.request_id)
+        old_id = self.maint.log_request_id
+        canceled = self.maint.cancel_log()  # N01.FR.12
+
+        async def go() -> None:
+            if canceled:  # N01.FR.20
+                await self._send_log_status(d.LogStatus(d.LogState.ACCEPTED_CANCELED, old_id))
+            self.maint.start_log(job)
+
+        self.host.after_reply(go)
+        return m.GetLogResponse(status=LogStatusEnumType.accepted_canceled if canceled else LogStatusEnumType.accepted,
+                                filename=name)
 
     async def _trigger_send(self, what: str, send: Callable[[], Awaitable[Any]]) -> None:
         await self.host.safe(send(), what)

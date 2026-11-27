@@ -60,6 +60,8 @@ class Session:
     stops: list = field(default_factory=list)          # dict per StopTransaction
     meter_values: list = field(default_factory=list)   # dict per MeterValues
     data_transfers: list = field(default_factory=list)
+    firmware_statuses: list = field(default_factory=list)     # status per FirmwareStatusNotification
+    diagnostics_statuses: list = field(default_factory=list)  # status per DiagnosticsStatusNotification
     cp: object = None
 
 
@@ -141,6 +143,16 @@ class PeerCP(OcppCP16):
     async def on_data_transfer(self, vendor_id, **kw):
         self.session.data_transfers.append({"vendor_id": vendor_id, **kw})
         return call_result.DataTransfer(status="Accepted", data="pong")
+
+    @on("FirmwareStatusNotification")
+    async def on_firmware_status(self, status):
+        self.session.firmware_statuses.append(status)
+        return call_result.FirmwareStatusNotification()
+
+    @on("DiagnosticsStatusNotification")
+    async def on_diagnostics_status(self, status):
+        self.session.diagnostics_statuses.append(status)
+        return call_result.DiagnosticsStatusNotification()
 
 
 class CsmsPeer:

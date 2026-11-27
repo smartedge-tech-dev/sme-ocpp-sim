@@ -50,6 +50,8 @@ from .enums import (
     ClearChargingProfileStatus,
     ConfigurationStatus,
     DataTransferStatus,
+    DiagnosticsStatus,
+    FirmwareStatus,
     GetCompositeScheduleStatus,
     Location,
     Measurand,
@@ -431,6 +433,48 @@ class CancelReservationResponse(OcppModel):
     status: CancelReservationStatus
 
 
+# --- Firmware Management (M7) ---------------------------------------------------------
+
+
+class UpdateFirmwareRequest(OcppModel):
+    location: str  # anyURI
+    retries: Optional[int] = None
+    retrieve_date: DateTime
+    retry_interval: Optional[int] = None
+
+
+class UpdateFirmwareResponse(OcppModel):
+    pass
+
+
+class GetDiagnosticsRequest(OcppModel):
+    location: str  # anyURI
+    retries: Optional[int] = None
+    retry_interval: Optional[int] = None
+    start_time: Optional[DateTime] = None
+    stop_time: Optional[DateTime] = None
+
+
+class GetDiagnosticsResponse(OcppModel):
+    file_name: Optional[CiString255] = None
+
+
+class FirmwareStatusNotificationRequest(OcppModel):
+    status: FirmwareStatus
+
+
+class FirmwareStatusNotificationResponse(OcppModel):
+    pass
+
+
+class DiagnosticsStatusNotificationRequest(OcppModel):
+    status: DiagnosticsStatus
+
+
+class DiagnosticsStatusNotificationResponse(OcppModel):
+    pass
+
+
 # --- registry ---------------------------------------------------------------------------
 
 ACTIONS = (
@@ -458,6 +502,10 @@ ACTIONS = (
     "ClearCache",
     "ReserveNow",
     "CancelReservation",
+    "UpdateFirmware",
+    "GetDiagnostics",
+    "FirmwareStatusNotification",
+    "DiagnosticsStatusNotification",
 )
 
 REQUESTS: dict[str, type[OcppModel]] = {a: globals()[f"{a}Request"] for a in ACTIONS}

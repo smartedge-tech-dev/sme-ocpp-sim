@@ -40,6 +40,8 @@ Shell.addStrings("zh", {
   "detail.heartbeat": "心跳 {t}",
   "detail.tx_queue": "待发送 {n} 条",
   "detail.local_list": "本地列表 v{n}",
+  "detail.firmware": "固件 {s}",
+  "detail.log": "日志上传 {s}",
   "detail.last_error": "最近错误：{e}",
   "detail.connector": "枪 {n}",
   "detail.plugged": "已插枪",

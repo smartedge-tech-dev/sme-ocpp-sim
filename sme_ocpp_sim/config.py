@@ -196,6 +196,20 @@ class SessionConfig(StrictModel):
     target_soc: float = Field(90.0, ge=0, le=100)
 
 
+class MaintenanceConfig(StrictModel):
+    """Firmware update / diagnostics (log) upload simulation (M7). No file is downloaded or uploaded: each step
+    only waits its duration (wall-clock seconds). ``fail_*`` makes every attempt of that step fail (failure
+    injection); ``retry_interval_s`` is used when the CSMS request has no retryInterval."""
+
+    download_s: float = Field(2.0, ge=0)
+    install_s: float = Field(2.0, ge=0)
+    upload_s: float = Field(2.0, ge=0)
+    retry_interval_s: float = Field(5.0, ge=0)
+    fail_download: bool = False
+    fail_install: bool = False
+    fail_upload: bool = False
+
+
 #: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.
 PASSWORD_MASK = "********"
 
@@ -247,6 +261,8 @@ class ChargerConfig(StrictModel):
     meter_sample_interval_s: Optional[int] = Field(None, ge=0)
     #: OCPP 2.0.1 Device Model overrides and user-defined variables (2.0.1 chargers only).
     variables: List[VariableConfig] = Field(default_factory=list)
+    #: Firmware / diagnostics simulation timings and failure injection (M7).
+    maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
     @field_validator("id_tags")
     @classmethod

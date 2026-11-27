@@ -102,9 +102,21 @@ def test_trigger(msg, st, wire):
 
 
 @pytest.mark.parametrize("msg", ["DiagnosticsStatusNotification", "FirmwareStatusNotification"])
-def test_trigger_not_implemented(msg):
+def test_trigger_maintenance_status(msg):
+    """M7: the firmware / diagnostics triggers go to the station like the others (they were NotImplemented)."""
     out, cmds = _call("TriggerMessage", {"requestedMessage": msg}, A)
-    assert out == {"status": "NotImplemented"} and cmds == []
+    assert out == {"status": "Accepted"} and cmds == [d.Trigger(d.TriggerWhat(msg), None)]
+
+
+def test_update_firmware_and_get_diagnostics():
+    out, cmds = _call("UpdateFirmware", {"location": "ftp://x/fw.bin", "retrieveDate": "2026-11-27T10:00:00Z",
+                                         "retries": 2, "retryInterval": 5})
+    assert out == {} and cmds[0].location == "ftp://x/fw.bin" and cmds[0].retries == 2
+    assert cmds[0].retry_interval_s == 5 and cmds[0].retrieve_at.tzinfo is not None
+    out, cmds = _call("GetDiagnostics", {"location": "ftp://x/"}, "CP1-diagnostics.log")
+    assert out == {"fileName": "CP1-diagnostics.log"} and isinstance(cmds[0], d.GetDiagnostics)
+    out, _ = _call("GetDiagnostics", {"location": "ftp://x/"}, None)
+    assert out == {}
 
 
 def test_trigger_connector_range():
@@ -229,7 +241,8 @@ def test_remote_start_with_invalid_profile_rejected(profile):
 
 def test_unlisted_actions_have_no_handler():
     h = Adapter16().handlers(FakeRuntime())
-    assert "UpdateFirmware" not in h and "GetDiagnostics" not in h and "SignCertificate" not in h
+    assert "SignCertificate" not in h and "SignedUpdateFirmware" not in h
+    assert {"UpdateFirmware", "GetDiagnostics"} <= set(h)  # M7
     assert {"SendLocalList", "GetLocalListVersion", "ClearCache", "ReserveNow", "CancelReservation"} <= set(h)
 
 

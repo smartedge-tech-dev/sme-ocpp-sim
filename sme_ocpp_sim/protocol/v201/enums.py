@@ -474,3 +474,25 @@ class CancelReservationStatusEnumType(str, Enum):
 class ReservationUpdateStatusEnumType(str, Enum):
     expired = "Expired"
     removed = "Removed"
+
+
+# --- M7 firmware management, diagnostics (UpdateFirmware / GetLog) ------------------------------------------
+
+
+class UpdateFirmwareStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    accepted_canceled = "AcceptedCanceled"
+    invalid_certificate = "InvalidCertificate"
+    revoked_certificate = "RevokedCertificate"
+
+
+class LogEnumType(str, Enum):
+    diagnostics_log = "DiagnosticsLog"
+    security_log = "SecurityLog"
+
+
+class LogStatusEnumType(str, Enum):
+    accepted = "Accepted"
+    rejected = "Rejected"
+    accepted_canceled = "AcceptedCanceled"

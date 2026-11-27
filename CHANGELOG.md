@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reservations end on expiry, cancel, fault or unavailability (2.0.1 ReservationStatusUpdate `Expired` /
   `Removed`).
 - Web UI: the charger detail shows the local list version, a connector card its reservation.
+- Firmware update and diagnostics / log upload simulation for OCPP 1.6J and 2.0.1 (nothing is downloaded or
+  uploaded): UpdateFirmware (1.6 Downloading → Downloaded → Installing → reboot → Installed; 2.0.1 adds
+  DownloadScheduled, SignatureVerified, InstallScheduled, InstallRebooting, `requestId`, AcceptedCanceled /
+  Rejected), the install waits for running transactions with the free connectors Unavailable, then reboots and
+  boots again (2.0.1 reason `FirmwareUpdate`); GetDiagnostics (1.6) / GetLog (2.0.1, AcceptedCanceled) with a
+  file name and Uploading → Uploaded / failure. TriggerMessage FirmwareStatusNotification /
+  DiagnosticsStatusNotification (1.6, was NotImplemented) and LogStatusNotification (2.0.1) report the current
+  status. New per-charger `maintenance` settings: step durations, retry interval and failure injection
+  (`fail_download`, `fail_install`, `fail_upload`). The Web UI charger detail shows the firmware / log status.
 
 ## [0.2.0] - 2026-11-27
 

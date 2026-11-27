@@ -284,6 +284,8 @@ function renderDetail(fresh) {
   if (c.last_heartbeat) info.push(t("detail.heartbeat", { t: hhmmss(Date.parse(c.last_heartbeat)) }));
   if (c.tx_queue) info.push(t("detail.tx_queue", { n: c.tx_queue }));
   if (c.local_list_version) info.push(t("detail.local_list", { n: c.local_list_version }));
+  if (c.firmware && c.firmware.status) info.push(t("detail.firmware", { s: c.firmware.status }));
+  if (c.log && c.log.status) info.push(t("detail.log", { s: c.log.status }));
   $("dInfo").textContent = info.join(" · ");
   $("dError").textContent = c.last_error ? t("detail.last_error", { e: errText(c.last_error) }) : "";
   $("dConnect").disabled = c.enabled !== false;

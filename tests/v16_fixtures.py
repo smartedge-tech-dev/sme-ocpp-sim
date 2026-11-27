@@ -301,4 +301,28 @@ FIXTURES: dict[tuple[str, str], dict[str, dict]] = {
         "minimal": {"status": "Accepted"},
         "full": {"status": "Rejected"},
     },
+    ("UpdateFirmware", "request"): {
+        "minimal": {"location": "https://fw.example.com/fw.bin", "retrieveDate": T1},
+        "full": {"location": "ftp://fw.example.com/fw.bin", "retries": 3, "retrieveDate": T1, "retryInterval": 30},
+    },
+    ("UpdateFirmware", "response"): {"minimal": {}, "full": {}},
+    ("GetDiagnostics", "request"): {
+        "minimal": {"location": "ftp://logs.example.com/"},
+        "full": {"location": "https://logs.example.com/up", "retries": 2, "retryInterval": 10,
+                 "startTime": T1, "stopTime": T1},
+    },
+    ("GetDiagnostics", "response"): {
+        "minimal": {},
+        "full": {"fileName": "CP1-diagnostics-20261127T000000Z.log"},
+    },
+    ("FirmwareStatusNotification", "request"): {
+        "minimal": {"status": "Idle"},
+        "full": {"status": "InstallationFailed"},
+    },
+    ("FirmwareStatusNotification", "response"): {"minimal": {}, "full": {}},
+    ("DiagnosticsStatusNotification", "request"): {
+        "minimal": {"status": "Uploading"},
+        "full": {"status": "UploadFailed"},
+    },
+    ("DiagnosticsStatusNotification", "response"): {"minimal": {}, "full": {}},
 }
