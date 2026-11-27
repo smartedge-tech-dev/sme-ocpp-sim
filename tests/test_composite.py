@@ -8,14 +8,14 @@ from typing import Optional, Sequence, Tuple
 
 import pytest
 
-from sme_ocpp_sim.charging.composite import (
+from sme_ocpp_sim.protocol.v16.composite import (
     ActiveTransaction,
     CompositePeriod,
     composite_schedule,
     convert,
     limit_at,
 )
-from sme_ocpp_sim.charging.profiles import (
+from sme_ocpp_sim.protocol.v16.profiles import (
     ChargingProfile,
     ChargingProfileKind,
     ChargingProfilePurpose,

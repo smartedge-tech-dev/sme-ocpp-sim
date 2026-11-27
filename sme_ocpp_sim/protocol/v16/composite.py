@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, cast
 
-from sme_ocpp_sim.charging.profiles import (
+from .profiles import (
     ChargingProfile,
     ChargingProfileKind,
     ChargingProfilePurpose,

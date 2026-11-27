@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sme_ocpp_sim.charging import profiles as cp
-from sme_ocpp_sim.charging.composite import CompositePeriod, CompositeSchedule
+from sme_ocpp_sim.protocol.v16 import profiles as cp
+from sme_ocpp_sim.protocol.v16.composite import CompositePeriod, CompositeSchedule
 from sme_ocpp_sim.protocol import base as d
 from sme_ocpp_sim.protocol.v16.adapter import Adapter16
 from sme_ocpp_sim.rpc import CallError

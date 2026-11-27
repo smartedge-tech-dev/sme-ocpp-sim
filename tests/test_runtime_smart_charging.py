@@ -63,7 +63,7 @@ def _profile(limit, unit="W", purpose="TxProfile", pid=1, tx=None, first_period=
 
 
 async def _online(peer, rt):
-    await _until(lambda: rt.online and CP in peer.sessions and len(peer.sessions[CP].statuses) >= 1 + len(rt.conns))
+    await _until(lambda: rt.online and CP in peer.sessions and len(peer.sessions[CP].statuses) >= 1 + len(rt.station.conns))
     return peer.sessions[CP]
 
 
@@ -134,9 +134,9 @@ def test_tx_profile_dropped_at_transaction_end():
         assert (await peer.set_charging_profile(CP, 0, _profile(5000, "W", "TxDefaultProfile", pid=2))).status \
             == "Accepted"
         await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == 3000)
-        assert len(rt.profiles.profiles()) == 2
+        assert len(rt.station.profiles.profiles()) == 2
         assert await rt.stop_tx(1)
-        assert [ip.profile.profile_id for ip in rt.profiles.profiles()] == [2]
+        assert [ip.profile.profile_id for ip in rt.station.profiles.profiles()] == [2]
         assert rt.snapshot()["connectors"][0]["soc_pct"] is None  # EV state reset
         # no transaction: a TxProfile is refused (3.13.1)
         assert (await peer.set_charging_profile(CP, 1, _profile(3000, pid=3))).status == "Rejected"
@@ -153,15 +153,15 @@ def test_remote_start_profile_bound_to_started_transaction():
         assert r.status == "Accepted"
         await _until(lambda: s.starts and _statuses(s, 1)[-1:] == ["Charging"])
         tx = s.starts[0]["transaction_id"]
-        [ip] = rt.profiles.profiles(1)
+        [ip] = rt.station.profiles.profiles(1)
         assert ip.profile.profile_id == 9 and ip.profile.transaction_id == tx
         await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == 1600)  # 8 A x 200 V
 
         # refused authorization: the profile is discarded with the start
         assert (await peer.remote_start(CP, "BAD", 2, charging_profile=_profile(8, "A", pid=10))).status \
             == "Accepted"
-        await _until(lambda: "BAD" in s.authorizes and rt.conns[2].pending_tag is None)
-        assert rt.conns[2].pending_profile is None and rt.profiles.profiles(2) == ()
+        await _until(lambda: "BAD" in s.authorizes and rt.station.conns[2].pending_tag is None)
+        assert rt.station.conns[2].pending_profile is None and rt.station.profiles.profiles(2) == ()
     _scenario(body, cfg_kw={"connectors": 2, "auth_mode": "csms_only",
                             "config_keys": {"AuthorizeRemoteTxRequests": "true"}},
               peer_kw={"tag_statuses": {"BAD": "Invalid"}})
@@ -181,24 +181,24 @@ def test_remote_start_profile_survives_plug_during_reservation():
     async def body(peer, rt):
         s = await _online(peer, rt)
         release = asyncio.Event()
-        authorize = rt._authorize
+        authorize = rt.station._authorize
 
         async def slow_authorize(tag):
             await release.wait()
             return await authorize(tag)
 
-        rt._authorize = slow_authorize
+        rt.station._authorize = slow_authorize
         r = await peer.remote_start(CP, "R1", 1, charging_profile=_profile(8, "A", pid=9))
         assert r.status == "Accepted"
-        assert rt.conns[1].pending_tag == "R1" and rt.conns[1].pending_profile is not None
+        assert rt.station.conns[1].pending_tag == "R1" and rt.station.conns[1].pending_profile is not None
         await rt.plug(1)  # the follow-up is still parked in Authorize
         release.set()
         await _until(lambda: s.starts and _statuses(s, 1)[-1:] == ["Charging"])
         tx = s.starts[0]["transaction_id"]
-        [ip] = rt.profiles.profiles(1)
+        [ip] = rt.station.profiles.profiles(1)
         assert ip.profile.profile_id == 9 and ip.profile.transaction_id == tx
         await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == 1600)  # 8 A x 200 V
-        assert len(s.starts) == 1 and rt.conns[1].pending_profile is None
+        assert len(s.starts) == 1 and rt.station.conns[1].pending_profile is None
     _scenario(body, cfg_kw={"auth_mode": "csms_only", "config_keys": {"AuthorizeRemoteTxRequests": "true"}})
 
 
@@ -206,7 +206,7 @@ def test_tick_loop_survives_a_failing_tick(caplog):
     async def body(peer, rt):
         await _charging(peer, rt)
         calls = []
-        tick_all = rt._tick_all
+        tick_all = rt.station.tick
 
         def flaky():
             calls.append(1)
@@ -214,7 +214,7 @@ def test_tick_loop_survives_a_failing_tick(caplog):
                 raise RuntimeError("boom")
             tick_all()
 
-        rt._tick_all = flaky
+        rt.station.tick = flaky
         await _until(lambda: len(calls) >= 3)
         assert any("power model tick failed" in r.getMessage() and r.exc_info for r in caplog.records)
     _scenario(body)

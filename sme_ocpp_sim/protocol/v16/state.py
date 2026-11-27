@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict, FrozenSet, Optional
 
-from ..protocol.base import DomainStatus as S
+from ..base import DomainStatus as S
 
 
 class IllegalTransition(ValueError):

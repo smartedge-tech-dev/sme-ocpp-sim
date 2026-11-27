@@ -1,7 +1,7 @@
 import pytest
 
 from sme_ocpp_sim.protocol.base import DomainStatus as S
-from sme_ocpp_sim.runtime.state import CHARGER_TRANSITIONS, TRANSITIONS, ConnectorState, IllegalTransition
+from sme_ocpp_sim.protocol.v16.state import CHARGER_TRANSITIONS, TRANSITIONS, ConnectorState, IllegalTransition
 
 
 def test_table_covers_every_state():

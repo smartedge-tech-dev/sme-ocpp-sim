@@ -175,10 +175,15 @@ class RpcConnection:
     async def _on_bad_frame(self, raw: str, e: framer.BadFrame) -> None:
         mtype = e.message_type if isinstance(e.message_type, int) else None
         if e.kind == framer.NO_UID:
-            # TODO(spec): 1.6J does not define an answer for a frame without a usable
-            # uniqueId (2.0.1: id "-1" + RpcFrameworkError, v0.2 adapter). Log and drop.
-            self._emit(FrameInfo("rx", raw, mtype, None, None, f"dropped: {e.reason}"))
-            log.warning("%s: frame dropped (%s): %.200s", self.name, e.reason, raw)
+            # The answer to a frame without a usable uniqueId is the version's choice
+            # (ErrorCodes.bad_frame_reply); 1.6J defines none, so 1.6 logs and drops it.
+            reply_uid = self.codes.bad_frame_reply
+            if reply_uid is None:
+                self._emit(FrameInfo("rx", raw, mtype, None, None, f"dropped: {e.reason}"))
+                log.warning("%s: frame dropped (%s): %.200s", self.name, e.reason, raw)
+                return
+            self._emit(FrameInfo("rx", raw, mtype, None, None, e.reason))
+            await self._send_error(reply_uid, self.codes.rpc_framework_error or self.codes.protocol_error, e.reason)
             return
         if e.kind == framer.BAD_RESULT:
             entry = self._pending.get(e.uid)

@@ -1,11 +1,11 @@
-"""Per-charger configuration key store (version neutral: key -> value + attributes)."""
+"""Per-charger OCPP 1.6 configuration key store (key -> value + attributes, GetConfiguration / ChangeConfiguration)."""
 
 from __future__ import annotations
 
 import logging
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from ..protocol.base import ConfigEntry, ConfigKeyDef, ConfigStatus, KeyType
+from ..base import ConfigEntry, ConfigKeyDef, ConfigStatus, KeyType
 
 log = logging.getLogger(__name__)
 

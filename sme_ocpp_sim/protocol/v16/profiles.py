@@ -1,4 +1,4 @@
-"""Version-neutral charging profile domain types and the per-charger :class:`ProfileStore`.
+"""OCPP 1.6 charging profile domain types and the per-charger :class:`ProfileStore`.
 
 Rules implemented from OCPP 1.6 edition 2 (and its errata sheet v4.0):
 
@@ -19,7 +19,7 @@ Interpretations (not defined by the spec)
 - A TxProfile whose ``transaction_id`` differs from the connector's active transaction is Rejected.
 - Recurring without ``recurrency_kind``, non-increasing ``start_period`` values, an empty period list, a
   connectorId outside ``0..connector_count`` or ``valid_to <= valid_from`` are Rejected.
-- Value ranges the 1.6 schemas do not carry are checked here (the 2.0.1 adapter reuses this store): a negative
+- Value ranges the 1.6 schemas do not carry are checked here (2.0.1 gets its own copy, adapted to its spec): a negative
   ``limit`` / ``start_period`` / ``min_charging_rate``, ``number_phases`` outside 1..3 and ``duration <= 0`` (a
   schedule of zero length never applies) are Rejected (7.13 / 7.14).
 - RemoteStartTransaction profiles (:meth:`ProfileStore.validate` with ``for_remote_start``) must be TxProfiles
