@@ -203,13 +203,13 @@ from .adapter import (LOCAL_TOKEN_TYPE, Adapter201, charging_profile, charging_p
                       composite_schedule_type, connector_status, id_token, meter_value)
 from .composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
 from .enums import (BootReasonEnumType, ChangeAvailabilityStatusEnumType, ChargingLimitSourceEnumType,
-                    FirmwareStatusEnumType, UploadLogStatusEnumType,
                     ChargingProfileKindEnumType, ChargingProfilePurposeEnumType, ChargingProfileStatusEnumType,
                     ChargingRateUnitEnumType, ChargingStateEnumType, ClearChargingProfileStatusEnumType,
                     ConnectorStatusEnumType, GenericDeviceModelStatusEnumType, GenericStatusEnumType,
                     GetChargingProfileStatusEnumType, IdTokenEnumType, MessageTriggerEnumType,
                     OperationalStatusEnumType, ReadingContextEnumType, ReasonEnumType, RequestStartStopStatusEnumType, ResetEnumType, ResetStatusEnumType, TransactionEventEnumType,
                     TriggerMessageStatusEnumType, TriggerReasonEnumType, UnlockStatusEnumType)
+from .enums import FirmwareStatusEnumType, UploadLogStatusEnumType
 from .profiles import (REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT, ChargingProfile, ChargingSchedule, ClearStatus,
                        InstalledProfile, Limits, ProfileStatus, ProfileStore, SchedulePeriod)
 
@@ -1073,7 +1073,7 @@ class Station201(VersionStation):
     async def _trigger_statuses(self, targets: Sequence[_Evse]) -> None:
         """Send the current connectorStatus of ``targets`` (also when unchanged): queued while Accepted, directly
         while Pending (the outbox runs only once the boot is accepted)."""
-        events = []
+        events = []  # captured now: a state change during the direct sends below is reported by _refresh
         for e in targets:
             e.status = self._target(e)
             e.reported = connector_status(e.status)
@@ -1165,6 +1165,7 @@ class Station201(VersionStation):
         moved = [ip.evse_id for ip in self.profiles.profiles()
                  if ip.profile.profile_id == profile.profile_id and ip.evse_id != evse_id
                  and ip.profile.purpose is not PURPOSE.charging_station_external_constraints]
+        # install() validates again (same inputs, same verdict): it stays self-contained for other callers.
         self.profiles.install(evse_id, profile, active_transaction=active, limits=limits, wire=wire)
         if moved:
             log.info("%s: charging profile %d on EVSE %s replaced by the one for EVSE %d", self.cfg.id,

@@ -38,7 +38,9 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
-from .enums import (FirmwareStatusEnumType, UploadLogStatusEnumType,
+from .enums import (
+    FirmwareStatusEnumType,
+    UploadLogStatusEnumType,
     SetVariableStatusEnumType,
     ReportBaseEnumType,
     MutabilityEnumType,

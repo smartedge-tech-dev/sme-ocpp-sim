@@ -98,7 +98,8 @@ Interpretations (not defined by the spec)
                                                                        (initial: ``local_only``)
   TxCtrlr.EVConnectionTimeOut (2.6.1)           integer s  ReadWrite   120: a token waiting for the cable
                                                                        is dropped after it (E03 / F02.FR.07;
-                                                                       0 = never)
+                                                                       0 = never; a change applies to the
+                                                                       tokens presented afterwards)
   TxCtrlr.StopTxOnEVSideDisconnect (2.6.2)      boolean    ReadOnly    fixed: true (unplugging ends the
                                                                        transaction)
   TxCtrlr.TxStartPoint / TxStopPoint            MemberList ReadOnly    ``PowerPathClosed`` (M2 behaviour)

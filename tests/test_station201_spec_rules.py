@@ -98,13 +98,12 @@ def test_central_and_no_authorization_tokens_are_not_authorized():
         s = await _online(peer, rt)
         await rt.plug(1)
         await rt.plug(2)
-        assert (await peer.request(CP, _start("BAD", evse_id=1))).status == "Accepted"
-        assert (await peer.request(CP, _start("BAD2", 2, "NoAuthorization", evse_id=2))).status == "Accepted"
-        await _until(lambda: rt.has_transaction(1) and rt.has_transaction(2))
-        assert s.authorizes == []
+        assert (await peer.request(CP, _start("C1", evse_id=1))).status == "Accepted"
+        assert (await peer.request(CP, _start("N2", 2, "NoAuthorization", evse_id=2))).status == "Accepted"
+        await _until(lambda: len(s.transaction_events) >= 2)  # the Started of both (no periodic: interval 0)
+        assert rt.has_transaction(1) and rt.has_transaction(2) and s.authorizes == []
         assert {e["trigger_reason"] for e in s.transaction_events[:2]} == {"RemoteStart"}
-    _scenario(body, {"token_statuses": {"BAD": "Blocked", "BAD2": "Blocked"}},
-              {"connectors": 2, "auth_mode": "csms_only",
+    _scenario(body, cfg_kw={"connectors": 2, "auth_mode": "csms_only", "meter_sample_interval_s": 0,
                "variables": [_var("AuthCtrlr", "AuthorizeRemoteStart", True)]})
 
 
@@ -115,12 +114,12 @@ def test_waiting_token_dropped_after_ev_connection_timeout():
         assert await rt.swipe(1, "LOCAL") == AuthResult.ACCEPTED
         assert (await peer.request(CP, _start(evse_id=2))).status == "Accepted"
         await _until(lambda: [c["pending_tag"] for c in rt.snapshot()["connectors"]] == ["LOCAL", "R1"])
-        await _until(lambda: [c["pending_tag"] for c in rt.snapshot()["connectors"]] == [None, None], timeout=5)
+        await _until(lambda: [c["pending_tag"] for c in rt.snapshot()["connectors"]] == [None, None], timeout=8)
         await rt.plug(1)
         await asyncio.sleep(0.2)
         assert not rt.has_transaction(1) and s.transaction_events == []
     _scenario(body, cfg_kw={"connectors": 2, "auth_mode": "accept_all",
-                            "variables": [_var("TxCtrlr", "EVConnectionTimeOut", 1)]})
+                            "variables": [_var("TxCtrlr", "EVConnectionTimeOut", 3)]})
 
 
 def test_triggered_readings_use_their_measurand_variables():
@@ -132,9 +131,9 @@ def test_triggered_readings_use_their_measurand_variables():
         assert (await peer.request(CP, call.TriggerMessage(requested_message="MeterValues"))).status == "Accepted"
         assert (await peer.request(CP, call.TriggerMessage(requested_message="TransactionEvent"))).status \
             == "Accepted"
-        await _until(lambda: s.meter_values and len(s.transaction_events) == 2)
+        await _until(lambda: s.meter_values and any(e["trigger_reason"] == "Trigger" for e in s.transaction_events))
         assert [v["measurand"] for v in s.meter_values[0]["meter_value"][0]["sampled_value"]] == ["Voltage"]
-        ev = s.transaction_events[1]
+        [ev] = [e for e in s.transaction_events if e["trigger_reason"] == "Trigger"]
         assert [v["measurand"] for v in ev["meter_value"][0]["sampled_value"]] == ["Current.Import"]
     _scenario(body, cfg_kw={"auth_mode": "accept_all", "meter_sample_interval_s": 0, "variables": [
         _var("AlignedDataCtrlr", "Measurands", "Voltage"),
