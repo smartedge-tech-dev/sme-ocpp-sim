@@ -76,3 +76,33 @@ These are simulator conventions, not OCPP rules:
 - Energy is integrated with the trapezoid rule; the energy register only grows. SoC may overshoot the target
   by at most one step.
 - Ramps (`ramp_up_w_per_s`, `ramp_down_w_per_s`) are in W per simulated second; the default is a step change.
+
+## OCPP 2.0.1
+
+A 2.0.1 charger has its own copy of these rules (`protocol/v201/profiles.py` / `composite.py`); the power model
+is shared, so the same closed loop holds: GetCompositeSchedule equals the `Power.Active.Import` of the following
+TransactionEvent readings. Messages: SetChargingProfile, ClearChargingProfile, GetCompositeSchedule,
+GetChargingProfiles (answered by ReportChargingProfiles parts, one per EVSE and `chargingLimitSource`, `tbc` on
+all but the last), NotifyChargingLimit and ClearedChargingLimit, and the `chargingProfile` of
+RequestStartTransaction (installed bound to the transaction it starts).
+
+| Topic | Behaviour (interpretation where the schemas are silent) |
+|---|---|
+| Purposes | ChargingStationMaxProfile (evseId 0 only), TxDefaultProfile, TxProfile (needs the `transactionId` of the EVSE's running transaction), ChargingStationExternalConstraints (never from the CSMS: Rejected) |
+| Limit of an EVSE | min(ChargingStationMax, external constraints of evseId 0 and of the EVSE, TxProfile else TxDefaultProfile) |
+| evseId 0 | min(ChargingStationMax, external constraints of evseId 0, sum of the EVSE limits); unconstrained if one EVSE is |
+| Stack level conflict | another profile with the same EVSE, purpose and stackLevel and an overlapping validity period is Rejected (a same-id profile replaces) |
+| `chargingSchedule` array | every schedule is validated and reported; only the first is evaluated (no ISO 15118 EV is simulated) |
+| ClearChargingProfile | `chargingProfileId` wins over the criteria; the criteria are ANDed; external constraints are never cleared by the CSMS |
+| Device Model | SmartChargingCtrlr ProfileStackLevel (100), PeriodsPerSchedule (1024) and RateUnit (`A,W`) are enforced; ExternalControlSignalsEnabled `false` refuses the external limit; NotifyChargingLimitWithSchedules decides whether NotifyChargingLimit carries the schedule |
+
+**External limit.** `POST /api/chargers/{id}/external-limit` stands in for an energy management system: it
+installs a ChargingStationExternalConstraints profile (stackLevel 0, one period in W, negative profile id) on the
+EVSE or the station and sends NotifyChargingLimit (`chargingLimitSource` `EMS`); removing it sends
+ClearedChargingLimit. Both are sent only while the boot is accepted (a limit set offline applies but is not
+reported later). GetChargingProfiles reports these profiles with source `EMS`, the CSMS ones with `CSO`.
+OCPP 1.6 has no external limits and answers 400.
+
+The 2.0.1 rules recalled from the specification text (TxProfile needs a `transactionId`, the stack level
+conflict, external constraints not settable by the CSMS) were not verified against the spec document; see the
+module docstrings.

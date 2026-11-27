@@ -333,4 +333,71 @@ FIXTURES: dict = {
         "min": {},
         "full": {"customData": CUSTOM},
     },
+    # --- M5 smart charging
+    ("SetChargingProfile", "request"): {
+        "min": {"evseId": 1, "chargingProfile": CHARGING_PROFILE_MIN},
+        "full": {"customData": CUSTOM, "evseId": 0, "chargingProfile": CHARGING_PROFILE_FULL},
+    },
+    ("SetChargingProfile", "response"): {
+        "min": {"status": "Accepted"},
+        "full": {"customData": CUSTOM, "status": "Rejected", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("ClearChargingProfile", "request"): {
+        "min": {},
+        "full": {"customData": CUSTOM, "chargingProfileId": 3, "chargingProfileCriteria": {
+            "customData": CUSTOM, "evseId": 0, "chargingProfilePurpose": "ChargingStationMaxProfile",
+            "stackLevel": 1}},
+    },
+    ("ClearChargingProfile", "response"): {
+        "min": {"status": "Unknown"},
+        "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("GetCompositeSchedule", "request"): {
+        "min": {"duration": 60, "evseId": 0},
+        "full": {"customData": CUSTOM, "duration": 3600, "chargingRateUnit": "A", "evseId": 2},
+    },
+    ("GetCompositeSchedule", "response"): {
+        "min": {"status": "Rejected"},
+        "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL, "schedule": {
+            "customData": CUSTOM, "evseId": 1, "duration": 60, "scheduleStart": T1, "chargingRateUnit": "A",
+            "chargingSchedulePeriod": [{"startPeriod": 0, "limit": 16.0, "numberPhases": 3},
+                                       {"startPeriod": 30, "limit": 8, "numberPhases": 1, "phaseToUse": 2}]}},
+    },
+    ("GetChargingProfiles", "request"): {
+        "min": {"requestId": 1, "chargingProfile": {}},
+        "full": {"customData": CUSTOM, "requestId": 2, "evseId": 0, "chargingProfile": {
+            "customData": CUSTOM, "chargingProfilePurpose": "TxDefaultProfile", "stackLevel": 0,
+            "chargingProfileId": [1, 2], "chargingLimitSource": ["EMS", "Other", "SO", "CSO"]}},
+    },
+    ("GetChargingProfiles", "response"): {
+        "min": {"status": "NoProfiles"},
+        "full": {"customData": CUSTOM, "status": "Accepted", "statusInfo": STATUS_INFO_FULL},
+    },
+    ("ReportChargingProfiles", "request"): {
+        "min": {"requestId": 1, "chargingLimitSource": "CSO", "evseId": 1, "chargingProfile": [CHARGING_PROFILE_MIN]},
+        "full": {"customData": CUSTOM, "requestId": 1, "chargingLimitSource": "EMS", "tbc": True, "evseId": 0,
+                 "chargingProfile": [CHARGING_PROFILE_FULL, CHARGING_PROFILE_MIN]},
+    },
+    ("ReportChargingProfiles", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
+    ("NotifyChargingLimit", "request"): {
+        "min": {"chargingLimit": {"chargingLimitSource": "EMS"}},
+        "full": {"customData": CUSTOM, "evseId": 1,
+                 "chargingLimit": {"customData": CUSTOM, "chargingLimitSource": "SO", "isGridCritical": True},
+                 "chargingSchedule": CHARGING_PROFILE_FULL["chargingSchedule"]},
+    },
+    ("NotifyChargingLimit", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
+    ("ClearedChargingLimit", "request"): {
+        "min": {"chargingLimitSource": "EMS"},
+        "full": {"customData": CUSTOM, "chargingLimitSource": "Other", "evseId": 2},
+    },
+    ("ClearedChargingLimit", "response"): {
+        "min": {},
+        "full": {"customData": CUSTOM},
+    },
 }

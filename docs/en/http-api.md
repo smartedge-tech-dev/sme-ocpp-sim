@@ -60,6 +60,9 @@ the earlier ones already changed.
 |---|---|---|
 | GET | `/api/chargers/{id}/profiles?connector=` | Installed charging profiles |
 | GET | `/api/chargers/{id}/composite?connector=&duration=&unit=` | The GetCompositeSchedule answer computed locally (`connector` 0 = whole charge point; `evse` is accepted as an alias) |
+| POST | `/api/chargers/{id}/external-limit` | Body `{"connector": 0, "limit_w": 7000}` (`limit_w` `null` = remove). An external (energy management) limit: OCPP 2.0.1 installs a ChargingStationExternalConstraints profile and sends NotifyChargingLimit / ClearedChargingLimit; OCPP 1.6 answers 400 (not supported) |
+
+For an OCPP 2.0.1 charger `connector` is the EVSE id (0 = the whole station).
 
 ## Frame log
 

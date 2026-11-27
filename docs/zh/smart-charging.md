@@ -67,3 +67,30 @@ Relative 的 60 秒时段在任何 time_scale 下都持续真实的 60 秒。
   使用的相数 = min(EV 相数, 供电相数)。
 - 电能按梯形法积分，电能寄存器只增不减。SoC 最多会超出目标一个步长。
 - 爬坡（`ramp_up_w_per_s`、`ramp_down_w_per_s`）单位为每模拟秒的 W，默认是阶跃变化。
+
+## OCPP 2.0.1
+
+2.0.1 充电桩有这套规则的独立副本（`protocol/v201/profiles.py` / `composite.py`）；功率模型共用，因此同样的闭环成立：
+GetCompositeSchedule 的值等于随后 TransactionEvent 读数中的 `Power.Active.Import`。消息：SetChargingProfile、
+ClearChargingProfile、GetCompositeSchedule、GetChargingProfiles（按 EVSE 与 `chargingLimitSource` 分组，每组一条
+ReportChargingProfiles，除最后一条外带 `tbc`）、NotifyChargingLimit、ClearedChargingLimit，以及 RequestStartTransaction
+的 `chargingProfile`（绑定到它启动的交易后安装）。
+
+| 项目 | 行为（schema 未规定之处为本实现的解释） |
+|---|---|
+| Purpose | ChargingStationMaxProfile（仅 evseId 0）、TxDefaultProfile、TxProfile（需要该 EVSE 正在进行的交易的 `transactionId`）、ChargingStationExternalConstraints（CSMS 不可设置：Rejected） |
+| EVSE 的限值 | min(ChargingStationMax、evseId 0 与该 EVSE 的外部约束、TxProfile 否则 TxDefaultProfile) |
+| evseId 0 | min(ChargingStationMax、evseId 0 的外部约束、各 EVSE 限值之和)；任一 EVSE 无约束则无约束 |
+| stackLevel 冲突 | 相同 EVSE、purpose、stackLevel 且有效期重叠的另一 profile 被 Rejected（相同 id 则替换） |
+| `chargingSchedule` 数组 | 全部校验并上报，只评估第一个（不模拟 ISO 15118 EV） |
+| ClearChargingProfile | `chargingProfileId` 优先于条件；条件为 AND；外部约束不会被 CSMS 清除 |
+| Device Model | 执行 SmartChargingCtrlr ProfileStackLevel（100）、PeriodsPerSchedule（1024）、RateUnit（`A,W`）；ExternalControlSignalsEnabled 为 `false` 时拒绝外部限值；NotifyChargingLimitWithSchedules 决定 NotifyChargingLimit 是否携带 schedule |
+
+**外部限值。** `POST /api/chargers/{id}/external-limit` 代替能源管理系统：在 EVSE 或整站上安装
+ChargingStationExternalConstraints profile（stackLevel 0、单个 W 时段、负数 profile id），并发送 NotifyChargingLimit
+（`chargingLimitSource` `EMS`）；解除时发送 ClearedChargingLimit。两者只在 Boot 已被接受时发送（离线时设置的限值会生效，
+但之后不再补报）。GetChargingProfiles 以 source `EMS` 上报这些 profile，CSMS 设置的以 `CSO` 上报。OCPP 1.6 没有外部限值，
+返回 400。
+
+依据对规格正文的记忆实现的 2.0.1 规则（TxProfile 需要 `transactionId`、stackLevel 冲突、CSMS 不能设置外部约束）尚未对照规格书
+核实；详见各模块的 docstring。

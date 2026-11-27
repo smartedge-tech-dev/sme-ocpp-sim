@@ -73,3 +73,32 @@ GetCompositeSchedule、RemoteStartTransaction に含まれる充電プロファ�
   P = √3 × 線間電圧 × 電流 です。使用する相数 = min(EV の相数, 電源の相数)。
 - 電力量は台形則で積算し、電力量レジスタは増える一方です。SoC は目標を最大 1 ステップ分超えることがあります。
 - ランプ（`ramp_up_w_per_s`、`ramp_down_w_per_s`）の単位は模擬時間 1 秒あたりの W で、既定はステップ変化です。
+
+## OCPP 2.0.1
+
+2.0.1 の充電器はこのルールの独立したコピー（`protocol/v201/profiles.py` / `composite.py`）を持ちます。電力モデルは
+共通なので同じ閉ループが成り立ちます: GetCompositeSchedule の値は、その後の TransactionEvent の
+`Power.Active.Import` と一致します。メッセージ: SetChargingProfile、ClearChargingProfile、GetCompositeSchedule、
+GetChargingProfiles（EVSE と `chargingLimitSource` ごとに 1 通の ReportChargingProfiles で応答、最後以外は
+`tbc`）、NotifyChargingLimit、ClearedChargingLimit、RequestStartTransaction の `chargingProfile`（開始した
+トランザクションに紐付けて設定）。
+
+| 項目 | 動作（スキーマで決まらない部分は本実装の解釈） |
+|---|---|
+| Purpose | ChargingStationMaxProfile（evseId 0 のみ）、TxDefaultProfile、TxProfile（その EVSE の実行中トランザクションの `transactionId` が必要）、ChargingStationExternalConstraints（CSMS からは不可: Rejected） |
+| EVSE の制限値 | min(ChargingStationMax、evseId 0 と当該 EVSE の外部制約、TxProfile なければ TxDefaultProfile) |
+| evseId 0 | min(ChargingStationMax、evseId 0 の外部制約、各 EVSE 制限値の合計)。制限のない EVSE があれば無制限 |
+| stackLevel の衝突 | 同じ EVSE・purpose・stackLevel で有効期間が重なる別プロファイルは Rejected（同じ id は置き換え） |
+| `chargingSchedule` 配列 | すべて検証・報告し、評価するのは先頭のみ（ISO 15118 の EV は模擬しない） |
+| ClearChargingProfile | `chargingProfileId` が条件より優先。条件は AND。外部制約は CSMS から削除されない |
+| Device Model | SmartChargingCtrlr ProfileStackLevel（100）、PeriodsPerSchedule（1024）、RateUnit（`A,W`）を適用。ExternalControlSignalsEnabled が `false` なら外部制限値を拒否。NotifyChargingLimitWithSchedules で NotifyChargingLimit にスケジュールを含めるか決定 |
+
+**外部制限値。** `POST /api/chargers/{id}/external-limit` はエネルギーマネジメントシステムの代わりです。EVSE または
+ステーションに ChargingStationExternalConstraints プロファイル（stackLevel 0、W の 1 期間、負のプロファイル id）を
+設定し、NotifyChargingLimit（`chargingLimitSource` `EMS`）を送信します。解除すると ClearedChargingLimit を送信します。
+どちらも Boot が受理されている間だけ送信されます（オフラインで設定した値は適用されますが後から報告されません）。
+GetChargingProfiles はこれらを source `EMS`、CSMS のものを `CSO` として報告します。OCPP 1.6 には外部制限値がなく
+400 を返します。
+
+仕様本文の記憶に基づく 2.0.1 のルール（TxProfile には `transactionId` が必要、stackLevel の衝突、CSMS は外部制約を
+設定できない）は仕様書で未検証です。各モジュールの docstring を参照してください。

@@ -58,6 +58,9 @@ CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答
 |---|---|---|
 | GET | `/api/chargers/{id}/profiles?connector=` | インストール済みの充電プロファイル |
 | GET | `/api/chargers/{id}/composite?connector=&duration=&unit=` | GetCompositeSchedule の応答をローカルで計算した結果（`connector` 0 = 充電器全体。別名 `evse` も可） |
+| POST | `/api/chargers/{id}/external-limit` | ボディ `{"connector": 0, "limit_w": 7000}`（`limit_w` が `null` で解除）。外部（エネルギーマネジメント）制限値: OCPP 2.0.1 は ChargingStationExternalConstraints プロファイルを設定し NotifyChargingLimit / ClearedChargingLimit を送信。OCPP 1.6 は 400（未対応） |
+
+OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーション全体）。
 
 ## フレームログ
 

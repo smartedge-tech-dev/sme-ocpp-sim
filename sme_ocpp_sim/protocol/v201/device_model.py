@@ -78,6 +78,14 @@ Interpretations (not defined by the spec, or not verified against the spec text)
                                                                        2.0.1 spelling), reportData per
                                                                        NotifyReport
   DeviceDataCtrlr.BytesPerMessage [same]        integer    ReadOnly    65000, informative (not enforced)
+  SmartChargingCtrlr.Enabled / Available        boolean    ReadOnly    true (informative; M5)
+  SmartChargingCtrlr                            boolean    ReadWrite   false: the operator external limit
+  .ExternalControlSignalsEnabled                                       is refused (default true)
+  SmartChargingCtrlr                            boolean    ReadWrite   NotifyChargingLimit carries the
+  .NotifyChargingLimitWithSchedules                                    schedule (default true)
+  SmartChargingCtrlr.ProfileStackLevel          integer    ReadOnly    100: higher stackLevel -> Rejected
+  SmartChargingCtrlr.PeriodsPerSchedule         integer    ReadOnly    1024: more periods -> Rejected
+  SmartChargingCtrlr.RateUnit                   MemberList ReadOnly    A,W: another unit -> Rejected
   EVSE(evse i).AvailabilityState                OptionList ReadOnly    the connectorStatus of EVSE i
   ============================================  =========  ==========  ==================================
 
@@ -122,6 +130,7 @@ AUTH = "AuthCtrlr"
 TX = "TxCtrlr"
 SECURITY = "SecurityCtrlr"
 DEVICE_DATA = "DeviceDataCtrlr"
+SMART_CHARGING = "SmartChargingCtrlr"
 EVSE_COMPONENT = "EVSE"
 
 HEARTBEAT_INTERVAL = (OCPP_COMM, "HeartbeatInterval")
@@ -134,6 +143,13 @@ STOP_TX_ON_INVALID_ID = (TX, "StopTxOnInvalidId")
 MESSAGE_ATTEMPTS = (OCPP_COMM, "MessageAttempts")
 MESSAGE_ATTEMPT_INTERVAL = (OCPP_COMM, "MessageAttemptInterval")
 ITEMS_PER_MESSAGE = (DEVICE_DATA, "ItemsPerMessage")
+SC_ENABLED = (SMART_CHARGING, "Enabled")
+SC_AVAILABLE = (SMART_CHARGING, "Available")
+EXTERNAL_CONTROL_SIGNALS_ENABLED = (SMART_CHARGING, "ExternalControlSignalsEnabled")
+NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES = (SMART_CHARGING, "NotifyChargingLimitWithSchedules")
+PROFILE_STACK_LEVEL = (SMART_CHARGING, "ProfileStackLevel")
+PERIODS_PER_SCHEDULE = (SMART_CHARGING, "PeriodsPerSchedule")
+RATE_UNIT = (SMART_CHARGING, "RateUnit")
 INSTANCE_TX_EVENT = "TransactionEvent"
 INSTANCE_GET_REPORT = "GetReport"
 INSTANCE_GET_VARIABLES = "GetVariables"
@@ -158,6 +174,9 @@ DEFAULT_ITEMS_PER_MESSAGE = 50
 DEFAULT_BYTES_PER_MESSAGE = 65000
 DEFAULT_MESSAGE_ATTEMPTS = 3
 DEFAULT_MESSAGE_ATTEMPT_INTERVAL_S = 10
+DEFAULT_PROFILE_STACK_LEVEL = 100
+DEFAULT_PERIODS_PER_SCHEDULE = 1024  # the schema's maxItems of chargingSchedulePeriod
+RATE_UNITS = ("A", "W")
 #: ``TxStartPoint`` / ``TxStopPoint`` values (OCPP 2.0.1 E01; the station uses PowerPathClosed only).
 TX_POINTS = ("ParkingBayOccupancy", "EVConnected", "Authorized", "DataSigned", "PowerPathClosed",
              "EnergyTransfer")
@@ -536,6 +555,16 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         var((SECURITY, "OrganizationName"), DT.string, cfg.vendor, max_limit=50),
         var((SECURITY, "BasicAuthPassword"), DT.string, cfg.password or "", mutability=MU.write_only,
             reboot_required=True, min_limit=16, max_limit=40),
+    ]
+    out += [
+        ro(SC_ENABLED, DT.boolean, "true"),
+        ro(SC_AVAILABLE, DT.boolean, "true"),
+        var(EXTERNAL_CONTROL_SIGNALS_ENABLED, DT.boolean, "true"),
+        var(NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES, DT.boolean, "true"),
+        var(PROFILE_STACK_LEVEL, DT.integer, str(DEFAULT_PROFILE_STACK_LEVEL), mutability=MU.read_only, min_limit=0),
+        var(PERIODS_PER_SCHEDULE, DT.integer, str(DEFAULT_PERIODS_PER_SCHEDULE), mutability=MU.read_only,
+            min_limit=1, max_limit=DEFAULT_PERIODS_PER_SCHEDULE),
+        var(RATE_UNIT, DT.member_list, ",".join(RATE_UNITS), mutability=MU.read_only, values_list=RATE_UNITS),
     ]
     for instance in (INSTANCE_GET_REPORT, INSTANCE_GET_VARIABLES, INSTANCE_SET_VARIABLES):
         out.append(var(ITEMS_PER_MESSAGE, DT.integer, str(DEFAULT_ITEMS_PER_MESSAGE), mutability=MU.read_only,

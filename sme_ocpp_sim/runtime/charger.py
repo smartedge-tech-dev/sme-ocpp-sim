@@ -426,6 +426,11 @@ class ChargerRuntime:
         ``"W"`` / ``"A"`` (``None`` = W)."""
         return self.station.composite(connector, duration, unit)
 
+    async def set_external_limit(self, connector: int, limit_w: Optional[float]) -> None:
+        """Set (W) or remove (``None``) an external charging limit (0 = the whole charger); see the station's
+        ``set_external_limit``. ``NotImplementedError`` when the OCPP version has none (1.6)."""
+        await self.station.set_external_limit(connector, limit_w)
+
     def configuration(self) -> List[d.ConfigEntry]:
         """Run-time configuration keys as the CSMS would read them."""
         return self.station.configuration()
