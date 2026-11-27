@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from ...rpc.errors import OCPP201_ERRORS
@@ -138,9 +138,8 @@ class Adapter201(d.VersionAdapter):
 
     async def send_connector_status(self, ev: d.ConnectorStatus) -> None:
         """``ev.error_code`` / ``info`` are not part of a 2.0.1 StatusNotification and are not sent."""
-        assert ev.timestamp is not None
         await self._send("StatusNotification", m.StatusNotificationRequest(
-            timestamp=ev.timestamp, connector_status=connector_status(ev.status), evse_id=ev.evse_id,
+            timestamp=ev.timestamp or datetime.now(timezone.utc), connector_status=connector_status(ev.status), evse_id=ev.evse_id,
             connector_id=ev.connector_id))
 
     async def send_authorize(self, ev: d.AuthorizeRequest) -> d.IdTokenInfo:

@@ -22,6 +22,8 @@ for 2.0.1). Enqueueing is synchronous, so the operator API never waits for the C
 head item queued for the next session; a CALLERROR / timeout / invalid answer of a TransactionEvent is retried
 :data:`TX_MESSAGE_ATTEMPTS` times, :data:`TX_MESSAGE_RETRY_INTERVAL_S` x failures apart. StatusNotifications are
 not retried and are dropped at the end of a session (the state is reported afresh after the next accepted boot).
+The one exception to the single queue: the state report right after an accepted boot is sent directly, before the
+worker starts, so it precedes the events queued while offline / Pending.
 
 Interpretations (not defined by the spec)
 -----------------------------------------
@@ -33,7 +35,8 @@ Interpretations (not defined by the spec)
   is a ``ReasonEnumType`` value), or a CSMS that does not accept the token in a TransactionEvent answer
   (``Deauthorized`` / ``DeAuthorized``, the default of ``StopTxOnInvalidId``).
 - A token authorized before the cable is plugged waits on the connector, which stays ``Available`` until the
-  cable comes (2.0.1 has no ``Preparing``); the Web UI still sees the 1.6-style domain status.
+  cable comes (2.0.1 has no ``Preparing``); the Web UI still sees the 1.6-style domain status. An unplug drops a
+  waiting token (the next session needs a fresh authorization).
 - ``seqNo`` restarts at 0 for every transaction. A queued periodic ``Updated`` dropped by the queue bound
   (:data:`MAX_TX_QUEUE`) leaves a gap in ``seqNo``; ``Started`` / ``Ended`` / ``ChargingStateChanged`` are never
   dropped by the bound.
@@ -195,10 +198,11 @@ class Station201(VersionStation):
 
     async def on_online(self) -> None:
         # Bring every state up to date first (a transaction may have ended while offline), then report.
+        # ``reported`` is set for every EVSE before the first await, so a refresh meanwhile queues no duplicate.
         for e in self.evses.values():
             e.status = self._target(e)
-        for e in self.evses.values():
             e.reported = connector_status(e.status)
+        for e in self.evses.values():
             await self.host.safe(self._adapter.send_connector_status(self._status_event(e)), "StatusNotification")
         self.host.spawn(self._outbox_worker())
         self.host.start_ticks()
@@ -526,7 +530,7 @@ class Station201(VersionStation):
         e = self._evse(connector)
         if not e.plugged:
             return
-        e.plugged, e.finishing = False, False
+        e.plugged, e.finishing, e.pending_tag = False, False, None  # a waiting token does not outlive the cable
         if e.tx is not None:
             self._end_tx(e, T.ev_communication_lost, ReasonEnumType.ev_disconnected)
         else:
@@ -570,6 +574,8 @@ class Station201(VersionStation):
     async def fault(self, connector: int, error_code: str) -> None:
         """``error_code`` is one of :attr:`fault_codes` (a ``ReasonEnumType`` value)."""
         e = self._evse(connector)
+        if error_code not in self.fault_codes:
+            raise ValueError(f"fault code {error_code!r} is not one of {', '.join(self.fault_codes)}")
         e.fault = error_code
         if e.tx is not None:
             self._end_tx(e, T.abnormal_condition, ReasonEnumType(error_code))

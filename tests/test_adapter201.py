@@ -187,3 +187,17 @@ def test_unknown_evse_and_unsupported_smart_charging():
     assert s.installed_profiles() == () and s.configuration() == []
     assert s.composite(0, 60, "W").status is d.CommandStatus.REJECTED
     assert asyncio.run(s.handle(d.Reset(d.ResetKind.SOFT))) is d.CommandStatus.NOT_IMPLEMENTED
+
+
+def test_unknown_fault_code_changes_nothing():
+    async def main():
+        s = Station201(_Host(connectors=1, auth_mode="accept_all"))
+        await s.plug(1)
+        await s.swipe(1, "T")
+        with pytest.raises(ValueError, match="NoSuchFault"):
+            await s.fault(1, "NoSuchFault")
+        assert s.faulted(1) is None and s.has_transaction(1)
+        await s.fault(1, "PowerLoss")
+        ended = _queued(s)[-1]
+        assert ended.transaction_info.stopped_reason.value == "PowerLoss" and not s.has_transaction(1)
+    asyncio.run(main())
