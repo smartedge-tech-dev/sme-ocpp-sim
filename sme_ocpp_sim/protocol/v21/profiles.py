@@ -21,7 +21,10 @@ Rules (OCPP 2.1 Part 2 K01 / K28 / Q, simplest compliant subset)
   Idle period with any limit / dischargeLimit / setpoint (Q10.FR.02), ``evseSleep`` outside Idle (K01.FR.126), a
   positive ``dischargeLimit``, a setpoint outside [dischargeLimit, limit] (V2X.05), ``useLocalTime`` or
   ``randomizedDelay`` > 0 (K01.FR.123 / FR.124: not supported).
-- ``PhaseConflict``: dischargeLimit / setpoint _L2 / _L3 fields outside a TxProfile (V2X.09 / V2X.10).
+- ``PhaseConflict``: limit / dischargeLimit / setpoint _L2 / _L3 fields outside a TxProfile (K01.FR.143 / FR.144,
+  V2X.09 / V2X.10), and limit_L2 / limit_L3 in a period without ``limit`` (K01.FR.145 / FR.146). Checked before the
+  other period rules. K01.FR.142 (no L2 / L3 values the EV did not report) is not checked: no
+  NotifyEVChargingNeeds is simulated.
 - PriorityCharging / LocalGeneration not in SmartChargingCtrlr.SupportedAdditionalPurposes -> Rejected
   ``UnsupportedPurpose`` (K01.FR.120).
 - ``maxOfflineDuration`` (K01.FR.101 - FR.103, Q11 / Q12): while the station has been offline for longer, the
@@ -76,8 +79,10 @@ class SchedulePeriod21(SchedulePeriod):
     setpoint: Optional[float] = None  # positive charges, negative discharges
     operation_mode: Optional[Any] = None  # OperationModeEnumType; None = ChargingOnly (K01.FR.110 note)
     evse_sleep: bool = False
-    #: A dischargeLimit / setpoint / setpointReactive _L2 / _L3 field is present (V2X.09 / V2X.10).
+    #: A limit / dischargeLimit / setpoint / setpointReactive _L2 / _L3 field is present (K01.FR.143, V2X.09 / V2X.10).
     phase_fields: bool = False
+    #: limit_L2 or limit_L3 is present (K01.FR.145).
+    limit_phases: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,11 +106,14 @@ def mode_of(period: SchedulePeriod) -> Any:
 
 
 def _period(p: m.ChargingSchedulePeriodType) -> SchedulePeriod21:
-    phase_fields = any(x is not None for x in (p.discharge_limit_l2, p.discharge_limit_l3, p.setpoint_l2,
-                                                p.setpoint_l3, p.setpoint_reactive_l2, p.setpoint_reactive_l3))
+    limit_phases = p.limit_l2 is not None or p.limit_l3 is not None
+    phase_fields = limit_phases or any(x is not None for x in (
+        p.discharge_limit_l2, p.discharge_limit_l3, p.setpoint_l2, p.setpoint_l3, p.setpoint_reactive_l2,
+        p.setpoint_reactive_l3))
     return SchedulePeriod21(start_period=p.start_period, limit=p.limit, number_phases=p.number_phases,
                             phase_to_use=p.phase_to_use, discharge_limit=p.discharge_limit, setpoint=p.setpoint,
-                            operation_mode=p.operation_mode, evse_sleep=bool(p.evse_sleep), phase_fields=phase_fields)
+                            operation_mode=p.operation_mode, evse_sleep=bool(p.evse_sleep), phase_fields=phase_fields,
+                            limit_phases=limit_phases)
 
 
 def _schedule(s: m.ChargingScheduleType, start: Optional[datetime]) -> ChargingSchedule21:
@@ -136,6 +144,10 @@ def charging_profile21(wire: m.ChargingProfileType, now: datetime) -> Tuple[Char
 
 
 def _period_reason(purpose: Any, p: SchedulePeriod21, modes: Collection[str], bidirectional: bool) -> Optional[str]:
+    if p.phase_fields and purpose is not ChargingProfilePurpose.tx_profile:
+        return REASON_PHASE_CONFLICT  # K01.FR.143 / FR.144, V2X.09 / V2X.10
+    if p.limit_phases and p.limit is None:
+        return REASON_PHASE_CONFLICT  # K01.FR.145 / FR.146
     mode = mode_of(p)
     allowed = _ALLOWED.get(purpose)
     if (allowed is not None and mode not in allowed) or (mode is not MODE.charging_only and mode.value not in modes):
@@ -154,8 +166,6 @@ def _period_reason(purpose: Any, p: SchedulePeriod21, modes: Collection[str], bi
     if p.setpoint is not None and ((p.limit is not None and p.setpoint > p.limit)
                                    or (p.discharge_limit is not None and p.setpoint < p.discharge_limit)):
         return REASON_INVALID_SCHEDULE  # V2X.05
-    if p.phase_fields and purpose is not ChargingProfilePurpose.tx_profile:
-        return REASON_PHASE_CONFLICT  # V2X.09 / V2X.10
     return None
 
 

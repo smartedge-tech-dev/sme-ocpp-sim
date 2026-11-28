@@ -571,7 +571,7 @@ class Station201(VersionStation):
             e.status = self._target(e)
             e.reported = connector_status(e.status)
         for e in self.evses.values():
-            await self.host.safe(self._adapter.send_connector_status(self._status_event(e)), "StatusNotification")
+            await self.host.safe(self._send_status(self._status_event(e)), "StatusNotification")
         self._adapter.boot_reason = BootReasonEnumType.power_up  # a RemoteReset boot has been accepted
         self.host.spawn(self._outbox_worker())
         self.host.start_ticks()
@@ -793,7 +793,17 @@ class Station201(VersionStation):
         if self.host.online and wire != e.reported:
             e.reported = wire
             ev = self._status_event(e)  # captured now: the state may change before it is sent
-            self._push(_Out("StatusNotification", lambda: self._adapter.send_connector_status(ev)))
+            for what, send in self._status_sends(ev):  # one outbox item per message: a resend never repeats one
+                self._push(_Out(what, send))
+
+    def _status_sends(self, ev: d.ConnectorStatus) -> List[Tuple[str, Callable[[], Awaitable[Any]]]]:
+        """The messages that report a connector status change (2.0.1: StatusNotification; 2.1 may use
+        NotifyEvent too, G01), as (name, sender)."""
+        return [("StatusNotification", lambda: self._adapter.send_connector_status(ev))]
+
+    async def _send_status(self, ev: d.ConnectorStatus) -> None:
+        for _, send in self._status_sends(ev):
+            await send()
 
     # ================================================================== readings / power model
 
@@ -1433,14 +1443,9 @@ class Station201(VersionStation):
             log.info("%s: RequestStartTransaction accepted without a transaction (impairments.remote_start)",
                      self.cfg.id)
             return self.models.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
-        wire = req.charging_profile
-        profile = charging_profile(wire) if wire is not None else None
-        # Without evseId the EVSE is not known yet: checked as for EVSE 1 (every EVSE has the same rules).
-        if profile is not None:
-            reason = self.profiles.reject_reason(req.evse_id or 1, profile, for_remote_start=True,
-                                                 limits=self._limits())
-            if reason is not None:
-                return rejected(reason)
+        profile, wire, reason = self._remote_start_profile(req)
+        if reason is not None:
+            return rejected(reason)
         token = req.id_token.id_token
         group = req.group_id_token.id_token if req.group_id_token is not None else None
         if req.evse_id is not None:
@@ -1467,6 +1472,18 @@ class Station201(VersionStation):
         self._arm_connection_timeout(e)
         self.host.after_reply(functools.partial(self._remote_start_go, e, req.remote_start_id))
         return self.models.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
+
+    def _remote_start_profile(self, req: m.RequestStartTransactionRequest) -> Tuple[
+            Optional[ChargingProfile], Optional[m.ChargingProfileType], Optional[str]]:
+        """The domain TxProfile of a RequestStartTransaction, its wire model, and the reasonCode when it is rejected
+        (2.1 converts and checks it with its own rules)."""
+        wire = req.charging_profile
+        if wire is None:
+            return None, None, None
+        profile = charging_profile(wire)
+        # Without evseId the EVSE is not known yet: checked as for EVSE 1 (every EVSE has the same rules).
+        reason = self.profiles.reject_reason(req.evse_id or 1, profile, for_remote_start=True, limits=self._limits())
+        return profile, wire, reason
 
     def _remote_start_go(self, e: _Evse, remote_start_id: int) -> None:
         if e.pending_remote_id != remote_start_id or e.pending_tag is None or e.tx is not None:

@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- OCPP 2.1 transaction limits, tariffs and availability (v0.3.2, 2.1-M3): `transactionLimit` from the CSMS
+  (TransactionEventResponse, also after RequestStartTransaction) or set locally is confirmed with `LimitSet`; a
+  reached energy, time, SoC or cost limit suspends the energy transfer (`EnergyLimitReached` / `TimeLimitReached` /
+  `SoCLimitReached` / `CostLimitReached`) and a raised one resumes it. Tariffs are used now: SetDefaultTariff checks
+  `TooManyElements` / `ConditionNotSupported` and honours `validFrom`, ChangeTransactionTariff checks
+  `NoCurrencyChange` and sends `TariffChanged`, the AuthorizeResponse `tariff` becomes the driver tariff, the
+  Started event carries the `tariffId`, and the Ended event carries a rough `costDetails` (energy price and fixed
+  fee only). New Device Model variables TxCtrlr.SupportedLimits and TariffCostCtrlr.*; with
+  TariffCostCtrlr.Enabled[Tariff] false the tariff messages answer CALLERROR `NotSupported`.
+- Charger setting `availability_report` (`status` / `event` / `both`, default `status`, so the 2.1 wire behaviour is
+  unchanged from 0.3.1; `event` and `both` are opt-in): a 2.1 station reports connector status changes with
+  StatusNotification and/or NotifyEvent `Connector.AvailabilityState` (G01). `both` queues the two messages as
+  separate outbox items. A value other than `status` on a 1.6 / 2.0.1 charger is rejected when the config is
+  validated. The Excel `chargers` sheet has an `availability_report` column.
+- Mini CSMS: `transaction_limit` is sent in the answer to every 2.1 TransactionEvent `Started`; the tariff, the
+  transaction limit and the reported cost of a transaction are kept and shown, and an AvailabilityState NotifyEvent
+  updates the connector status. The Web UI shows a 2.1 transaction's limits and running cost (en / ja / zh).
+
+### Changed
+
+- OCPP 2.1 SetDefaultTariff answers `Rejected` `UnknownEVSE`: the reasonCode was spelled `UnknownEvse` in 0.3.1
+  (casing fix).
+- OCPP 2.1 SetChargingProfile now checks the `PhaseConflict` rule first, before the other profile checks.
+- OCPP 2.1 `maxTime` counts simulated seconds (wall time x `time_scale`, frozen while paused). A local limit and a
+  CSMS limit are kept apart and the lower one applies per key, so a later CSMS limit never raises a local one
+  (E16.FR.04). A driver tariff from an Authorize answer is replaced by every later answer for that idToken and
+  type; a `validFrom` without a timezone is read as UTC.
+- OCPP 2.1 RequestStartTransaction converts and checks its charging profile with the 2.1 rules (setpoint and
+  operationMode now apply), then with the 2.0.1 RequestStart rules.
+- OCPP 2.1 SetChargingProfile rejects `limit_L2` / `limit_L3` outside a TxProfile or without `limit` with
+  `PhaseConflict` (K01.FR.143 - FR.146).
+
 ## [0.3.1] - 2026-11-28
 
 ### Added

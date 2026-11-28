@@ -118,6 +118,13 @@ class CpSession:
         if trigger is not None:
             tx["last_trigger"] = trigger
 
+    def tx_extra(self, tx_id: str, **values: Any) -> None:
+        """OCPP 2.1 transaction fields (tariff_id, transaction_limit, total_cost, currency); ``None`` keeps the
+        previous value."""
+        tx = self.transactions.get(tx_id)
+        if tx is not None:
+            tx.update({k: v for k, v in values.items() if v is not None})
+
     def tx_stop(self, tx_id: str, meter_stop: Any, timestamp: Any, reason: Any) -> None:
         tx = self.transactions.get(tx_id)
         if tx is None:  # a stop for a transaction started before this connection

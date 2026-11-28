@@ -164,3 +164,16 @@ def test_retry_limits_default_unlimited_and_non_negative():
         ReconnectConfig(max_retries=-1)
     with pytest.raises(ValidationError):
         ChargerConfig(id="A", boot_max_retries=-1)
+
+
+def test_availability_report_is_rejected_before_2_1():
+    base = {"csms_defaults": {"url": "ws://x/ocpp"}}
+    for version in ("1.6", "2.0.1"):
+        with pytest.raises(ValueError, match="availability_report"):
+            SimConfig.model_validate({**base, "chargers": [
+                {"id": "A", "ocpp_version": version, "availability_report": "event"}]})
+    with pytest.raises(ValueError, match="availability_report"):  # the default version is 1.6
+        SimConfig.model_validate({**base, "chargers": [{"id": "A", "availability_report": "both"}]})
+    ok = SimConfig.model_validate({**base, "chargers": [
+        {"id": "A", "availability_report": "status"}, {"id": "B", "ocpp_version": "2.1", "availability_report": "both"}]})
+    assert [c.availability_report for c in ok.chargers] == ["status", "both"]

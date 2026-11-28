@@ -46,7 +46,8 @@
     const boot = d.boot ? Object.entries(d.boot).map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v) : v]) : [];
     const statuses = Object.entries(d.statuses).map(([k, s]) => [k, s.status, s.error_code || "", when(s.received_at)]);
     const txs = d.transactions.slice().reverse().map((x) => [x.id, x.connector, x.id_tag, x.active ? t("csms.tx.active") : (x.stop_reason || ""),
-      x.meter_start_wh, x.meter_stop_wh, x.energy]);
+      x.meter_start_wh, x.meter_stop_wh, x.energy,
+      x.total_cost != null ? `${x.total_cost} ${x.currency || ""}`.trim() : (x.tariff_id || "")]);
     const meter = d.meter_values.slice(-10).reverse().map((m) => [when(m.received_at), m.connector, m.transaction,
       Object.entries(m.values).map(([k, v]) => `${k}=${v}`).join(", ")]);
     const plan = d.plan.map((p) => [p.index, p.action, `${p.after} +${p.at_s}s`, t(`csms.plan.${p.status}`),
@@ -57,7 +58,7 @@
       section("csms.sec.boot", boot.length ? table(["common.col.name", "common.col.value"], boot) : h("p", { class: "muted" }, "-")),
       section("csms.sec.status", table(["csms.col.connector", "csms.col.status", "csms.col.error", "csms.col.time"], statuses)),
       section("csms.sec.tx", table(["csms.col.tx", "csms.col.connector", "csms.col.tag", "csms.col.state",
-        "csms.col.meter_start", "csms.col.meter_stop", "csms.col.energy"], txs)),
+        "csms.col.meter_start", "csms.col.meter_stop", "csms.col.energy", "csms.col.cost"], txs)),
       section("csms.sec.meter", table(["csms.col.time", "csms.col.connector", "csms.col.tx", "csms.col.values"], meter)),
       section("csms.sec.plan", table(["csms.col.index", "csms.col.action", "csms.col.when", "csms.col.status",
         "csms.col.result"], plan)),

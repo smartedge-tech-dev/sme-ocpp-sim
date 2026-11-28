@@ -172,10 +172,7 @@ New CSMS to station messages:
 |---|---|---|
 | AFRRSignal | Store-and-ack | Stored (the last signal is kept), `Accepted` |
 | NotifyAllowedEnergyTransfer | Store-and-ack | Stored per transaction, `Accepted`; `Rejected` if the transaction is unknown |
-| SetDefaultTariff | Store-and-ack | Stored per EVSE (0 = all EVSEs): `Accepted`, `DuplicateTariffId`, or `Rejected` for an unknown EVSE |
-| GetTariffs | Store-and-ack | Reads back the tariff assignments, or `NoTariff` |
-| ClearTariffs | Store-and-ack | A result per tariff: `Accepted` / `NoTariff` |
-| ChangeTransactionTariff | Store-and-ack | `Accepted` for an ongoing transaction, otherwise `TxNotFound` |
+| SetDefaultTariff, GetTariffs, ClearTariffs, ChangeTransactionTariff | Supported | See [Transaction limits, tariffs and availability](#ocpp-21-m3) |
 | SetDERControl | Store-and-ack | Stored by `controlId`, `Accepted` |
 | GetDERControl | Store-and-ack | `NotFound`, or `Accepted` followed by one ReportDERControl |
 | ClearDERControl | Store-and-ack | `Accepted` / `NotFound` |
@@ -183,8 +180,8 @@ New CSMS to station messages:
 | GetPeriodicEventStream, AdjustPeriodicEventStream | Not supported | CALLERROR `NotImplemented` (planned for v0.4) |
 | RequestBatterySwap, NotifyWebPaymentStarted | Not supported | CALLERROR `NotImplemented` |
 
-Store-and-ack means the request is kept in memory and answered schema-valid; nothing acts on it (no local cost
-calculation, no DER behaviour).
+Store-and-ack means the request is kept in memory and answered schema-valid; nothing acts on it (no DER
+behaviour).
 
 The 12 new station to CSMS messages (BatterySwap, ClosePeriodicEventStream, GetCertificateChainStatus, NotifyDERAlarm,
 NotifyDERStartStop, NotifyPeriodicEventStream (SEND), NotifyPriorityCharging, NotifySettlement,
@@ -218,7 +215,24 @@ specification leaves to the implementation, and options that are not modelled, a
 
 Not modelled: frequency response, SmartChargingCtrlr.SetpointPriority, `setpointReactive` and the `_L2` / `_L3`
 values (accepted, not applied), `evseSleep`, randomized delay and local time (`Rejected`), ISO 15118-20
-renegotiation, the 2.1 fields of a RequestStartTransaction profile (handled with the 2.0.1 rules).
+renegotiation.
+
+### Transaction limits, tariffs and availability (2.1-M3) { #ocpp-21-m3 }
+
+| Feature | Behaviour |
+|---|---|
+| Transaction limits (E16 / F07) | A `transactionLimit` in a TransactionEventResponse (also the one to the Started event of a RequestStartTransaction, F07) sets the limits listed in TxCtrlr.SupportedLimits (`maxCost`, `maxEnergy`, `maxTime`, `maxSoC`; others are ignored). They are confirmed once by an `Updated` event with triggerReason `LimitSet` and `transactionInfo.transactionLimit` (not for the answer to an `offline` event). Limits are checked every tick (so the energy may overshoot by one tick): a reached limit suspends the energy transfer with an `Updated` event, `chargingState` `SuspendedEVSE` and triggerReason `EnergyLimitReached` / `TimeLimitReached` / `SoCLimitReached` / `CostLimitReached`; a raised limit resumes it. `maxEnergy` counts the imported energy of the transaction, `maxTime` the simulated seconds since it started (wall time x `time_scale`, frozen while paused). `maxCost` uses the local cost when a tariff applies, otherwise the last `totalCost` the CSMS sent in a TransactionEventResponse |
+| Tariffs (I07 - I11) | SetDefaultTariff per EVSE (0 = every EVSE): `Rejected` `UnknownEVSE`, `TooManyElements` (more than TariffCostCtrlr.MaxElements prices, 10), `ConditionNotSupported` (tariffs with conditions are not supported), `DuplicateTariffId`, else `Accepted`. A tariff with `validFrom` applies from then on, the one without until then. GetTariffs / ClearTariffs read back and remove them. ChangeTransactionTariff: `TxNotFound`, `TooManyElements`, `ConditionNotSupported`, `NoCurrencyChange`, else `Accepted` and an `Updated` event `TariffChanged` with `tariffId`. With TariffCostCtrlr.Enabled[Tariff] false every tariff message is CALLERROR `NotSupported` |
+| Driver tariff (I08) | The `tariff` of an Accepted AuthorizeResponse applies to the next transaction of that idToken; otherwise a transaction uses the default tariff of its EVSE. Its `tariffId` is sent in the Started event |
+| Cost (I12) | With TariffCostCtrlr.Enabled[Tariff] and [Cost] true, the Ended event carries `costDetails`. This is a rough calculation: the energy times the first energy price, plus the first fixed fee, clamped by `minCost` / `maxCost`, excluding tax. Time, idle and reservation prices and taxes are not calculated; `chargingPeriods` is not sent; no running cost updates (Enabled[RunningCost] is false). The Web UI shows the limits and the running cost |
+| Availability (G01) | `availability_report` (charger setting, default `status`) reports a connector status change as StatusNotification (`status`), NotifyEvent with `Connector.AvailabilityState` and trigger `Delta` (`event`), or both. The Mini CSMS shows either one as the connector status |
+| Device Model | TxCtrlr.SupportedLimits; TariffCostCtrlr: Available / Enabled [Tariff, Cost] (true; Enabled[RunningCost] false), Currency (`JPY`), MaxElements[Tariff] (10), ConditionsSupported[Tariff] (false), TariffFallbackMessage[en] and TotalCostFallbackMessage[en] (empty) |
+| RequestStartTransaction profile | Converted and checked with the 2.1 rules (setpoint, operationMode, Dynamic, as SetChargingProfile), then with the 2.0.1 RequestStart rules |
+| `limit_L2` / `limit_L3` | `Rejected` `PhaseConflict` outside a TxProfile (K01.FR.143 / FR.144) or in a period without `limit` (K01.FR.145 / FR.146) |
+
+Not modelled: E17 (resuming a transaction after a reboot), the tariff conditions and time based prices, taxes,
+running cost updates, TariffCostCtrlr.Problem / HandleFailedTariff (an unusable driver tariff is ignored and the
+default tariff applies), the display messages of tariffs and costs.
 
 ## Not supported yet
 

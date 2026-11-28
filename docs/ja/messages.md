@@ -172,10 +172,7 @@ CSMS からステーションへの新しいメッセージ:
 |---|---|---|
 | AFRRSignal | 保存して応答 | 保存（最後の信号を保持）、`Accepted` |
 | NotifyAllowedEnergyTransfer | 保存して応答 | トランザクションごとに保存、`Accepted`。トランザクションが不明なら `Rejected` |
-| SetDefaultTariff | 保存して応答 | EVSE ごとに保存（0 は全 EVSE）。`Accepted`、`DuplicateTariffId`、不明な EVSE は `Rejected` |
-| GetTariffs | 保存して応答 | 料金の割り当てを読み返す。なければ `NoTariff` |
-| ClearTariffs | 保存して応答 | 料金ごとの結果 `Accepted` / `NoTariff` |
-| ChangeTransactionTariff | 保存して応答 | 進行中のトランザクションなら `Accepted`、それ以外は `TxNotFound` |
+| SetDefaultTariff、GetTariffs、ClearTariffs、ChangeTransactionTariff | 対応 | [取引上限・料金・可用性](#ocpp-21-m3) を参照 |
 | SetDERControl | 保存して応答 | `controlId` ごとに保存、`Accepted` |
 | GetDERControl | 保存して応答 | `NotFound`、または `Accepted` の後に ReportDERControl を 1 件 |
 | ClearDERControl | 保存して応答 | `Accepted` / `NotFound` |
@@ -183,8 +180,7 @@ CSMS からステーションへの新しいメッセージ:
 | GetPeriodicEventStream、AdjustPeriodicEventStream | 未対応 | CALLERROR `NotImplemented`（v0.4 で対応予定） |
 | RequestBatterySwap、NotifyWebPaymentStarted | 未対応 | CALLERROR `NotImplemented` |
 
-「保存して応答」は、リクエストをメモリに保持してスキーマに適合した応答を返すだけで、それに基づく動作（ローカルでの
-料金計算や DER の動作）はしません。
+「保存して応答」は、リクエストをメモリに保持してスキーマに適合した応答を返すだけで、それに基づく動作（DER の動作）はしません。
 
 ステーションから CSMS への新しい 12 メッセージ（BatterySwap、ClosePeriodicEventStream、GetCertificateChainStatus、
 NotifyDERAlarm、NotifyDERStartStop、NotifyPeriodicEventStream（SEND）、NotifyPriorityCharging、NotifySettlement、
@@ -217,8 +213,23 @@ OCPP 2.1 のスマート充電（K）と双方向電力伝送（Q）の基本部
 | NotifyPriorityCharging | ステーション → CSMS | 優先充電の切り替え（リモート／ローカル）ごとに送信。オフライン中はキューに入れません |
 
 モデル化していないもの: 周波数応答、SmartChargingCtrlr.SetpointPriority、`setpointReactive` と `_L2` / `_L3`
-の値（受け付けるが適用しない）、`evseSleep`、ランダム遅延とローカル時刻（`Rejected`）、ISO 15118-20 の再ネゴシエーション、
-RequestStartTransaction のプロファイルの 2.1 フィールド（2.0.1 の規則で処理）。
+の値（受け付けるが適用しない）、`evseSleep`、ランダム遅延とローカル時刻（`Rejected`）、ISO 15118-20 の再ネゴシエーション。
+
+### 取引上限・料金・可用性（2.1-M3） { #ocpp-21-m3 }
+
+| 機能 | 動作 |
+|---|---|
+| 取引上限（E16 / F07） | TransactionEventResponse の `transactionLimit`（RequestStartTransaction で開始した Started への応答も同様、F07）で、TxCtrlr.SupportedLimits に含まれる上限（`maxCost`、`maxEnergy`、`maxTime`、`maxSoC`。それ以外は無視）を設定します。設定は triggerReason `LimitSet` と `transactionInfo.transactionLimit` を持つ `Updated` イベントで 1 回確認します（`offline` のイベントへの応答では確認しません）。上限はティックごとに検査します（電力量は 1 ティック分超えることがあります）。到達すると `chargingState` `SuspendedEVSE` と triggerReason `EnergyLimitReached` / `TimeLimitReached` / `SoCLimitReached` / `CostLimitReached` の `Updated` イベントで電力供給を停止し、上限が引き上げられると再開します。`maxEnergy` はトランザクションの受電量、`maxTime` は取引開始からのシミュレーション秒数（実時間 × `time_scale`、一時停止中は進まない）。`maxCost` は料金表があればローカルの料金、なければ CSMS が TransactionEventResponse で最後に送った `totalCost` と比較します |
+| 料金表（I07〜I11） | SetDefaultTariff は EVSE ごと（0 は全 EVSE）。`Rejected` `UnknownEVSE`、`TooManyElements`（TariffCostCtrlr.MaxElements の 10 を超える価格）、`ConditionNotSupported`（条件付きの料金表は非対応）、`DuplicateTariffId`、それ以外は `Accepted`。`validFrom` を持つ料金表はその時刻から、持たないものはそれまで適用します。GetTariffs / ClearTariffs で読み返し・削除します。ChangeTransactionTariff は `TxNotFound`、`TooManyElements`、`ConditionNotSupported`、`NoCurrencyChange`、それ以外は `Accepted` で、`tariffId` を持つ `Updated` イベント `TariffChanged` を送ります。TariffCostCtrlr.Enabled[Tariff] が false の場合、料金表のメッセージはすべて CALLERROR `NotSupported` |
+| ドライバー料金表（I08） | Accepted の AuthorizeResponse の `tariff` は、その idToken の次のトランザクションに適用します。ない場合は EVSE の既定の料金表を使います。`tariffId` は Started イベントで送ります |
+| 料金（I12） | TariffCostCtrlr.Enabled[Tariff] と [Cost] が true なら、Ended イベントに `costDetails` を付けます。概算です：電力量 × 最初の電力量単価 + 最初の固定料金を `minCost` / `maxCost` で制限した税抜額。時間・アイドル・予約の料金と税は計算せず、`chargingPeriods` は送りません。途中経過の料金更新はしません（Enabled[RunningCost] は false）。Web UI は上限と現在の料金を表示します |
+| 可用性（G01） | 充電器設定 `availability_report`（既定 `status`）で、コネクタ状態の変化を StatusNotification（`status`）、`Connector.AvailabilityState`・trigger `Delta` の NotifyEvent（`event`）、または両方で報告します。Mini CSMS はどちらもコネクタ状態として表示します |
+| Device Model | TxCtrlr.SupportedLimits。TariffCostCtrlr: Available / Enabled [Tariff, Cost]（true。Enabled[RunningCost] は false）、Currency（`JPY`）、MaxElements[Tariff]（10）、ConditionsSupported[Tariff]（false）、TariffFallbackMessage[en] と TotalCostFallbackMessage[en]（空） |
+| RequestStartTransaction のプロファイル | 2.1 の規則（setpoint、operationMode、Dynamic。SetChargingProfile と同じ）で変換・検査し、その後 2.0.1 の RequestStart の規則で検査します |
+| `limit_L2` / `limit_L3` | TxProfile 以外（K01.FR.143 / FR.144）、または `limit` のない期間（K01.FR.145 / FR.146）では `Rejected` `PhaseConflict` |
+
+モデル化していないもの: E17（再起動後のトランザクション再開）、料金表の条件と時間ベースの料金、税、途中経過の料金更新、
+TariffCostCtrlr.Problem / HandleFailedTariff（処理できないドライバー料金表は無視して既定の料金表を適用）、料金表示メッセージ。
 
 ## 未対応の機能
 

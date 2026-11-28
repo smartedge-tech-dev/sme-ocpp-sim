@@ -52,6 +52,10 @@ class StationHost(Protocol):
     def monotonic(self) -> float:
         """Monotonic clock of the power model intervals."""
 
+    @property
+    def time_scale(self) -> float:
+        """Simulated seconds per wall second (the power model's ``time_scale``)."""
+
     def vehicle(self, connector_id: int) -> Any:
         """The ``charging.ev.Vehicle`` (model + initial / target SoC) of a new session on ``connector_id``."""
 

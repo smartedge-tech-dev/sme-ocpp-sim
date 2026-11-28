@@ -350,3 +350,20 @@ def test_web_failed_import_leaves_config_untouched(client):
     assert r.status_code == 400 and any("unknown charger 'nope'" in e for e in r.json()["errors"])
     assert engine.config.model_dump() == before
     assert {cid: run.runtime for cid, run in engine._runs.items()} == runs
+
+
+def test_availability_report_round_trip_and_rejected_before_2_1():
+    cfg = SimConfig.model_validate({
+        "csms_defaults": {"url": DEAD_URL, "security_profile": 1, "reconnect": FAST},
+        "chargers": [{"id": "A21", "password": "pw", "ocpp_version": "2.1", "availability_report": "both"},
+                     {"id": "B21", "password": "pw", "ocpp_version": "2.1"}]})
+    data, warnings = export_xlsx(cfg)
+    assert warnings == []
+    assert "availability_report" in [c.value for c in _book(data)["chargers"][1]]
+    back, msgs = import_xlsx(data, cfg)
+    assert back is not None, msgs
+    assert [c.availability_report for c in back.chargers] == ["both", "status"]
+    wb = _book(data)
+    _set(wb["chargers"], 3, "ocpp_version", "1.6")  # row 1 header, row 2 help, row 3 the first charger
+    back, msgs = import_xlsx(_bytes(wb), cfg)
+    assert back is None and any("availability_report" in x for x in msgs), msgs

@@ -11,6 +11,8 @@ by the RPC layer with CALLERROR NotImplemented. The answers that carry a decisio
 * SignCertificate - ``Rejected`` (it has no CA to sign with);
 * 2.0.1 Get15118EVCertificate / GetCertificateStatus - ``Failed``; NotifyEVChargingNeeds - ``Rejected`` (no
   charging schedule will follow); NotifyEVChargingSchedule - ``Accepted``.
+* 2.1 TransactionEvent - also ``mini_csms.transaction_limit`` in the answer to a Started event; 2.1 NotifyEvent
+  with Connector.AvailabilityState - recorded as the connector status (G01).
 
 All other answers are empty objects (their response schemas have no required field). Inbound payloads of actions
 with a model are checked with the version's codec: a violation is a CALLERROR with ``strict: true`` and a recorded
@@ -124,6 +126,8 @@ def build_handlers(spec: VersionSpec, session: "CpSession", ctx: Ctx) -> Dict[st
     if spec.version == "2.1":
         table.update(_ANSWERS21)
         table["PullDynamicScheduleUpdate"] = functools.partial(_pull_dynamic, session)
+        table["TransactionEvent"] = functools.partial(_tx_event21, session, ctx, table["TransactionEvent"])
+        table["NotifyEvent"] = functools.partial(_notify_event21, session)
     out: Dict[str, Handler] = {}
     for action in spec.cp_actions:
         out[action] = _wrap(spec, session, ctx, action, table.get(action))
@@ -265,6 +269,40 @@ _ANSWERS21: Dict[str, Callable[[dict], dict]] = {
     "OpenPeriodicEventStream": lambda p: {"status": "Accepted"},
     "VatNumberValidation": lambda p: {"vatNumber": p.get("vatNumber", ""), "status": "Rejected"},
 }
+
+
+#: mini_csms.transaction_limit field -> TransactionLimitType wire name (2.1, E16 / F07).
+_TX_LIMIT = {"max_energy_wh": "maxEnergy", "max_time_s": "maxTime", "max_cost": "maxCost", "max_soc": "maxSoC"}
+
+
+def _tx_event21(session: "CpSession", ctx: Ctx, base: Callable[[dict], dict], p: dict) -> dict:
+    """2.1 TransactionEvent: the 2.0.1 answer, plus ``mini_csms.transaction_limit`` in the answer to a Started event
+    (E16.FR.02 / F07.FR.02); the reported tariffId, transactionLimit and costDetails total are kept."""
+    out = base(p)
+    info = p.get("transactionInfo") or {}
+    tx_id = str(info.get("transactionId"))
+    cost = ((p.get("costDetails") or {}).get("totalCost") or {})
+    session.tx_extra(tx_id, tariff_id=info.get("tariffId"), transaction_limit=info.get("transactionLimit"),
+                     total_cost=(cost.get("total") or {}).get("exclTax"), currency=cost.get("currency"))
+    limit = getattr(ctx.cfg, "transaction_limit", None)
+    if p.get("eventType") == "Started" and limit is not None:
+        values = {wire: getattr(limit, k) for k, wire in _TX_LIMIT.items() if getattr(limit, k) is not None}
+        if values:
+            out = {**out, "transactionLimit": values}
+    return out
+
+
+def _notify_event21(session: "CpSession", p: dict) -> dict:
+    """G01: a Connector.AvailabilityState event updates the connector status like a StatusNotification."""
+    for ev in p.get("eventData") or ():
+        if not isinstance(ev, dict):
+            continue
+        comp, var = ev.get("component") or {}, ev.get("variable") or {}
+        if comp.get("name") == "Connector" and var.get("name") == "AvailabilityState":
+            evse = comp.get("evse") or {}
+            session.status(f"{evse.get('id')}/{evse.get('connectorId')}", ev.get("actualValue"), None,
+                           ev.get("timestamp"))
+    return {}
 
 
 #: ChargingScheduleUpdateType fields (the values a Dynamic profile period can change, K28).
