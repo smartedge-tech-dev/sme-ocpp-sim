@@ -129,6 +129,9 @@ class VersionStation(ABC):
     async def handle(self, cmd: Command) -> Any:
         """Execute one domain command from the adapter (``protocol.base.CommandSink``)."""
 
+    def impairments_changed(self) -> None:
+        """The shell installed new ``impairments`` (applied live); a station may act on them at once."""
+
     def check_call(self, action: str) -> None:
         """Called for every inbound CSMS CALL before its handler; raise ``rpc.CallError`` to answer it with that
         CALLERROR instead (e.g. 2.0.1 ``SecurityError`` while the registration is Rejected). Default: none."""

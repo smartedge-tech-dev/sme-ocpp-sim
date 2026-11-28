@@ -716,8 +716,10 @@ def test_periodic_drop_and_live_switch_off(version):
         rt.set_impairments(rt.impairments.model_copy(update={"drop_every_s": 0.3, "drop_jitter_s": 0.1,
                                                              "down_s": 0.1, "drop_mode": "close"}))
         assert rt.impaired
-        await _until(lambda: rt.drops >= 2 and rt.online)
-        assert rt.gave_up is None and len(peer.history) >= 3
+        # drops counts a drop when it fires, while rt.online may still be True for the dying session: wait for
+        # the third session itself (the cause of the old flake: two sessions seen with drops == 2).
+        await _until(lambda: rt.drops >= 2 and len(peer.history) >= 3 and rt.online)
+        assert rt.gave_up is None
         rt.set_impairments(rt.impairments.model_copy(update={"drop_every_s": None}))
         await _until(lambda: rt.online)
         drops = rt.drops

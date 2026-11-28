@@ -44,7 +44,23 @@ def _obj(props: Dict[str, Any], required: Optional[List[str]] = None, *, cid: bo
 def _model_props(model: type[BaseModel]) -> Dict[str, Any]:
     """The properties of a flat pydantic body model (no ``$defs``), ``title`` keys dropped."""
     schema = model.model_json_schema()
-    return {k: {kk: vv for kk, vv in v.items() if kk != "title"} for k, v in schema["properties"].items()}
+    defs = schema.get("$defs", {})
+
+    def clean(v: Any, seen: frozenset = frozenset()) -> Any:
+        if isinstance(v, dict):
+            out = {kk: clean(vv, seen) for kk, vv in v.items() if kk not in ("title", "$ref")}
+            if "$ref" in v:  # a nested model: inlined (MCP clients do not all resolve $defs)
+                name = v["$ref"].rsplit("/", 1)[-1]
+                if name in seen:
+                    raise ValueError(f"recursive model {name} cannot be inlined")
+                # The sibling keys (default, description) of the reference win over the model's own.
+                out = {**clean(defs[name], seen | {name}), **out}
+            return out
+        if isinstance(v, list):
+            return [clean(x, seen) for x in v]
+        return v
+
+    return {k: clean(v) for k, v in schema["properties"].items()}
 
 
 def build_registry(app: Any) -> McpRegistry:
@@ -78,7 +94,7 @@ def build_registry(app: Any) -> McpRegistry:
               "dir": {"type": "string", "enum": ["rx", "tx"]},
               "limit": {"type": "integer", "minimum": 1, "maximum": MAX_FRAMES, "default": 500}}, cid=False))
     add("get_impairments", "Fault injection settings of a charger: command blocking, latency / jitter, periodic "
-        "drops.", "GET", "/api/chargers/{cid}/impairments", _obj({}))
+        "drops, remote start / meter value / slow response anomalies.", "GET", "/api/chargers/{cid}/impairments", _obj({}))
 
     # ---- connection
     add("connect_charger", "Start the charger's connection loop to its CSMS (BootNotification follows).",
@@ -122,7 +138,9 @@ def build_registry(app: Any) -> McpRegistry:
     # ---- fault injection (expert)
     add("set_impairments", "Replace a charger's impairments block (applied live, no reconnect): block (CSMS -> "
         "charger action -> NotImplemented / NotSupported / NoReply), latency_ms / jitter_ms / direction / seed, "
-        "drop_every_s / drop_jitter_s / drop_mode / down_s. Omitted fields get their defaults (off).",
+        "drop_every_s / drop_jitter_s / drop_mode / down_s, remote_start (accept_no_tx: Accepted but no "
+        "transaction), meter (drop_ratio / reorder_window / end_after_stop / voltage_noise_v), response_delay_ms "
+        "(CSMS -> charger action -> ms the answer is held). Omitted fields get their defaults (off).",
         "PUT", "/api/chargers/{cid}/impairments", _obj(_model_props(ImpairmentConfig)), destructive=True)
     add("drop_connection", "Drop the charger's connection now (simulated network failure); it reconnects after "
         "reconnect_after_s (default: impairments.down_s). Transactions are kept.",

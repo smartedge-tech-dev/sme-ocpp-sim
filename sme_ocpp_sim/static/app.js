@@ -935,6 +935,8 @@ const BLOCK_MODES = ["NotImplemented", "NotSupported", "NoReply"];
 const IMP_NUMBERS = { impLatency: "latency_ms", impJitter: "jitter_ms", impSeed: "seed", impDropEvery: "drop_every_s",
   impDropJitter: "drop_jitter_s", impDown: "down_s" };
 const IMP_OPTIONAL = new Set(["seed", "drop_every_s"]);
+// Number inputs of impairments.meter: element id -> field.
+const IMP_METER = { impMeterDrop: "drop_ratio", impMeterReorder: "reorder_window", impVoltNoise: "voltage_noise_v" };
 
 async function openImpairDialog() {
   const id = S.sel;
@@ -944,23 +946,42 @@ async function openImpairDialog() {
     [detail, imp] = await Promise.all([api("GET", `/api/chargers/${enc(id)}`), api("GET", chargerUrl(id, "impairments"))]);
   } catch (e) { fail(e); return; }
   const block = imp.block || {};
+  const delays = imp.response_delay_ms || {};
+  const meter = imp.meter || {};
   $("impairTitle").textContent = t("imp.title", { id });
   $("impairErr").textContent = "";
   for (const [el, k] of Object.entries(IMP_NUMBERS)) $(el).value = imp[k] == null ? "" : imp[k];
   $("impDirection").value = imp.direction || "both";
   $("impDropMode").value = imp.drop_mode || "abort";
+  $("impRemoteStart").value = imp.remote_start || "normal";
+  for (const [el, k] of Object.entries(IMP_METER)) $(el).value = meter[k] ? meter[k] : "";
+  $("impEndAfterStop").checked = !!meter.end_after_stop;
   $("impDropNow").disabled = !detail.connected;
   $("blockRows").replaceChildren(...(detail.csms_actions || []).map((a) => h("tr", null, h("td", null, a),
     h("td", null, h("select", { "data-action": a },
       h("option", { value: "" }, t("imp.mode.none")),
-      ...BLOCK_MODES.map((m) => h("option", { value: m, selected: block[a] === m }, t(`imp.mode.${m}`))))))));
+      ...BLOCK_MODES.map((m) => h("option", { value: m, selected: block[a] === m }, t(`imp.mode.${m}`))))),
+    h("td", null, h("input", { type: "number", min: "0", max: "600000", step: "any", "data-delay": a,
+      value: delays[a] == null ? "" : delays[a] })))));
   $("impairForm").dataset.id = id;
   $("dlgImpair").showModal();
 }
 
 function impairBody() {
-  const body = { block: {}, direction: $("impDirection").value, drop_mode: $("impDropMode").value };
+  const body = { block: {}, direction: $("impDirection").value, drop_mode: $("impDropMode").value,
+    remote_start: $("impRemoteStart").value, meter: { end_after_stop: $("impEndAfterStop").checked },
+    response_delay_ms: {} };
   for (const sel of $("blockRows").querySelectorAll("select")) if (sel.value) body.block[sel.dataset.action] = sel.value;
+  for (const inp of $("blockRows").querySelectorAll("input[data-delay]")) {
+    const v = inp.value.trim();
+    if (v !== "" && Number(v) > 0) body.response_delay_ms[inp.dataset.delay] = Number(v);
+  }
+  for (const [el, k] of Object.entries(IMP_METER)) {
+    const v = $(el).value.trim();
+    if (v === "") continue;
+    const n = Number(v);  // drop_ratio is a share: clamped to 0 - 1 before it is sent
+    body.meter[k] = k === "drop_ratio" ? Math.min(1, Math.max(0, n)) : n;
+  }
   for (const [el, k] of Object.entries(IMP_NUMBERS)) {
     const v = $(el).value.trim();
     if (v !== "") body[k] = Number(v);

@@ -89,6 +89,7 @@ class RpcConnection:
         uid_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
         call_guard: Optional[Callable[[str], None]] = None,
         block: Optional[Callable[[str], Optional[str]]] = None,
+        reply_delay: Optional[Callable[[str], float]] = None,
     ) -> None:
         self._ws = ws
         self.handlers: dict[str, Handler] = dict(handlers or {})
@@ -99,6 +100,9 @@ class RpcConnection:
         #: returns ``None`` (not blocked), a block mode of :data:`.errors.BLOCK_MODES` (answered with that
         #: version's CALLERROR code) or :data:`.errors.NO_REPLY` (no answer). Blocking wins over the guard.
         self._block = block
+        #: Slow responses (simulator-only): called with the action of every inbound CALL once its answer is ready;
+        #: the answer (CALLRESULT or CALLERROR) is held that many seconds. Other frames are not delayed.
+        self._reply_delay = reply_delay
         self.codes = error_codes
         self._timeout = call_timeout
         self._on_frame = on_frame
@@ -313,31 +317,47 @@ class RpcConnection:
             except Exception:  # noqa: BLE001 - a broken follow-up must not break the RPC
                 log.exception("%s: after-reply hook for %s failed", self.name, frame.action)
 
+    async def _hold_reply(self, action: str) -> None:
+        if self._reply_delay is None:
+            return
+        try:
+            delay = self._reply_delay(action)
+        except Exception:  # noqa: BLE001 - a broken hook must not break the RPC: the answer is not delayed
+            log.exception("%s: reply delay hook failed", self.name)
+            return
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def _answer_call(self, frame: framer.Call) -> None:
         if self._call_guard is not None:
             try:
                 self._call_guard(frame.action)
             except CallError as e:
+                await self._hold_reply(frame.action)
                 await self._send_error(frame.uid, e.code, e.description, e.details, frame.action)
                 return
         handler = self.handlers.get(frame.action)
         if handler is None:
+            await self._hold_reply(frame.action)
             await self._send_error(frame.uid, self.codes.not_implemented,
                                    f"action {frame.action} is not implemented", action=frame.action)
             return
         try:
             result = await handler(frame.payload)
         except CallError as e:
+            await self._hold_reply(frame.action)
             await self._send_error(frame.uid, e.code, e.description, e.details, frame.action)
             return
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - every CALL must be answered
             log.exception("%s: handler %s failed", self.name, frame.action)
+            await self._hold_reply(frame.action)
             await self._send_error(frame.uid, self.codes.internal_error, type(e).__name__,
                                    action=frame.action)
             return
         raw = framer.encode_result(frame.uid, result)
+        await self._hold_reply(frame.action)
         try:
             await self._send_raw(raw, FrameInfo("tx", raw, framer.CALLRESULT, frame.uid, frame.action))
         except ConnectionClosed:

@@ -87,6 +87,28 @@ CSMS 側がタイムアウトします。フレームログでは受信した CA
 充電器のスナップショットは `impaired: true` になります（UI ではバッジに `!`）。UI では充電器詳細パネルの
 **通信異常** から設定します。
 
+### Transaction and response anomalies
+
+同じ `impairments` ブロックにあり、即時に反映されます（v0.3）：`remote_start: accept_no_tx`（リモート開始を
+`Accepted` で受けるがトランザクションは始まらず、コネクター状態も変わらない）、`meter`（`drop_ratio`・
+`reorder_window`・`end_after_stop`・`voltage_noise_v`）、`response_delay_ms`（アクション → 応答を保留する ms）。
+[設定](configuration.md#chargers) 参照。CSMS から見えるもの：
+
+- `accept_no_tx`：受理された RemoteStartTransaction / RequestStartTransaction の後に何も来ない（StartTransaction /
+  TransactionEvent `Started` も StatusNotification もない）。
+- `drop_ratio`：周期 MeterValues（1.6）/ `Updated` event（2.0.1）が欠ける。2.0.1 ではトランザクションの `seqNo` に欠番。
+- `reorder_window`：周期メーター値がまとまって順不同で届く（タイムスタンプ・2.0.1 の `seqNo` が単調でない）。
+- `end_after_stop`：StopTransaction / Ended event の後に、そのトランザクションのメーター値が届く。
+- `voltage_noise_v`：公称電圧の周りでばらつく Voltage。
+- `response_delay_ms`：そのアクションの応答が遅れて（CSMS のタイムアウト後に）届く。ハートビートなど他の通信は遅れない。
+
+乱数（間引き・順序・ノイズ）は `seed`（既定は充電器 ID の CRC32）からコネクターごとの系列で引くので、再現できます。
+系列はブロックを即時変更しても続き（`seed` を変えたときだけやり直し）、充電器の再起動で最初からになります。
+`reorder_window` でためたメッセージは、窓を 0 / 1 にした時点とトランザクション終了時に送ります。ためた 2.0.1 の event の
+`offline` フラグは送信キューに入れた時点の接続状態で決まり、タイムスタンプと `seqNo` は元の値のままです。充電器の再起動でためた分は失われます。
+`end_after_stop` で `meter.begin_end_messages` がオフのとき、OCPP 1.6 は停止時点で読んだ `Sample.Periodic` の MeterValues を
+1 件追加で StopTransaction の後に送ります（遅れて届く終了値）。
+
 ### Network impairments
 
 同じ `impairments` ブロックに遅延（`latency_ms`・`jitter_ms`・`direction`・`seed`）と周期切断（`drop_every_s`・

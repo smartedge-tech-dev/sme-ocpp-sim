@@ -46,7 +46,7 @@ id as `cid`; connector numbers start at 1.
 | `data_transfer` | `POST /api/chargers/{id}/datatransfer` | Send a DataTransfer to the CSMS |
 | `set_fault` / `clear_fault` | `POST /api/chargers/{id}/fault` / `clear-fault` | Connector fault |
 | `set_external_limit` | `POST /api/chargers/{id}/external-limit` | External charging limit (2.0.1) |
-| `set_impairments` | `PUT /api/chargers/{id}/impairments` | Command blocking, latency, periodic drops |
+| `set_impairments` | `PUT /api/chargers/{id}/impairments` | Command blocking, latency, periodic drops, remote start / meter value / slow response anomalies |
 | `drop_connection` | `POST /api/chargers/{id}/drop` | Drop the connection now |
 | `send_frame` | `POST /api/chargers/{id}/send` | Inject a CALL or a raw frame (expert use) |
 | `mini_csms_status` | `GET /api/csms` | Built-in [Mini CSMS](mini-csms.md) status |

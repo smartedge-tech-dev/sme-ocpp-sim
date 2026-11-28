@@ -182,6 +182,12 @@ chargers:
 | `impairments.latency_ms` / `jitter_ms` | `0` / `0` | 网络延迟（模拟器专有）：`impairments.direction`（`both` / `tx` = 发送 / `rx` = 接收）方向的每一帧延迟 `latency_ms` ± `jitter_ms`（均匀分布；`jitter_ms` ≤ `latency_ms`）。保持帧顺序：较短的延迟排在前一帧较长的延迟之后。延迟由以 `impairments.seed`（`null` = 充电桩 ID 的 CRC32）为种子的随机数决定，可复现；随机数每次连接从头开始，`seed` 的修改从下一次连接起生效。调低或关闭延迟时，正在等待的帧立即放行。连接断开时仍在等待的发送帧会丢失，与真实网络相同。WebSocket 的 ping / pong 不受影响 |
 | `impairments.drop_every_s` / `drop_jitter_s` | `null` / `0` | 周期断线：每次连接后经过 `drop_every_s` ± `drop_jitter_s` 秒断开（`null` = 关；`drop_jitter_s` < `drop_every_s`）。修改 `drop_every_s`、`drop_jitter_s` 或 `seed` 会让当前周期重新计时（修改其他字段不会） |
 | `impairments.drop_mode` / `down_s` | `abort` / `5` | 模拟断线的方式：`abort` 不发 close 帧直接切断 TCP 连接（模拟拔网线），`close` 以代码 1001 正常关闭；`down_s`：断线后到重连前的等待时间（也是 `POST /api/chargers/{id}/drop` 的缺省值）。模拟断线**不算**连接失败：不计入 `reconnect.max_retries` / `boot_max_retries`，也不走 back-off；交易与待发消息保留，在下一次连接时发出（`last_error` 的 kind 为 `simulated_drop`）。`impairments` 的所有字段都不重连即生效 |
+| `impairments.remote_start` | `normal` | `accept_no_tx`：对 RemoteStartTransaction（1.6）/ RequestStartTransaction（2.0.1）回 `Accepted`，但什么都不启动：不发 StartTransaction / TransactionEvent `Started`，connector 状态不变。CSMS 看到的是一个被接受却从未发生的启动 |
+| `impairments.meter.drop_ratio` | `0` | 周期计量消息（1.6 MeterValues `Sample.Periodic`、2.0.1 TransactionEvent `Updated` / `MeterValuePeriodic`）不发送的比例（0–1）。2.0.1 被丢弃的 event 仍占用 `seqNo`：CSMS 能看到缺口 |
+| `impairments.meter.reorder_window` | `0` | 攒够这么多条周期计量消息后按随机顺序发出（时间戳与 `seqNo` 保持原值）；`0` / `1` = 关。攒着的消息在交易结束消息之前发出 |
+| `impairments.meter.end_after_stop` | `false` | 最后一条计量值在 StopTransaction / Ended event 之后才到（SAP `outOfOrderEndMeterValues`）：1.6 把 `Transaction.End` 的 MeterValues（`meter.begin_end_messages`）或停止时刻的一条 `Sample.Periodic` 放到 StopTransaction 之后；2.0.1 发一条 `Updated` event（`seqNo` 紧接 Ended） |
+| `impairments.meter.voltage_noise_v` | `0` | 给每个上报的 Voltage 加均匀分布 ± 噪声（V） |
+| `impairments.response_delay_ms` | `{}` | CSMS → 充电桩的 action 名 → ms：只把对该 CALL 的应答（CALLRESULT 或 CALLERROR）延迟这么久，其它帧不受影响。超过 CSMS 超时即「慢响应」。未知 action 与 `block` 一样返回 `400` |
 | `template` | 无 | 充电桩模板（内置或用户模板，见 [Excel 与模板](excel-templates.md)）；本充电桩未设置的模板字段取模板的值 |
 | `params` | `{}` | 含 `{param}` 占位符的用户模板的参数 |
 | `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值；2.0.1 为 `SampledDataCtrlr.TxUpdatedInterval` 的初始值 |

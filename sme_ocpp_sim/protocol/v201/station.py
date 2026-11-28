@@ -298,6 +298,7 @@ from ...runtime.security import Security
 from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
+from ..meter_faults import MeterFaults, impairments_of, meter_faults
 from ..station import StationHost, VersionStation
 from . import device_model as dm
 from . import models as m
@@ -475,6 +476,7 @@ class Station201(VersionStation):
         self.ev, self.supply = host.ev, host.supply
         self._adapter = Adapter201(strict=strict)
         self.evses: Dict[int, _Evse] = {i: _Evse(i) for i in range(1, cfg.connectors + 1)}
+        self._meter_faults: Dict[int, MeterFaults] = {}  # impairments.meter per EVSE
         #: Local Authorization List / Authorization Cache / reservations by id (M6).
         self.local_list = LocalAuthList(dm.LOCAL_LIST_MAX)
         self.cache = AuthCache(dm.AUTH_CACHE_MAX)
@@ -818,7 +820,24 @@ class Station201(VersionStation):
                 out.append(d.Sample(name, self.supply.voltage_v, "V", location=LOCATION))
             elif name == SOC and r is not None:
                 out.append(d.Sample(name, round(r.soc_pct, SOC_DECIMALS), "Percent", location=SOC_LOCATION))
-        return out
+        return self._faults(e).noisy(out)
+
+    def _faults(self, e: _Evse) -> MeterFaults:
+        return meter_faults(self._meter_faults, self.host, self.cfg.id, e.id)
+
+    def _push_held(self, out: "_Out") -> None:
+        """Queue an event held by ``impairments.meter.reorder_window``: ``offline`` follows the connection now
+        (when it is queued), the timestamp and ``seqNo`` stay those it was built with."""
+        if out.req is not None:
+            out.req.offline = True if not self.host.connected else None
+        self._push(out)
+
+    def impairments_changed(self) -> None:
+        for e in self.evses.values():
+            faults = self._faults(e)
+            if faults.releases:
+                for out in faults.flush():
+                    self._push_held(out)
 
     def _power_w(self, evse_id: int) -> float:
         """Live active power of an EVSE (EVSE.Power); 0 when it does not charge."""
@@ -907,8 +926,9 @@ class Station201(VersionStation):
                      context: Optional[ReadingContextEnumType] = None, token: Optional[str] = None,
                      token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, droppable: bool = False,
                      reservation_id: Optional[int] = None, readings: Optional[Sequence[TxReading]] = None,
-                     not_before: Optional[float] = None) -> None:
-        """Queue a TransactionEvent; ``readings`` (Ended) replaces the one ``samples`` meterValue."""
+                     not_before: Optional[float] = None, push: bool = True) -> "_Out":
+        """Queue a TransactionEvent; ``readings`` (Ended) replaces the one ``samples`` meterValue. ``push`` False:
+        only build it (its ``seqNo`` is taken) and return it."""
         now = self.host.clock()
         if readings is not None:
             values = [meter_value(r.timestamp, r.samples, r.context) for r in readings if r.samples] or None
@@ -921,8 +941,11 @@ class Station201(VersionStation):
             id_token=id_token(token, token_type) if token is not None else None, reservation_id=reservation_id,
             meter_value=values)
         tx.evse_sent = True
-        self._push(_Out(f"TransactionEvent {event.value}", lambda: self._adapter.send_transaction_event(req),
-                        transactional=True, droppable=droppable, evse=e, tx=tx, req=req, not_before=not_before))
+        out = _Out(f"TransactionEvent {event.value}", lambda: self._adapter.send_transaction_event(req),
+                   transactional=True, droppable=droppable, evse=e, tx=tx, req=req, not_before=not_before)
+        if push:
+            self._push(out)
+        return out
 
     def _start_tx(self, e: _Evse, tag: str, trigger: TriggerReasonEnumType, *,
                   token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, remote_start_id: Optional[int] = None,
@@ -969,7 +992,13 @@ class Station201(VersionStation):
                         ReadingContextEnumType.transaction_end.value)
         readings = tx.data.all(end) if tx.data is not None else [end]
         tx.data = None
+        faults = self._faults(e)
+        late = (self._samples(e, self.dm.list_value(dm.TX_UPDATED_MEASURANDS))
+                if faults.cfg.end_after_stop else [])
+        for out in faults.flush():  # periodic events held by impairments.meter.reorder_window go first
+            self._push_held(out)
         delay = self.cfg.meter.post_tx_delay_s
+        not_before = self.host.monotonic() + delay if delay > 0 else None
         if e.meter_task is not None and e.meter_task is not asyncio.current_task():
             e.meter_task.cancel()
         e.meter_task = None
@@ -978,8 +1007,11 @@ class Station201(VersionStation):
         self._queue_event(e, tx, TransactionEventEnumType.ended, trigger,
                           m.TransactionType(transaction_id=tx.tx_id, charging_state=self._charging_state(e),
                                             stopped_reason=reason),
-                          readings=readings, token=token,
-                          not_before=self.host.monotonic() + delay if delay > 0 else None)
+                          readings=readings, token=token, not_before=not_before)
+        if late:  # impairments.meter.end_after_stop: the last reading arrives after the Ended event
+            self._queue_event(e, tx, TransactionEventEnumType.updated, T.meter_value_periodic,
+                              m.TransactionType(transaction_id=tx.tx_id), samples=late,
+                              context=ReadingContextEnumType.sample_periodic, not_before=not_before)
         if e.pending_operative is not None:  # a Scheduled ChangeAvailability takes effect now
             self._set_operative(e, e.pending_operative)
         self._refresh(e)
@@ -1010,9 +1042,17 @@ class Station201(VersionStation):
             samples = self._samples(e, self.dm.list_value(dm.TX_UPDATED_MEASURANDS))
             if not samples:
                 continue  # TxUpdatedMeasurands is empty: nothing to report
-            self._queue_event(e, tx, TransactionEventEnumType.updated, T.meter_value_periodic,
-                              m.TransactionType(transaction_id=tx.tx_id), samples=samples,
-                              context=ReadingContextEnumType.sample_periodic, droppable=True)
+            faults = self._faults(e)
+            if faults.drop():
+                seq = tx.seq()  # the dropped event still takes its seqNo: the CSMS sees the gap
+                log.info("%s: TransactionEvent Updated seqNo %d of EVSE %d dropped (impairments.meter.drop_ratio)",
+                         self.cfg.id, seq, e.id)
+                continue
+            out = self._queue_event(e, tx, TransactionEventEnumType.updated, T.meter_value_periodic,
+                                    m.TransactionType(transaction_id=tx.tx_id), samples=samples,
+                                    context=ReadingContextEnumType.sample_periodic, droppable=True, push=False)
+            for o in faults.hold(out):
+                self._push_held(o)
 
     # ================================================================== authorization
 
@@ -1377,6 +1417,10 @@ class Station201(VersionStation):
 
         if self.host.registration == _PENDING:  # B02.FR.05, before every other check
             return rejected(REASON_NOT_REGISTERED)
+        if impairments_of(self.host).remote_start == "accept_no_tx":
+            log.info("%s: RequestStartTransaction accepted without a transaction (impairments.remote_start)",
+                     self.cfg.id)
+            return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
         wire = req.charging_profile
         profile = charging_profile(wire) if wire is not None else None
         # Without evseId the EVSE is not known yet: checked as for EVSE 1 (every EVSE has the same rules).
