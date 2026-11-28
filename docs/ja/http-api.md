@@ -68,10 +68,41 @@ WriteOnly の変数は `null`）を含み、CSMS が SetVariables で変更し�
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — 充電器の `fault_codes` のいずれか（1.6 は `ChargePointErrorCode`、2.0.1 は `ReasonEnumType` の故障値。それ以外は `400`）。実行中のトランザクションを終了し（1.6 は理由 `Other`、2.0.1 は `stoppedReason` = そのコード）、`Faulted` を報告します |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — Available / Preparing に戻します |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充電器 → CSMS） |
+| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}}` — コマンド遮断（[後述](#command-blocking-and-frame-injection)） |
+| POST | `/api/chargers/{id}/send` | `{"action": "Heartbeat", "payload": {}, "validate": true}` または `{"raw": "[2,\"id-1\",\"Heartbeat\",{}]"}` — フレーム注入（[後述](#command-blocking-and-frame-injection)） |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` または `{"all": true}` |
 | POST | `/api/chargers/bulk/disconnect` | 同上 |
 
 一括操作はアトミックではありません。充電器を 1 台ずつ処理し、エラーが起きた時点で停止します（それまでの充電器は変更済みです）。
+
+## コマンド遮断とフレーム注入 { #command-blocking-and-frame-injection }
+
+**コマンド遮断**（充電器の `impairments.block`、[設定](configuration.md#chargers) 参照）：
+`GET /api/chargers/{id}/impairments` で現在の設定を返し、`PUT` で丸ごと置き換えます（充電器の OCPP バージョンが
+受信しないアクションは `400`。受信できるアクションは `GET /api/chargers/{id}` の `csms_actions`）。変更は再接続なしで
+動作中の充電器に即時反映され、`POST /api/config/save` でファイルに書き戻されます。遮断した CSMS → 充電器の CALL には
+CALLERROR `NotImplemented` / `NotSupported`（OCPP-J 1.6 と 2.0.1 で同じ名前）を返すか、`NoReply` なら何も返さず、
+CSMS 側がタイムアウトします。フレームログでは受信した CALL に `blocked: <code>` / `blocked: no reply` が付き、
+充電器のスナップショットは `impaired: true` になります（UI ではバッジに `!`）。UI では充電器詳細パネルの
+**コマンド遮断** から設定します。
+
+**フレーム注入**（`POST /api/chargers/{id}/send`）は、シミュレーターが自分からは送らないメッセージに CSMS がどう
+反応するかを試すための上級者向け入口です。
+
+- `{"action", "payload", "validate": true, "timeout"}` は CALL を 1 つ送り、`{"ok": true, "result": {...}}`、
+  CALLERROR なら `{"ok": false, "error": {"code", "description", "details"}}` を返します。タイムアウトは `504`
+  （`timeout` は秒、既定は呼び出しタイムアウト）。`validate: true` ではアクションがその版の充電器 → CSMS アクションで、
+  ペイロードが要求スキーマに合うこと（違えば `400`）を確認し、応答が応答スキーマに合わなければ `warning` を付けます。
+  `validate: false` は任意のアクションと任意の JSON ペイロードを送ります。
+- `{"raw": "<text>"}` はテキストをそのまま WebSocket に書き込み、何も待ちません。応答はフレームログに
+  unsolicited response として残ります。
+- ステーションの状態は変わりません。注入した StartTransaction はトランザクションを作らず、StatusNotification も
+  コネクターを変えません。注入したフレームはフレームログで `injected` / `injected (raw)` と表示されます。
+  未接続の充電器では `409` です。
+- 1 接続で未応答の CALL は 1 つだけ（OCPP-J）なので、充電器自身の CALL（Heartbeat、MeterValues など）は注入した
+  CALL が応答されるかタイムアウトするまで待たされます。そのため `timeout` は最大 60 秒です。
+- `raw` とシリアライズ後の `payload` は 1,000,000 文字まで（`400` / `413`）。未応答の充電器 CALL と同じ uniqueId の
+  raw フレームは `409` で拒否します（その応答が充電器の CALL を解決してしまうため）。
 
 ## Smart Charging
 

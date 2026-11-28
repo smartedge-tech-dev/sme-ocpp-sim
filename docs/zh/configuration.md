@@ -130,6 +130,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `meter.phase_values` | `off` | `off`：不带 phase 的一个 `Voltage` 和一个均衡的 `Current.Import`。`L-N`：每个供电相一个 `Voltage`（`L1-N`、`L2-N`、`L3-N`）；`L-L`：三相供电时报线电压（`L1-L2`、`L2-L3`、`L3-L1`，相电压的 √3 倍），单相 / 两相时同 `L-N`。两种模式下 `Current.Import` 都按供电相报（`L1`..，EV 未使用的相为 0 A）。使用 `voltage_v` / `phases` / `line_to_line` |
 | `meter.post_tx_delay_s` | `0` | 交易结束到发送其 StopTransaction（1.6）/ `Ended` TransactionEvent（2.0.1）之间的秒数。发送队列保持顺序，排在它之后的所有消息都一起等待：Finishing 的 StatusNotification，以及延迟期间新开始的交易的 StartTransaction / `Started`。Reset 最多只等调用超时让队列清空，所以延迟更长时，被 Reset 结束的交易的 StopTransaction / `Ended` 不会在重启前发出，而是留在队列里，在下一次被接受的 BootNotification 之后发送 |
 | `meter.tx_data_max_samples` | `1000` | 每笔交易为 StopTransaction `transactionData` / `Ended` `meterValue` 分别保留的采样读数与时钟对齐读数上限（1–10000），超出时丢弃最旧的，每笔交易记一次警告日志。开始和结束读数不计入。读数在功率模型 tick（`simulation.tick_seconds`）上采集，分辨率受 tick 限制：每个 tick 每条流最多一个读数，时间戳为区间边界 |
+| `impairments.block` | `{}` | 命令屏蔽（模拟器专有）：CSMS → 充电桩的 action 名 → `NotImplemented` / `NotSupported`（以该 CALLERROR 应答）或 `NoReply`（不应答，CSMS 侧超时）。只能是该充电桩 OCPP 版本接收的 action。不重连即作用于运行中的充电桩；见 [HTTP API](http-api.md#command-blocking-and-frame-injection) |
 | `template` | 无 | 充电桩模板（内置或用户模板，见 [Excel 与模板](excel-templates.md)）；本充电桩未设置的模板字段取模板的值 |
 | `params` | `{}` | 含 `{param}` 占位符的用户模板的参数 |
 | `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值；2.0.1 为 `SampledDataCtrlr.TxUpdatedInterval` 的初始值 |

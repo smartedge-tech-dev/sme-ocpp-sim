@@ -341,3 +341,38 @@ def test_disconnect_after_give_up_clears_gave_up():
             await engine.stop()
             await peer.stop()
     asyncio.run(main())
+
+
+def test_impairments_only_reload_applies_live_without_restart():
+    async def body(peer, engine):
+        old = engine.chargers
+        block = {"A": {"impairments": {"block": {"Reset": "NoReply", "RemoteStartTransaction": "NotSupported"}}}}
+        await engine.reload(_config(peer.url, ["A", "B", "C"], **block))
+        assert engine.chargers == old and _connections(peer) == {"A": 1, "B": 1, "C": 1}
+        assert old["A"]._block_mode("Reset") == "NoReply" and old["A"].impaired and not old["B"].impaired
+        assert old["A"].snapshot()["impaired"] is True
+        # an action the version does not receive fails the reload; the running block stays
+        with pytest.raises(ValueError, match="NoSuchAction"):
+            await engine.reload(_config(peer.url, ["A", "B", "C"],
+                                        A={"impairments": {"block": {"NoSuchAction": "NoReply"}}}))
+        assert old["A"]._block_mode("Reset") == "NoReply"
+        # a failure after the impairments step rolls them back with the rest: _apply_clock (the step after
+        # _apply_impairments) raises once, then _undo's own _apply_clock / _apply_impairments run normally
+        clock, calls = engine._apply_clock, []
+
+        def failing_clock(runtimes, time_scale, running):
+            calls.append(old["A"]._block_mode("Reset"))
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            clock(runtimes, time_scale, running)
+        engine._apply_clock = failing_clock
+        with pytest.raises(RuntimeError, match="boom"):
+            await engine.reload(_config(peer.url, ["A", "B", "C"],
+                                        A={"impairments": {"block": {"Reset": "NotSupported"}}}))
+        engine._apply_clock = clock
+        assert calls[0] == "NotSupported"  # the new block was live when the failure hit
+        assert old["A"]._block_mode("Reset") == "NoReply" and engine.chargers == old
+        await engine.reload(_config(peer.url, ["A", "B", "C"]))
+        assert not old["A"].impaired and engine.chargers == old
+        assert _connections(peer)["A"] == 1
+    _run(body)

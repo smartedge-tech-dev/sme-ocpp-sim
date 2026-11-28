@@ -70,11 +70,43 @@ See [Excel import / export and charger templates](excel-templates.md) for the wo
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — one of the charger's `fault_codes` (1.6: `ChargePointErrorCode`; 2.0.1: the fault values of `ReasonEnumType`), `400` otherwise; ends a running transaction (1.6: reason `Other`; 2.0.1: `stoppedReason` = the code) and reports `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — back to Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}` (charger → CSMS) |
+| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}}` — command blocking, see [below](#command-blocking-and-frame-injection) |
+| POST | `/api/chargers/{id}/send` | `{"action": "Heartbeat", "payload": {}, "validate": true}` or `{"raw": "[2,\"id-1\",\"Heartbeat\",{}]"}` — frame injection, see [below](#command-blocking-and-frame-injection) |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`, `["CP-0001"]` or `{"all": true}` |
 | POST | `/api/chargers/bulk/disconnect` | same as above |
 
 Bulk operations are not atomic: chargers are handled one after the other, and an error stops the request with
 the earlier ones already changed.
+
+## Command blocking and frame injection { #command-blocking-and-frame-injection }
+
+**Command blocking** (`impairments.block` of a charger, see [Configuration](configuration.md#chargers)):
+`GET /api/chargers/{id}/impairments` returns the block, `PUT` replaces it as a whole (`400` for an action the
+charger's OCPP version does not receive; `GET /api/chargers/{id}` lists those it does as `csms_actions`). The
+change is applied to the running charger at once, without a reconnect, and is written to the file by
+`POST /api/config/save`. A blocked CSMS → charger CALL is answered with CALLERROR `NotImplemented` or
+`NotSupported` (the same wire names in OCPP-J 1.6 and 2.0.1), or, with `NoReply`, not at all, so the CSMS runs
+into its own timeout. The frame log marks the received CALL with `blocked: <code>` / `blocked: no reply`, and the
+charger snapshot has `impaired: true` (the UI shows `!` on the badge). In the UI: **Block commands** in the
+charger detail panel.
+
+**Frame injection** (`POST /api/chargers/{id}/send`) is an expert entry for testing how a CSMS handles messages
+the simulator would not send on its own:
+
+- `{"action", "payload", "validate": true, "timeout"}` sends one CALL and returns `{"ok": true, "result": {...}}`,
+  or `{"ok": false, "error": {"code", "description", "details"}}` for a CALLERROR; `504` on timeout (`timeout`
+  in seconds, default the call timeout). With `validate: true` the action must be a charger → CSMS action of the
+  charger's version and the payload must match its request schema (`400` otherwise); an answer that does not
+  match the response schema adds a `warning`. `validate: false` sends any action and any JSON payload.
+- `{"raw": "<text>"}` writes the text to the WebSocket verbatim and waits for nothing; an answer to it shows up
+  in the frame log as an unsolicited response.
+- The station state never changes: an injected StartTransaction creates no transaction, an injected
+  StatusNotification changes no connector. Injected frames are marked `injected` / `injected (raw)` in the
+  frame log. `409` while the charger is not connected.
+- One CALL is outstanding per connection (OCPP-J), so the charger's own CALLs (Heartbeat, MeterValues, ...)
+  queue behind an injected CALL until it is answered or times out; `timeout` is therefore at most 60 s.
+- `raw` and the serialized `payload` are limited to 1,000,000 characters (`400` / `413`). A raw frame whose
+  uniqueId is that of a pending charger CALL is refused with `409` (its answer would resolve that call).
 
 ## Smart Charging
 

@@ -574,3 +574,108 @@ def test_configuration_and_frames_until(setup):
         _frame(engine, "CP001", "tx", a)
     r = client.get(f"/api/frames?since={base + 1}&until={base + 2}&limit=1").json()
     assert [f["seq"] for f in r["frames"]] == [base + 2] and r["frames"][0]["action"] == "B"
+
+
+# ------------------------------------------------------------------ command blocking / frame injection (v0.2.2 A)
+
+def test_impairments_put_validates_and_saves(setup):
+    client, engine, path = setup
+    assert client.get("/api/chargers/CP001/impairments").json() == {"block": {}}
+    assert "RemoteStartTransaction" in client.get("/api/chargers/CP001").json()["csms_actions"]
+    rt = engine.charger("CP001")
+    for body in ({"block": {"NoSuchAction": "NoReply"}}, {"block": {"Reset": "Maybe"}}, {"other": 1}):
+        assert client.put("/api/chargers/CP001/impairments", json=body).status_code == 400, body
+    r = client.put("/api/chargers/CP001/impairments", json={"block": {"Reset": "NotSupported"}})
+    assert r.status_code == 200 and r.json() == {"ok": True, "block": {"Reset": "NotSupported"}}
+    assert engine.charger("CP001") is rt and rt._block_mode("Reset") == "NotSupported"
+    assert client.put("/api/chargers/NOPE/impairments", json={"block": {}}).status_code == 404
+    assert client.post("/api/config/save").status_code == 200
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["chargers"][0]["impairments"] == {"block": {"Reset": "NotSupported"}}
+
+
+def test_send_needs_connection_and_valid_input(setup):
+    client, _, _ = setup
+    assert client.post("/api/chargers/CP001/send", json={"action": "Heartbeat"}).status_code == 409
+    assert client.post("/api/chargers/CP001/send", json={"raw": "[2]"}).status_code == 409
+    for body in ({}, {"raw": "x", "action": "Heartbeat"}, {"action": "Reset", "payload": {"type": "Hard"}},
+                 {"action": "Heartbeat", "payload": {"x": 1}}, {"action": "Heartbeat", "timeout": 61},
+                 {"raw": "x" * 1_000_001}):
+        assert client.post("/api/chargers/CP001/send", json=body).status_code == 400, str(body)[:80]
+    big = {"action": "DataTransfer", "payload": {"vendorId": "V", "data": "x" * 1_000_000}, "validate": False}
+    assert client.post("/api/chargers/CP001/send", json=big).status_code == 413
+
+
+@pytest.mark.parametrize("version", ["1.6", "2.0.1"])
+def test_block_and_inject_against_mini_csms(version):
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    remote = {"1.6": ("RemoteStartTransaction", {"idTag": "T1"}),
+              "2.0.1": ("RequestStartTransaction", {"idToken": {"idToken": "T1", "type": "ISO14443"},
+                                                    "remoteStartId": 1})}[version]
+
+    async def main():
+        cfg = SimConfig.model_validate({
+            "csms_defaults": {"url": f"ws://127.0.0.1:{port}/ocpp", "ocpp_version": version, "reconnect": FAST},
+            "chargers": [{"id": "CP", "auth_mode": "accept_all"}],
+            "mini_csms": {"enabled": True, "port": port}})
+        engine = OcppEngine(cfg)
+        await engine.start()
+        rt = engine.charger("CP")
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(engine)),
+                                         base_url="http://t") as c:
+                async with asyncio.timeout(10):
+                    while not rt.online:
+                        await asyncio.sleep(0.02)
+                attempts = rt.connect_attempts
+                action, payload = remote
+                r = await c.put("/api/chargers/CP/impairments", json={"block": {action: "NotSupported",
+                                                                                "Reset": "NoReply"}})
+                assert r.status_code == 200
+                r = (await c.post("/api/csms/chargers/CP/call", json={"action": action, "payload": payload})).json()
+                assert r["ok"] is False and r["error"]["code"] == "NotSupported"
+                assert not rt.has_transaction(1)
+                r = await c.post("/api/csms/chargers/CP/call", json={"action": "Reset", "timeout": 0.3, "payload": {
+                    "type": "OnIdle" if version == "2.0.1" else "Soft"}})
+                assert r.status_code == 504
+                notes = [e.to_dict().get("note") for e in engine.frame_log.since(0, charger="CP", limit=1000)]
+                assert "blocked: NotSupported" in notes and "blocked: no reply" in notes
+                assert rt.connect_attempts == attempts and rt.connected  # applied live: no reconnect
+
+                # frame injection: the answer comes back, the station state does not change
+                r = (await c.post("/api/chargers/CP/send", json={"action": "Heartbeat"})).json()
+                assert r["ok"] is True and "currentTime" in r["result"] and "warning" not in r
+                start = {"1.6": ("StartTransaction", {"connectorId": 1, "idTag": "T1", "meterStart": 0,
+                                                      "timestamp": "2026-11-28T00:00:00Z"}),
+                         "2.0.1": ("TransactionEvent", {
+                             "eventType": "Started", "timestamp": "2026-11-28T00:00:00Z", "triggerReason": "Authorized",
+                             "seqNo": 0, "transactionInfo": {"transactionId": "inj-tx-1"}, "evse": {"id": 1, "connectorId": 1},
+                             "idToken": {"idToken": "T1", "type": "ISO14443"}})}[version]
+                r = (await c.post("/api/chargers/CP/send", json={"action": start[0], "payload": start[1]})).json()
+                assert r["ok"] is True and "warning" not in r and not rt.has_transaction(1)
+                assert not any(x.get("transaction") for x in rt.snapshot()["connectors"])
+                r = (await c.post("/api/chargers/CP/send",
+                                  json={"action": "NoSuchAction", "payload": {}, "validate": False})).json()
+                assert r["ok"] is False and r["error"]["code"] == "NotImplemented"
+                r = (await c.post("/api/chargers/CP/send",
+                                  json={"action": "Heartbeat", "payload": [1], "validate": False})).json()
+                assert r["ok"] is False and r["error"]["code"] == {"1.6": "FormationViolation",
+                                                                   "2.0.1": "FormatViolation"}[version]
+                r = await c.post("/api/chargers/CP/send", json={"raw": '[2,"inj-1","Heartbeat",{}]'})
+                assert r.json() == {"ok": True, "raw": True}
+                async with asyncio.timeout(5):
+                    while True:
+                        rows = [e.to_dict() for e in engine.frame_log.since(0, charger="CP", limit=1000)]
+                        if any(x.get("note") == "late or unsolicited response dropped" for x in rows):
+                            break
+                        await asyncio.sleep(0.02)
+                assert any(x.get("note") == "injected (raw)" for x in rows)
+                assert any(x.get("note") == "injected" for x in rows)
+                assert rt.connect_attempts == attempts
+        finally:
+            await engine.stop()
+
+    asyncio.run(main())

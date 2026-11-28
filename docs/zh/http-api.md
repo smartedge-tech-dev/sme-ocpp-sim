@@ -66,10 +66,36 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——该桩 `fault_codes` 之一（1.6 为 `ChargePointErrorCode`，2.0.1 为 `ReasonEnumType` 中的故障值，否则 `400`）；结束进行中的交易（1.6 原因为 `Other`，2.0.1 的 `stoppedReason` 为该故障码）并上报 `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}`——恢复为 Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充电桩 → CSMS） |
+| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}}` — 命令屏蔽，见[下文](#command-blocking-and-frame-injection) |
+| POST | `/api/chargers/{id}/send` | `{"action": "Heartbeat", "payload": {}, "validate": true}` 或 `{"raw": "[2,\"id-1\",\"Heartbeat\",{}]"}` — 帧注入，见[下文](#command-blocking-and-frame-injection) |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` 或 `{"all": true}` |
 | POST | `/api/chargers/bulk/disconnect` | 同上 |
 
 批量操作不是原子的：逐台处理，出错即停止，之前的充电桩已经被修改。
+
+## 命令屏蔽与帧注入 { #command-blocking-and-frame-injection }
+
+**命令屏蔽**（充电桩的 `impairments.block`，见[配置](configuration.md#chargers)）：
+`GET /api/chargers/{id}/impairments` 返回当前设置，`PUT` 整块替换（充电桩的 OCPP 版本不接收的 action 返回 `400`；
+可用的 action 见 `GET /api/chargers/{id}` 的 `csms_actions`）。修改立即作用于运行中的充电桩，不重连，
+并由 `POST /api/config/save` 写回文件。被屏蔽的 CSMS → 充电桩 CALL 以 CALLERROR `NotImplemented` / `NotSupported`
+应答（OCPP-J 1.6 与 2.0.1 名称相同），`NoReply` 则完全不应答，CSMS 侧自行超时。帧日志中收到的 CALL 标注
+`blocked: <code>` / `blocked: no reply`，充电桩快照带 `impaired: true`（UI 徽章上显示 `!`）。UI：充电桩详情面板的
+**屏蔽命令**。
+
+**帧注入**（`POST /api/chargers/{id}/send`）是专家用入口，用于测试 CSMS 如何处理模拟器自己不会发送的消息：
+
+- `{"action", "payload", "validate": true, "timeout"}` 发送一个 CALL，返回 `{"ok": true, "result": {...}}`，
+  CALLERROR 时返回 `{"ok": false, "error": {"code", "description", "details"}}`；超时 `504`（`timeout` 单位秒，
+  默认为调用超时）。`validate: true` 时 action 必须是该版本的充电桩 → CSMS action，payload 必须符合请求 schema
+  （否则 `400`）；应答不符合应答 schema 时附带 `warning`。`validate: false` 可发送任意 action 和任意 JSON payload。
+- `{"raw": "<text>"}` 把文本原样写入 WebSocket，不等待任何应答；对它的应答在帧日志中显示为 unsolicited response。
+- 不改变站内状态：注入的 StartTransaction 不会生成交易，注入的 StatusNotification 不改变连接器。注入的帧在帧日志中
+  标注 `injected` / `injected (raw)`。充电桩未连接时返回 `409`。
+- 每个连接只能有一个未应答的 CALL（OCPP-J），因此充电桩自己的 CALL（Heartbeat、MeterValues 等）会排在注入的 CALL
+  之后，直到它得到应答或超时；所以 `timeout` 最大 60 秒。
+- `raw` 与序列化后的 `payload` 最多 1,000,000 字符（`400` / `413`）。uniqueId 与未应答的充电桩 CALL 相同的 raw 帧
+  以 `409` 拒绝（其应答会错误地完成该 CALL）。
 
 ## Smart Charging
 

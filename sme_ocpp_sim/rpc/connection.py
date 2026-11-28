@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable, Optional
 from websockets.exceptions import ConnectionClosed
 
 from . import framer
-from .errors import OCPP16_ERRORS, CallError, ErrorCodes
+from .errors import NO_REPLY, OCPP16_ERRORS, CallError, ErrorCodes, block_error_code
 
 log = logging.getLogger(__name__)
 
@@ -88,12 +88,17 @@ class RpcConnection:
         name: str = "",
         uid_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
         call_guard: Optional[Callable[[str], None]] = None,
+        block: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._ws = ws
         self.handlers: dict[str, Handler] = dict(handlers or {})
         #: Called with the action of every inbound CALL before its handler is looked up; a :class:`CallError` it
         #: raises is the answer (e.g. a station that refuses every CALL in some state).
         self._call_guard = call_guard
+        #: Command blocking (simulator-only): called with the action of every inbound CALL before the guard;
+        #: returns ``None`` (not blocked), a block mode of :data:`.errors.BLOCK_MODES` (answered with that
+        #: version's CALLERROR code) or :data:`.errors.NO_REPLY` (no answer). Blocking wins over the guard.
+        self._block = block
         self.codes = error_codes
         self._timeout = call_timeout
         self._on_frame = on_frame
@@ -118,6 +123,42 @@ class RpcConnection:
         self._emit(info)
         await self._ws.send(raw)
 
+    def _blocked(self, action: str) -> Optional[str]:
+        if self._block is None:
+            return None
+        try:
+            return self._block(action)
+        except Exception:  # noqa: BLE001 - a broken hook must not break the RPC: the CALL is then not blocked
+            log.exception("%s: block hook failed", self.name)
+            return None
+
+    async def send_raw(self, raw: str) -> None:
+        """Write ``raw`` to the socket verbatim (frame injection, expert use) and log it as a tx frame.
+
+        Nothing is parsed or correlated: an answer to an injected CALL arrives as an unsolicited response and is
+        logged and dropped. Raises :class:`ConnectionError` when the connection is (or gets) closed and
+        :class:`ValueError` for a frame whose uniqueId is that of a pending outbound CALL (its answer would
+        resolve that call)."""
+        if self.closed.is_set() or self._stopping:
+            raise ConnectionError("connection closed")
+        mtype = uid = action = None
+        try:
+            frame = framer.decode(raw)
+        except framer.BadFrame:
+            pass
+        else:
+            uid = frame.uid
+            if uid in self._pending:
+                raise ValueError(f"uniqueId {uid!r} is that of a pending outbound CALL")
+            if isinstance(frame, framer.Call):
+                mtype, action = framer.CALL, frame.action
+            else:
+                mtype = framer.CALLRESULT if isinstance(frame, framer.CallResult) else framer.CALLERROR
+        try:
+            await self._send_raw(raw, FrameInfo("tx", raw, mtype, uid, action, "injected (raw)"))
+        except ConnectionClosed as e:
+            raise ConnectionError("connection closed") from e
+
     async def _send_error(self, uid: str, code: str, desc: str,
                           details: Optional[dict] = None, action: Optional[str] = None) -> None:
         cap = self.codes.max_error_description_length
@@ -130,8 +171,8 @@ class RpcConnection:
             pass
 
     # ------------------------------------------------------------------ tx
-    async def call(self, action: str, payload: dict, timeout: Optional[float] = None) -> dict:
-        """Send a CALL and return the CALLRESULT payload.
+    async def call(self, action: str, payload: dict, timeout: Optional[float] = None, *, note: str = "") -> dict:
+        """Send a CALL and return the CALLRESULT payload (``note`` goes into the tx frame log entry).
 
         Raises :class:`CallError` on CALLERROR, :class:`TimeoutError` on timeout
         and :class:`ConnectionError` if the connection is (or gets) closed.
@@ -145,7 +186,7 @@ class RpcConnection:
             try:
                 raw = framer.encode_call(uid, action, payload)
                 try:
-                    await self._send_raw(raw, FrameInfo("tx", raw, framer.CALL, uid, action))
+                    await self._send_raw(raw, FrameInfo("tx", raw, framer.CALL, uid, action, note))
                 except ConnectionClosed as e:
                     raise ConnectionError("connection closed") from e
                 # asyncio.timeout, not wait_for: 3.11 wait_for may swallow a concurrent cancellation.
@@ -194,6 +235,15 @@ class RpcConnection:
                 reason = f"MessageId longer than {limit} characters"
                 self._emit(FrameInfo("rx", raw, framer.CALL, frame.uid, frame.action, reason))
                 await self._send_error(frame.uid, self.codes.rpc_framework_error, reason, action=frame.action)
+                return
+            mode = self._blocked(frame.action)
+            if mode is not None:
+                code = None if mode == NO_REPLY else block_error_code(self.codes, mode)
+                self._emit(FrameInfo("rx", raw, framer.CALL, frame.uid, frame.action,
+                                     f"blocked: {'no reply' if code is None else code}"))
+                if code is not None:
+                    await self._send_error(frame.uid, code, f"action {frame.action} is blocked (simulated)",
+                                           action=frame.action)
                 return
             self._emit(FrameInfo("rx", raw, framer.CALL, frame.uid, frame.action))
             t = asyncio.create_task(self._handle_call(frame))

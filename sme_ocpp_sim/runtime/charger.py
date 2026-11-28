@@ -35,7 +35,7 @@ from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Se
 from ..charging import power
 from ..charging.ev import PRESETS, EvModel
 from ..charging.power import AcSupply, PowerState
-from ..config import ChargerConfig, ReconnectConfig
+from ..config import ChargerConfig, ImpairmentConfig, ReconnectConfig
 from ..protocol import base as d
 from ..protocol.registry import get_station_class
 from ..protocol.station import VersionStation
@@ -123,6 +123,50 @@ class ChargerRuntime:
         self._max_retries: Optional[int] = rc.max_retries
         self._backoff = backoff or Backoff(rc.min_s, BACKOFF_FACTOR, rc.max_s, rc.jitter)
         self._frame_cb = frame_log.callback(cfg.id) if frame_log is not None else None
+        #: The RPC connection of the current session (frame injection); None between sessions.
+        self._rpc: Optional[RpcConnection] = None
+        #: CSMS -> CP actions this charger's version handles: the names ``impairments.block`` may use.
+        self.csms_actions: tuple = tuple(sorted(self.adapter.handlers(self.station)))
+        self.impairments = ImpairmentConfig()
+        self.set_impairments(cfg.impairments)
+
+    # ================================================================== impairments (v0.2.2 A)
+
+    def validate_impairments(self, imp: ImpairmentConfig) -> None:
+        """``ValueError`` when ``imp`` names an action this charger's OCPP version does not receive."""
+        unknown = sorted(set(imp.block) - set(self.csms_actions))
+        if unknown:
+            raise ValueError(f"charger {self.cfg.id}: impairments.block: {unknown} are not CSMS -> CP actions of "
+                             f"OCPP {self.adapter.version} (known: {', '.join(self.csms_actions)})")
+
+    def set_impairments(self, imp: ImpairmentConfig) -> None:
+        """Apply ``imp`` to the running charger (no reconnect); the next inbound CALL already sees it."""
+        self.validate_impairments(imp)
+        self.impairments = imp.model_copy(deep=True)
+
+    def _block_mode(self, action: str) -> Optional[str]:
+        return self.impairments.block.get(action)
+
+    @property
+    def impaired(self) -> bool:
+        return bool(self.impairments.block)
+
+    # ================================================================== frame injection (expert use)
+
+    def _live_rpc(self) -> RpcConnection:
+        rpc = self._rpc
+        if rpc is None or not self.connected:
+            raise ConnectionError(f"charger {self.cfg.id} is not connected")
+        return rpc
+
+    async def inject_call(self, action: str, payload: Any, timeout: Optional[float] = None) -> Any:
+        """Send a CALL as it is, past the station: no station state changes and the answer is only returned.
+        Raises like :meth:`RpcConnection.call` (``CallError``, ``TimeoutError``, ``ConnectionError``)."""
+        return await self._live_rpc().call(action, payload, timeout=timeout, note="injected")
+
+    async def inject_raw(self, raw: str) -> None:
+        """Write ``raw`` to the socket verbatim (no answer is awaited); ``ConnectionError`` when not connected."""
+        await self._live_rpc().send_raw(raw)
 
     # ================================================================== connection
 
@@ -191,7 +235,8 @@ class ChargerRuntime:
         self._accepted_this_session = False
         rpc = RpcConnection(ws, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
                             call_timeout=self.call_timeout, on_frame=self._frame_cb, name=self.cfg.id,
-                            call_guard=self.station.check_call)
+                            call_guard=self.station.check_call, block=self._block_mode)
+        self._rpc = rpc
         self.adapter.bind(rpc.call)
         self.connected = True
         rx = asyncio.create_task(rpc.run())
@@ -212,6 +257,7 @@ class ChargerRuntime:
         """Tear one session down; returns why the receive loop failed, if it did."""
         self.connected = False  # from here on _spawn refuses: the task set below is final
         self.adapter.bind(None)
+        self._rpc = None
         for w in waits:
             w.cancel()
         await self._cancel_tasks()
@@ -537,5 +583,6 @@ class ChargerRuntime:
             "clock_offset_s": self.clock_offset_s,
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
             "security_profile": self.transport.security_profile,
+            "impaired": self.impaired,
             **self.station.snapshot(),
         }

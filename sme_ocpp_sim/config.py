@@ -241,6 +241,20 @@ class MeterOptions(StrictModel):
     tx_data_max_samples: int = Field(1000, ge=1, le=10000)
 
 
+class ImpairmentConfig(StrictModel):
+    """Simulator-only fault injection on the OCPP-J connection (v0.2.2 A).
+
+    - ``block``: CSMS -> CP actions this charger refuses, action name -> ``NotImplemented`` / ``NotSupported``
+      (answered with that CALLERROR, the version's code) or ``NoReply`` (no answer at all, the CSMS times out).
+      The names are checked against the actions of the charger's OCPP version when the config is applied.
+
+    Not part of the charger's restart key: a change is applied to the running charger without a reconnect.
+    """
+
+    block: Dict[Annotated[str, Field(min_length=1)], Literal["NotImplemented", "NotSupported", "NoReply"]] = Field(
+        default_factory=dict)
+
+
 #: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.
 PASSWORD_MASK = "********"
 
@@ -304,6 +318,8 @@ class ChargerConfig(StrictModel):
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     #: Simulator-only meter value options (v0.2.2 B).
     meter: MeterOptions = Field(default_factory=MeterOptions)
+    #: Simulator-only connection fault injection (v0.2.2 A); applied live, never restarts the charger.
+    impairments: ImpairmentConfig = Field(default_factory=ImpairmentConfig)
     #: Charger template (:mod:`.templates_builtin`): the template fields this charger does not set come from it.
     template: Optional[Annotated[QuotedStr, Field(min_length=1)]] = None
     #: Template parameters (``{param}`` placeholders of a user template), overriding the template's defaults.
