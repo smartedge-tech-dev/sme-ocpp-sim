@@ -55,9 +55,11 @@ class StationHost(Protocol):
     def vehicle(self, connector_id: int) -> Any:
         """The ``charging.ev.Vehicle`` (model + initial / target SoC) of a new session on ``connector_id``."""
 
-    def step_power(self, pw: Any, dt_s: float, evse_limit_w: Optional[float], vehicle: Any = None) -> Any:
+    def step_power(self, pw: Any, dt_s: float, evse_limit_w: Optional[float], vehicle: Any = None, *,
+                   setpoint_w: Optional[float] = None) -> Any:
         """Step one connector's power model (``charging.power.step``) by ``dt_s`` wall seconds at the time scale;
-        ``vehicle`` is the session's ``host.vehicle`` (``None``: ``ev`` with the session's target SoC)."""
+        ``vehicle`` is the session's ``host.vehicle`` (``None``: ``ev`` with the session's target SoC);
+        ``setpoint_w`` is the signed OCPP 2.1 setpoint (negative = discharge; only 2.1 passes it)."""
 
     def spawn(self, coro: Coroutine[Any, Any, Any]) -> Optional[asyncio.Task]:
         """Start a session task; refused (``coro`` closed, ``None`` returned) when the session is not connected."""
