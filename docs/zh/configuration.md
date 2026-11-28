@@ -188,6 +188,7 @@ chargers:
 | `impairments.meter.end_after_stop` | `false` | 最后一条计量值在 StopTransaction / Ended event 之后才到（SAP `outOfOrderEndMeterValues`）：1.6 把 `Transaction.End` 的 MeterValues（`meter.begin_end_messages`）或停止时刻的一条 `Sample.Periodic` 放到 StopTransaction 之后；2.0.1 发一条 `Updated` event（`seqNo` 紧接 Ended） |
 | `impairments.meter.voltage_noise_v` | `0` | 给每个上报的 Voltage 加均匀分布 ± 噪声（V） |
 | `impairments.response_delay_ms` | `{}` | CSMS → 充电桩的 action 名 → ms：只把对该 CALL 的应答（CALLRESULT 或 CALLERROR）延迟这么久，其它帧不受影响。超过 CSMS 超时即「慢响应」。未知 action 与 `block` 一样返回 `400` |
+| `availability_report` | `both` | 仅 OCPP 2.1：连接器状态变化的上报方式：`status`（StatusNotification）、`event`（NotifyEvent `Connector.AvailabilityState`）或 `both`（G01） |
 | `template` | 无 | 充电桩模板（内置或用户模板，见 [Excel 与模板](excel-templates.md)）；本充电桩未设置的模板字段取模板的值 |
 | `params` | `{}` | 含 `{param}` 占位符的用户模板的参数 |
 | `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值；2.0.1 为 `SampledDataCtrlr.TxUpdatedInterval` 的初始值 |
@@ -269,6 +270,7 @@ chargers:
 | `call_timeout_s` | `30` | 发往站点的 CALL 超时 |
 | `frame_log_size` | `5000` | Mini CSMS 自有帧日志保留条数 |
 | `plan` | `[]` | 计划 CALL：`at_s`、`after`（`boot` / `connect`）、`action`、`payload`，可选 `charger`（模式）与 `ocpp_version` |
+| `transaction_limit` | `null` | 仅 OCPP 2.1：`max_energy_wh`、`max_time_s`、`max_cost`、`max_soc`，在每个 TransactionEvent `Started` 的应答中作为 `transactionLimit` 发送（E16 / F07） |
 
 修改 `enabled`、`host` 或 `port` 会重启 Mini CSMS（站点重连）；其他修改立即生效（计划的修改从下次连接起）。端口无法绑定时会在
 事件日志和面板中提示。

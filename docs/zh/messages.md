@@ -163,10 +163,7 @@ CSMS 到充电站的新消息：
 |---|---|---|
 | AFRRSignal | 存储并应答 | 存储（保留最后一次信号），`Accepted` |
 | NotifyAllowedEnergyTransfer | 存储并应答 | 按交易存储，`Accepted`；交易未知则 `Rejected` |
-| SetDefaultTariff | 存储并应答 | 按 EVSE 存储（0 表示全部 EVSE）：`Accepted`、`DuplicateTariffId`，EVSE 未知则 `Rejected` |
-| GetTariffs | 存储并应答 | 读回资费分配，没有则 `NoTariff` |
-| ClearTariffs | 存储并应答 | 每个资费一个结果：`Accepted` / `NoTariff` |
-| ChangeTransactionTariff | 存储并应答 | 进行中的交易为 `Accepted`，否则 `TxNotFound` |
+| SetDefaultTariff、GetTariffs、ClearTariffs、ChangeTransactionTariff | 支持 | 见 [交易限额、资费与可用性](#ocpp-21-m3) |
 | SetDERControl | 存储并应答 | 按 `controlId` 存储，`Accepted` |
 | GetDERControl | 存储并应答 | `NotFound`，或 `Accepted` 后跟一条 ReportDERControl |
 | ClearDERControl | 存储并应答 | `Accepted` / `NotFound` |
@@ -174,7 +171,7 @@ CSMS 到充电站的新消息：
 | GetPeriodicEventStream、AdjustPeriodicEventStream | 不支持 | CALLERROR `NotImplemented`（计划在 v0.4 支持） |
 | RequestBatterySwap、NotifyWebPaymentStarted | 不支持 | CALLERROR `NotImplemented` |
 
-“存储并应答”指请求保存在内存中并返回符合 schema 的应答，不会据此执行任何动作（不做本地费用计算，也没有 DER 行为）。
+“存储并应答”指请求保存在内存中并返回符合 schema 的应答，不会据此执行任何动作（没有 DER 行为）。
 
 12 条新的充电站到 CSMS 消息（BatterySwap、ClosePeriodicEventStream、GetCertificateChainStatus、NotifyDERAlarm、
 NotifyDERStartStop、NotifyPeriodicEventStream（SEND）、NotifyPriorityCharging、NotifySettlement、
@@ -205,8 +202,23 @@ OpenPeriodicEventStream、PullDynamicScheduleUpdate、ReportDERControl、VatNumb
 | NotifyPriorityCharging | 充电站 → CSMS | 每次切换优先充电（远程或本地）后发送；离线时不排队 |
 
 未建模：频率响应、SmartChargingCtrlr.SetpointPriority、`setpointReactive` 与 `_L2` / `_L3` 值（接受但不应用）、
-`evseSleep`、随机延迟与本地时间（`Rejected`）、ISO 15118-20 重新协商、RequestStartTransaction profile 中的 2.1 字段
-（按 2.0.1 规则处理）。
+`evseSleep`、随机延迟与本地时间（`Rejected`）、ISO 15118-20 重新协商。
+
+### 交易限额、资费与可用性（2.1-M3） { #ocpp-21-m3 }
+
+| 功能 | 行为 |
+|---|---|
+| 交易限额（E16 / F07） | TransactionEventResponse 中的 `transactionLimit`（包括 RequestStartTransaction 启动的交易对 Started 的应答，F07）设置 TxCtrlr.SupportedLimits 中列出的限额（`maxCost`、`maxEnergy`、`maxTime`、`maxSoC`，其他忽略）。设置后发送一次 `Updated` 事件确认，triggerReason `LimitSet`，带 `transactionInfo.transactionLimit`（对 `offline` 事件的应答不确认）。每个 tick 检查一次限额（电量可能超出一个 tick 的量）：达到后发送 `Updated` 事件，`chargingState` `SuspendedEVSE`，triggerReason `EnergyLimitReached` / `TimeLimitReached` / `SoCLimitReached` / `CostLimitReached`，并暂停供电；限额提高后恢复。`maxEnergy` 按交易的受电量计，`maxTime` 按交易开始后的秒数计。`maxCost` 有资费时用本地费用，否则用 CSMS 在 TransactionEventResponse 中最后发送的 `totalCost` |
+| 资费（I07 - I11） | SetDefaultTariff 按 EVSE（0 表示全部 EVSE）：`Rejected` `UnknownEVSE`、`TooManyElements`（价格条目超过 TariffCostCtrlr.MaxElements，即 10）、`ConditionNotSupported`（不支持带条件的资费）、`DuplicateTariffId`，否则 `Accepted`。带 `validFrom` 的资费从该时刻起生效，不带的在此之前生效。GetTariffs / ClearTariffs 读回和删除。ChangeTransactionTariff：`TxNotFound`、`TooManyElements`、`ConditionNotSupported`、`NoCurrencyChange`，否则 `Accepted` 并发送带 `tariffId` 的 `Updated` 事件 `TariffChanged`。TariffCostCtrlr.Enabled[Tariff] 为 false 时所有资费消息回 CALLERROR `NotSupported` |
+| 司机资费（I08） | Accepted 的 AuthorizeResponse 中的 `tariff` 用于该 idToken 的下一笔交易；否则交易使用其 EVSE 的默认资费。`tariffId` 在 Started 事件中发送 |
+| 费用（I12） | TariffCostCtrlr.Enabled[Tariff] 与 [Cost] 为 true 时，Ended 事件带 `costDetails`。这是粗算：电量 × 第一个电量单价 + 第一个固定费用，再按 `minCost` / `maxCost` 封顶，不含税。不计算时间、空闲、预约费用和税，不发送 `chargingPeriods`，不发送运行中费用更新（Enabled[RunningCost] 为 false）。Web UI 显示限额和当前费用 |
+| 可用性（G01） | 充电桩设置 `availability_report`（默认 `both`）决定连接器状态变化用 StatusNotification（`status`）、带 `Connector.AvailabilityState` 和 trigger `Delta` 的 NotifyEvent（`event`），还是两者都发。Mini CSMS 把两者都显示为连接器状态 |
+| Device Model | TxCtrlr.SupportedLimits；TariffCostCtrlr：Available / Enabled [Tariff, Cost]（true；Enabled[RunningCost] 为 false）、Currency（`JPY`）、MaxElements[Tariff]（10）、ConditionsSupported[Tariff]（false）、TariffFallbackMessage[en] 与 TotalCostFallbackMessage[en]（空） |
+| RequestStartTransaction 的 profile | 先按 2.1 规则转换和检查（setpoint、operationMode、Dynamic，与 SetChargingProfile 相同），再按 2.0.1 的 RequestStart 规则检查 |
+| `limit_L2` / `limit_L3` | 在 TxProfile 以外（K01.FR.143 / FR.144），或在没有 `limit` 的时段中（K01.FR.145 / FR.146）回 `Rejected` `PhaseConflict` |
+
+未建模：E17（重启后恢复交易）、资费条件与按时间计价、税、运行中费用更新、TariffCostCtrlr.Problem / HandleFailedTariff
+（无法处理的司机资费被忽略，改用默认资费）、资费与费用的显示消息。
 
 ## 尚不支持
 

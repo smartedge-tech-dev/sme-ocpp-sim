@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- OCPP 2.1 transaction limits, tariffs and availability (v0.3.2, 2.1-M3): `transactionLimit` from the CSMS
+  (TransactionEventResponse, also after RequestStartTransaction) or set locally is confirmed with `LimitSet`; a
+  reached energy, time, SoC or cost limit suspends the energy transfer (`EnergyLimitReached` / `TimeLimitReached` /
+  `SoCLimitReached` / `CostLimitReached`) and a raised one resumes it. Tariffs are used now: SetDefaultTariff checks
+  `TooManyElements` / `ConditionNotSupported` and honours `validFrom`, ChangeTransactionTariff checks
+  `NoCurrencyChange` and sends `TariffChanged`, the AuthorizeResponse `tariff` becomes the driver tariff, the
+  Started event carries the `tariffId`, and the Ended event carries a rough `costDetails` (energy price and fixed
+  fee only). New Device Model variables TxCtrlr.SupportedLimits and TariffCostCtrlr.*; with
+  TariffCostCtrlr.Enabled[Tariff] false the tariff messages answer CALLERROR `NotSupported`.
+- Charger setting `availability_report` (`status` / `event` / `both`, default `both`): a 2.1 station reports
+  connector status changes with StatusNotification and/or NotifyEvent `Connector.AvailabilityState` (G01).
+- Mini CSMS: `transaction_limit` is sent in the answer to every 2.1 TransactionEvent `Started`; the tariff, the
+  transaction limit and the reported cost of a transaction are kept and shown, and an AvailabilityState NotifyEvent
+  updates the connector status. The Web UI shows a 2.1 transaction's limits and running cost (en / ja / zh).
+
+### Changed
+
+- OCPP 2.1 RequestStartTransaction converts and checks its charging profile with the 2.1 rules (setpoint and
+  operationMode now apply), then with the 2.0.1 RequestStart rules.
+- OCPP 2.1 SetChargingProfile rejects `limit_L2` / `limit_L3` outside a TxProfile or without `limit` with
+  `PhaseConflict` (K01.FR.143 - FR.146).
+
 ## [0.3.1] - 2026-11-28
 
 ### Added
