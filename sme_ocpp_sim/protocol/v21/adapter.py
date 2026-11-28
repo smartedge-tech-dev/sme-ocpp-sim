@@ -21,3 +21,7 @@ class Adapter21(Adapter201):
     models: Any = m
     codec: Any = codec21.CODEC
     remote_actions: Sequence[str] = REMOTE_ACTIONS_21
+
+    async def send_report_der_control(self, report: m.ReportDERControlRequest) -> Any:
+        """CS -> CSMS ReportDERControl (R04); returns the parsed response."""
+        return await self._send("ReportDERControl", report)

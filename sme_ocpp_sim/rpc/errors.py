@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,9 @@ class ErrorCodes:
     max_error_description_length: Optional[int] = None
     #: OCPP-J 2.1 framing (Part 4 §4.2.3 / §4.2.4): CALLRESULTERROR (5) and SEND (6) are sent and understood.
     supports_send: bool = False
+    #: Actions that may arrive as a SEND (OCPP 2.1: only NotifyPeriodicEventStream). A SEND for any other action is
+    #: logged and dropped without running a handler.
+    send_actions: Tuple[str, ...] = ()
     #: OCPP-J 2.1 (Part 4 §4.1.3): a frame with an unknown MessageTypeId is ignored (no CALLERROR; 2.1 deprecates
     #: MessageTypeNotSupported). ``False`` = answered with ``message_type_not_supported`` / ``protocol_error``.
     ignore_unknown_type: bool = False
@@ -90,6 +93,7 @@ OCPP21_ERRORS = ErrorCodes(
     max_message_id_length=36,
     max_error_description_length=255,
     supports_send=True,
+    send_actions=("NotifyPeriodicEventStream",),
     ignore_unknown_type=True,
 )
 

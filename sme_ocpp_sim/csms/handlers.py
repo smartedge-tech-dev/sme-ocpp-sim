@@ -252,9 +252,14 @@ def _answers201(session: "CpSession", ctx: Ctx) -> Dict[str, Callable[[dict], di
 
 
 #: Schema-valid answers to the new 2.1 CS -> CSMS messages (the others answer an empty payload, which is what
-#: their response schemas require). NotifyPeriodicEventStream is a SEND: never answered.
+#: their response schemas require). GetCertificateChainStatus is answered with one ``Unknown`` status entry per
+#: requested certificate (the Mini CSMS has no certificate status source). NotifyPeriodicEventStream is a SEND:
+#: never answered.
 _ANSWERS21: Dict[str, Callable[[dict], dict]] = {
     "BatterySwap": lambda p: {},
+    "GetCertificateChainStatus": lambda p: {"certificateStatus": [
+        {"certificateHashData": c.get("certificateHashData"), "source": c.get("source"), "status": "Unknown",
+         "nextUpdate": "1970-01-01T00:00:00Z"} for c in p.get("certificateStatusRequests") or ()]},
     "OpenPeriodicEventStream": lambda p: {"status": "Accepted"},
     "PullDynamicScheduleUpdate": lambda p: {"status": "Rejected"},
     "VatNumberValidation": lambda p: {"vatNumber": p.get("vatNumber", ""), "status": "Rejected"},

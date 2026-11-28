@@ -255,6 +255,10 @@ class RpcConnection:
 
         if isinstance(frame, framer.Send):
             # Never answered (Part 4 §4.2.4): the handler's result and errors are dropped.
+            if frame.action not in self.codes.send_actions:
+                self._emit(FrameInfo("rx", raw, framer.SEND, frame.uid, frame.action, "not a SEND action: ignored"))
+                log.warning("%s: SEND %s is not a SEND action: ignored", self.name, frame.action)
+                return
             handler = self.handlers.get(frame.action)
             self._emit(FrameInfo("rx", raw, framer.SEND, frame.uid, frame.action,
                                  None if handler else "no handler: ignored"))
@@ -315,6 +319,13 @@ class RpcConnection:
 
     async def _on_bad_frame(self, raw: str, e: framer.BadFrame) -> None:
         mtype = e.message_type if isinstance(e.message_type, int) else None
+        if mtype in (framer.SEND, framer.CALLRESULTERROR) and self.codes.supports_send:
+            # A SEND is never answered (Part 4 §4.2.4), also not when malformed; a malformed CALLRESULTERROR
+            # (an answer to one of our CALLRESULTs) never touches a pending CALL. Logged and dropped.
+            self._emit(FrameInfo("rx", raw, mtype, e.uid, None, f"dropped: {e.reason}"))
+            log.warning("%s: malformed %s dropped (%s): %.200s", self.name,
+                        "SEND" if mtype == framer.SEND else "CALLRESULTERROR", e.reason, raw)
+            return
         if e.kind == framer.NO_UID:
             # The answer to a frame without a usable uniqueId is the version's choice
             # (ErrorCodes.bad_frame_reply); 1.6J defines none, so 1.6 logs and drops it.

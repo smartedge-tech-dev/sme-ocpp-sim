@@ -157,7 +157,7 @@ class Station21(Station201):
                 if self._der_matches(c, req.is_default, req.control_type, req.control_id)]
         if not hits:
             return self.models.GetDERControlResponse(status="NotFound")
-        self.host.after_reply(functools.partial(self._send_der_report, self._der_report(req.request_id, hits)))
+        self.host.after_reply(functools.partial(self._send_der_report, req.request_id, hits))
         return self.models.GetDERControlResponse(status="Accepted")
 
     def _der_report(self, request_id: int, controls: List[m.SetDERControlRequest]) -> m.ReportDERControlRequest:
@@ -167,6 +167,8 @@ class Station21(Station201):
             name = _DER_FIELD.get(ctype, "curve")
             setting = getattr(c, name)
             if setting is None:
+                log.warning("ReportDERControl: control %s (%s) skipped, its %s setting is None", c.control_id, ctype,
+                            name)
                 continue
             get_cls = getattr(self.models, _DER_GET[name])
             entry: Dict[str, Any] = {"id": c.control_id, "isDefault": c.is_default, "isSuperseded": False,
@@ -180,8 +182,14 @@ class Station21(Station201):
         payload: Dict[str, Any] = {"requestId": request_id, **lists}
         return self.models.ReportDERControlRequest.model_validate(payload)
 
-    async def _send_der_report(self, report: m.ReportDERControlRequest) -> None:
-        await self.host.safe(self._adapter._send("ReportDERControl", report), "ReportDERControl")
+    async def _send_der_report(self, request_id: int, controls: List[m.SetDERControlRequest]) -> None:
+        # Built here, after the GetDERControl reply went out: a model error must not turn that reply into a CALLERROR.
+        try:
+            report = self._der_report(request_id, controls)
+        except Exception:  # noqa: BLE001 - the reply is already sent; only the follow-up report is lost
+            log.exception("ReportDERControl for request %s could not be built", request_id)
+            return
+        await self.host.safe(self._adapter.send_report_der_control(report), "ReportDERControl")
 
 
 def _wire(attr: str) -> str:

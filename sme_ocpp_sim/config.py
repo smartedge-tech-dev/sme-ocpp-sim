@@ -3,7 +3,7 @@
 Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` / ``mini_csms`` (built-in
 CSMS, M9) and a flat per-charger model (``connectors`` count instead of the ``evses`` tree; every connector has
 the same supply and ``max_power_w``).
-A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
+A 2.0.1 / 2.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
 ``ev_models`` entry), or ``pool``: every transaction draws one from the vehicle pool (:mod:`.charging.vehicles`:
 presets + ``ev_models`` by ``weight``, with their ``initial_soc`` / ``target_soc`` distributions). A charger may take its model defaults from a charger template (``template`` / ``params``,
@@ -81,7 +81,7 @@ Name50 = Annotated[QuotedStr, Field(min_length=1, max_length=50)]
 
 
 class VariableConfig(StrictModel):
-    """One ``variables:`` entry of a 2.0.1 charger (OCPP 2.0.1 Device Model, ``protocol.v201.device_model``).
+    """One ``variables:`` entry of a 2.0.1 / 2.1 charger (OCPP 2.0.1 Device Model, ``protocol.v201.device_model``).
 
     An entry that addresses a standard variable (same component / instance / EVSE / connector / variable /
     instance) overrides its values; any other entry is a user-defined variable and needs ``data_type``. The
@@ -358,7 +358,7 @@ class ImpairmentConfig(StrictModel):
       the default of a forced drop). Simulated drops never count against ``reconnect.max_retries`` /
       ``boot_max_retries`` and use no back-off.
     - ``remote_start`` (v0.3 M2): ``accept_no_tx`` answers every RemoteStartTransaction (1.6) /
-      RequestStartTransaction (2.0.1) with ``Accepted`` but starts nothing: no StartTransaction / TransactionEvent
+      RequestStartTransaction (2.0.1 / 2.1) with ``Accepted`` but starts nothing: no StartTransaction / TransactionEvent
       Started, the connector state stays as it is. ``normal`` = off.
     - ``meter``: meter value impairments, see :class:`MeterImpairment`.
     - ``response_delay_ms``: CSMS -> CP action -> ms; the answer (CALLRESULT or CALLERROR) to that inbound CALL
@@ -460,7 +460,7 @@ class ChargerConfig(StrictModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     #: Default for MeterValueSampleInterval when ``config_keys`` does not set it (``None`` = key table default).
     meter_sample_interval_s: Optional[int] = Field(None, ge=0)
-    #: OCPP 2.0.1 Device Model overrides and user-defined variables (2.0.1 chargers only).
+    #: OCPP 2.0.1 Device Model overrides and user-defined variables (2.0.1 / 2.1 chargers only).
     variables: List[VariableConfig] = Field(default_factory=list)
     #: Firmware / diagnostics simulation timings and failure injection (M7).
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
@@ -716,7 +716,7 @@ class SimConfig(StrictModel):
             return
         version = c.ocpp_version or self.csms_defaults.ocpp_version
         if version not in ("2.0.1", "2.1"):
-            raise ValueError(f"charger {c.id!r}: variables is for OCPP 2.0.1 chargers (this one is {version}; "
+            raise ValueError(f"charger {c.id!r}: variables is for OCPP 2.0.1 / 2.1 chargers (this one is {version}; "
                              "use config_keys)")
         from .protocol.v201.device_model import check_charger  # lazy: config imports no protocol stack
 

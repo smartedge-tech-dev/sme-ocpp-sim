@@ -158,8 +158,10 @@ OCPP 2.1 is available as `ocpp_version: "2.1"` (subprotocol `ocpp2.1`). A 2.1 st
 - **Framing.** OCPP-J 2.1 adds SEND (`[6, ...]`, one-way, never answered) and CALLRESULTERROR (`[5, ...]`, the peer
   found a CALLRESULT invalid). Both are sent and understood. A frame with an unknown MessageTypeId is ignored under
   2.1 (not answered with a CALLERROR).
-- **Relaxed fields.** Messages are checked against the 2.1 schemas, which add optional fields and relax some 2.0.1
-  fields; a 2.0.1 payload is still valid.
+- **Relaxed fields.** The generated 2.1 models add optional fields and relax some 2.0.1 fields; a 2.0.1 payload is
+  still valid. They enforce structure, required fields, enums and string or array length limits, but not numeric
+  ranges or patterns (the same leniency as 2.0.1). The tests validate every outbound frame against the official 2.1
+  schemas.
 - **Reset.** `ImmediateAndResume` is accepted and handled as `Immediate`; resuming the transactions after the reboot
   is not simulated.
 - **TriggerMessage.** `CustomTrigger` answers `NotImplemented`.

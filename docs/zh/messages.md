@@ -153,7 +153,7 @@ OCPP 2.1 通过 `ocpp_version: "2.1"`（子协议 `ocpp2.1`）使用。2.1 充�
 
 - **帧格式。** OCPP-J 2.1 新增 SEND（`[6, ...]`，单向，不应答）和 CALLRESULTERROR（`[5, ...]`，对端认为
   CALLRESULT 无效），两者均可收发。2.1 下 MessageTypeId 未知的帧会被忽略（不回复 CALLERROR）。
-- **放宽的字段。** 消息按 2.1 schema 校验：2.1 增加了可选字段并放宽了部分 2.0.1 字段，2.0.1 的负载仍然有效。
+- **放宽的字段。** 生成的 2.1 模型增加了可选字段并放宽了部分 2.0.1 字段，2.0.1 的负载仍然有效。模型会强制校验结构、必填字段、枚举以及字符串/数组的长度限制，但不校验数值范围和正则（与 2.0.1 同样宽松）；出站帧在测试中会按官方 2.1 schema 校验。
 - **Reset。** `ImmediateAndResume` 会被接受并按 `Immediate` 处理，重启后恢复交易的过程不做模拟。
 - **TriggerMessage。** `CustomTrigger` 返回 `NotImplemented`。
 

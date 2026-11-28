@@ -15,10 +15,13 @@ from pathlib import Path
 import pytest
 from rpc_fakes import FakeWs
 from test_rpc_connection import _rpc, _until
+from test_mini_csms import _cfg
 from test_station201 import CP, FAST, _online, _until as _until_rt
 from test_station201_remote import _start
 
 from sme_ocpp_sim.config import ChargerConfig
+from sme_ocpp_sim.csms.handlers import SPECS, build_handlers
+from sme_ocpp_sim.csms.session import CpSession
 from sme_ocpp_sim.framelog import FrameLog
 from sme_ocpp_sim.protocol.registry import check_version
 from sme_ocpp_sim.protocol.v201 import enums as e201
@@ -164,6 +167,128 @@ def test_malformed_callresult_gets_a_callresulterror():
         return ws.sent_frames()
     sent = _run(scenario)
     assert sent[1][:3] == [5, "id1", "FormatViolation"]
+
+
+def test_malformed_send_is_dropped_without_a_reply():
+    async def scenario(ws):
+        rpc, frames = _rpc(ws, {"NotifyPeriodicEventStream": lambda p: None}, error_codes=OCPP21_ERRORS)
+        rx = asyncio.create_task(rpc.run())
+        ws.feed([6, "x", "A", []])  # payload is not an object
+        ws.feed([6, "x"])  # too short for a SEND
+        ws.feed([2, "x2", "Heartbeat", {}])  # answered: proves both frames were consumed
+        await _until(lambda: any(f[1] == "x2" for f in ws.sent_frames()))
+        await rpc.close()
+        await rx
+        return ws.sent_frames(), frames
+    sent, frames = _run(scenario)
+    assert [f[1] for f in sent] == ["x2"]  # nothing went out for the two bad SENDs
+    assert sum(1 for f in frames if f.direction == "rx" and f.message_type == framer.SEND) == 2
+
+
+def test_malformed_callresulterror_leaves_pending_calls_alone():
+    async def scenario(ws):
+        rpc, _ = _rpc(ws, error_codes=OCPP21_ERRORS)
+        rx = asyncio.create_task(rpc.run())
+        call = asyncio.create_task(rpc.call("Heartbeat", {}))
+        await _until(lambda: len(ws.sent) == 1)
+        ws.feed([5, "id1", "FormatViolation"])  # too short: malformed, uid matches the pending CALL
+        ws.feed([5, "id1", 7, "d", {}])  # errorCode is not a string
+        await asyncio.sleep(0.1)
+        assert not call.done()
+        ws.feed([3, "id1", {"currentTime": "t"}])
+        assert await asyncio.wait_for(call, 2) == {"currentTime": "t"}
+        await rpc.close()
+        await rx
+        return ws.sent_frames()
+    sent = _run(scenario)
+    assert len(sent) == 1  # no CALLERROR / CALLRESULTERROR in answer
+
+
+def test_send_for_a_non_send_action_runs_no_handler_and_gets_no_reply():
+    async def scenario(ws):
+        ran = []
+
+        async def reset(payload):
+            ran.append(payload)
+            return {"status": "Accepted"}
+        rpc, frames = _rpc(ws, {"Reset": reset}, error_codes=OCPP21_ERRORS)
+        rx = asyncio.create_task(rpc.run())
+        ws.feed([6, "s1", "Reset", {"type": "Immediate"}])
+        ws.feed([2, "x2", "Heartbeat", {}])
+        await _until(lambda: any(f[1] == "x2" for f in ws.sent_frames()))
+        await rpc.close()
+        await rx
+        return ran, ws.sent_frames(), frames
+    ran, sent, frames = _run(scenario)
+    assert ran == [] and [f[1] for f in sent] == ["x2"]
+    assert any(f.note == "not a SEND action: ignored" for f in frames)
+
+
+# ---------------------------------------------------------------------- inherited 2.0.1 behaviour under 2.1
+
+
+def _station21():
+    rt = ChargerRuntime(ChargerConfig(id=CP, connectors=2), "ws://127.0.0.1:9/ocpp", "2.1")
+    return rt, rt.station
+
+
+@pytest.mark.parametrize("reset_type", ["Immediate", "ImmediateAndResume"])
+def test_reset_immediate_and_resume_behaves_like_immediate(reset_type):
+    rt, st = _station21()
+    later = []
+    rt.after_reply = later.append
+    res = c21.dump(asyncio.run(st.handle(c21.parse("Reset", {"type": reset_type})[0])))
+    assert res == {"status": "Accepted"}
+    assert later == [st._do_reset]
+
+
+def test_trigger_message_custom_trigger_is_not_implemented():
+    rt, st = _station21()
+    req = {"requestedMessage": "CustomTrigger", "customTrigger": "x"}
+    assert c21.dump(asyncio.run(st.handle(c21.parse("TriggerMessage", req)[0])))["status"] == "NotImplemented"
+
+
+# ---------------------------------------------------------------------- Mini CSMS answers vs the 2.1 schemas
+
+
+def _sample(schema, defs):
+    """A minimal instance of ``schema``: required properties only."""
+    if "$ref" in schema:
+        return _sample(defs[schema["$ref"].rsplit("/", 1)[-1]], defs)
+    if "enum" in schema:
+        return schema["enum"][0]
+    t = schema.get("type")
+    if t == "object":
+        return {k: _sample(schema["properties"][k], defs) for k in schema.get("required", ())}
+    if t == "array":
+        return [_sample(schema["items"], defs) for _ in range(schema.get("minItems", 0))]
+    if t == "string":
+        return "2026-01-01T00:00:00Z" if schema.get("format") == "date-time" else "a"
+    if t in ("integer", "number"):
+        return schema.get("minimum", 0)
+    return False
+
+
+def test_every_mini_csms_2_1_answer_matches_the_2_1_response_schema():
+    v = _validator()
+    spec = SPECS["2.1"]
+
+    class Ctx:
+        cfg = _cfg()
+
+        def next_tx_id(self):
+            return 1
+
+    handlers = build_handlers(spec, CpSession("X", "2.1", spec.subprotocol), Ctx())
+    assert set(handlers) == set(spec.cp_actions) and "GetCertificateChainStatus" in handlers
+    for action, h in handlers.items():
+        if action == "NotifyPeriodicEventStream":
+            continue  # a SEND: never answered, no response schema
+        schema = json.loads((SCHEMAS / f"{action}Request.json").read_text(encoding="utf-8"))
+        request = _sample(schema, schema.get("definitions", {}))
+        v.validate(action, request, "request")
+        answer = asyncio.run(h(request))
+        v.validate(action, answer, "response")
 
 
 # ---------------------------------------------------------------------- store-and-ack messages

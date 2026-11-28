@@ -129,7 +129,7 @@ def build_registry(app: Any) -> McpRegistry:
         destructive=False)
     add("clear_fault", "Clear a connector fault (back to Available).",
         "POST", "/api/chargers/{cid}/clear-fault", conn, destructive=False)
-    add("set_external_limit", "OCPP 2.0.1 only: set (limit_w) or remove (no limit_w) an external charging limit, "
+    add("set_external_limit", "OCPP 2.0.1 / 2.1 only (not 1.6): set (limit_w) or remove (no limit_w) an external charging limit, "
         "e.g. from a local EMS; the station reports it to the CSMS.", "POST", "/api/chargers/{cid}/external-limit",
         _obj({"connector": _WHOLE_CHARGER,
               "limit_w": {"type": "number", "minimum": 0, "description": "Limit in W; omit to remove the limit"}}),
