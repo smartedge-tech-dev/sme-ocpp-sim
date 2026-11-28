@@ -166,6 +166,9 @@ class OcppEngine(BaseEngine):
         self.frame_listeners: List[Callable[[Any], None]] = []
         #: The scenario runner of the current / last scenario (``scenario.runner``; one at a time).
         self.scenario: Optional[Any] = None
+        #: The standing traffic (:class:`.scenario.traffic.StandingTraffic`, config ``traffic:``).
+        from .scenario.traffic import StandingTraffic  # lazy: scenario imports the engine
+        self.traffic = StandingTraffic(self)
         self._runs: Dict[str, _Run] = {}
         self._started = False
         self._push_at = 0.0
@@ -210,7 +213,8 @@ class OcppEngine(BaseEngine):
             url, version = config.resolve_csms(c)
             rt = ChargerRuntime(c, url, version, reconnect=config.csms_defaults.reconnect, frame_log=self._sink,
                                 call_timeout=self.call_timeout, ev=config.resolve_ev(c),
-                                tick_s=sim.tick_seconds, time_scale=sim.time_scale)
+                                tick_s=sim.tick_seconds, time_scale=sim.time_scale,
+                                vehicle_seed=config.traffic.seed)
             out[c.id] = _Entry(spec, rt)
         return out
 
@@ -238,6 +242,7 @@ class OcppEngine(BaseEngine):
             e = state.get(c.id)
             if e is not None:
                 e.runtime.set_impairments(c.impairments)
+                e.runtime.set_vehicle_seed(config.traffic.seed)
 
     async def _apply_diff(self, old_config: SimConfig, new_config: SimConfig, new_state: Dict[str, _Entry]) -> None:
         old = self.state
@@ -267,6 +272,7 @@ class OcppEngine(BaseEngine):
             self.log_event("config", f"chargers restarted: {sorted(set(gone) | set(fresh))}")
         if self._started and not self._stopping:
             await self._sync_csms(new_config.mini_csms)
+            await self.traffic.reconfigure(old_config, new_config, rebuilt=set(gone) | set(fresh))
 
     # ------------------------------------------------------------ Mini CSMS
 
@@ -376,8 +382,11 @@ class OcppEngine(BaseEngine):
         for cid, e in self.state.items():
             if cid not in self._held:
                 self._launch(cid, e.runtime)
+        if self.config.traffic.enabled:
+            self.traffic.start_quiet(self.config)
 
     async def stop(self) -> None:
+        await self.traffic.stop(cleanup=False)
         runner = self.scenario
         if runner is not None and runner.abort():  # a running scenario ends as aborted, with its cleanup
             with contextlib.suppress(Exception):
@@ -494,8 +503,11 @@ class OcppEngine(BaseEngine):
 
     def stats_snapshot(self) -> Optional[Dict[str, Any]]:
         rts = [e.runtime for e in self.state.values()]
-        return {"chargers": len(rts), "connected": sum(r.connected for r in rts),
-                "online": sum(r.online for r in rts), "frame_seq": self.frame_log.last_seq}
+        out = {"chargers": len(rts), "connected": sum(r.connected for r in rts),
+               "online": sum(r.online for r in rts), "frame_seq": self.frame_log.last_seq}
+        if self.traffic.running:  # the UI's traffic indicator
+            out["traffic"] = self.traffic.brief()
+        return out
 
     def snapshot(self) -> Dict[str, Any]:
         return {

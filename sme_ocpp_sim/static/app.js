@@ -222,8 +222,10 @@ function afterListChange() {
 }
 function syncCount() {
   const st = S.stats;
-  $("chargerCount").textContent = st ? t("chargers.count_online", { n: st.chargers, online: st.online ?? st.connected })
-    : t("chargers.count", { n: S.chargers.size });
+  $("chargerCount").textContent = (st ? t("chargers.count_online", { n: st.chargers, online: st.online ?? st.connected })
+    : t("chargers.count", { n: S.chargers.size }))
+    + (st && st.traffic ? " · " + t("chargers.traffic", { active: st.traffic.active,
+      kw: (st.traffic.power_w / 1000).toFixed(1) }) : "");
 }
 const visibleIds = () => [...S.rows].filter(([, r]) => !r.tr.hidden).map(([id]) => id);
 function syncSelAll() {

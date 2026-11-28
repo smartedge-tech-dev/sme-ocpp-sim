@@ -84,6 +84,7 @@ nav:
       - security-profiles.md
       - mini-csms.md
       - scenarios.md
+      - traffic.md
       - http-api.md
       - mcp.md
       - development.md

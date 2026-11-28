@@ -1,0 +1,61 @@
+# SME OCPPSim - traffic generator demo (v0.3).
+#
+# Four chargers on the built-in Mini CSMS, with standing random traffic: every 5 sim minutes each idle connector
+# gets a car with probability 0.3 x the hour's weight (morning / evening peaks), charging 30 min .. 2 h or until
+# the vehicle's target SoC, then 0 .. 15 min idle before it leaves. time_scale 60 = one sim hour per wall minute.
+#
+#   sme-ocpp-sim -c configs/traffic-demo.yaml
+#
+# Preview the plan:  GET http://127.0.0.1:8080/api/traffic/plan?hours=4
+# Same seed + same config + same start time = the same plan (see the "Traffic generator" docs page).
+
+simulation:
+  tick_seconds: 1
+  time_scale: 60
+  running: true
+
+csms_defaults:
+  url: "ws://127.0.0.1:9000/ocpp"
+  ocpp_version: "1.6"
+  reconnect: { min_s: 1, max_s: 30, jitter: 0.2 }
+
+ev_models:
+  - id: fleet-van
+    capacity_kwh: 75
+    max_ac_kw: 11
+    phases: 3
+    weight: 1
+    initial_soc: { dist: normal, mean: 30, sd: 10, min: 5, max: 70 }
+    target_soc: 90
+
+chargers:
+  - { id: "TRF-01", max_power_w: 7400, auth_mode: accept_all, id_tags: [TAG001, TAG002], session: { ev_model: pool } }
+  - { id: "TRF-02", max_power_w: 7400, auth_mode: accept_all, id_tags: [TAG001, TAG002], session: { ev_model: pool } }
+  - { id: "TRF-03", ocpp_version: "2.0.1", max_power_w: 11000, phases: 3, voltage_v: 200, line_to_line: true,
+      auth_mode: accept_all, id_tags: [TAG003] }
+  - { id: "TRF-04", ocpp_version: "2.0.1", max_power_w: 11000, phases: 3, voltage_v: 200, line_to_line: true,
+      auth_mode: accept_all, id_tags: [TAG003] }
+
+traffic:
+  enabled: true
+  seed: 42
+  chargers: "*"
+  interval_s: 300
+  probability: 0.3
+  hourly_weights: [0.2, 0.1, 0.1, 0.1, 0.2, 0.5, 1, 2, 2, 1.5, 1, 1, 1, 1, 1, 1, 1.5, 2, 2, 1.5, 1, 0.8, 0.5, 0.3]
+  auth_order: plug_first
+  stop_after: first
+  duration_s: [1800, 7200]
+  stop_by: swipe
+  idle_after_s: [0, 900]
+  id_tags: [TAG001, TAG002, TAG003, TAG004]
+  id_tag_strategy: affinity
+  affinity_prob: 0.8
+  vehicles: { kei-20kwh: 1, compact-40kwh: 3, suv-90kwh: 1, fleet-van: 1 }
+
+mini_csms:
+  enabled: true
+  host: "127.0.0.1"
+  port: 9000
+  versions: ["1.6", "2.0.1"]
+  boot: { status: Accepted, interval: 300 }

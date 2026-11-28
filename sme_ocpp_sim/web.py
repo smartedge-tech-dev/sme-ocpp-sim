@@ -116,6 +116,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 
 import yaml
@@ -129,7 +130,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, StreamingRespon
 from starlette.routing import Route
 
 from . import __version__, templates_builtin, xlsx_io
-from .config import PASSWORD_MASK, CsmsDefaults, ImpairmentConfig, SimConfig
+from .config import PASSWORD_MASK, CsmsDefaults, ImpairmentConfig, SimConfig, TrafficConfig
 from .engine import OcppEngine
 from .protocol.base import DataTransferStatus
 from .protocol.registry import get_station_class, list_versions
@@ -734,6 +735,46 @@ def _router(engine: OcppEngine) -> APIRouter:
         if format == "junit":
             return PlainTextResponse(to_junit(verdict), media_type="application/xml")
         return verdict
+
+    # ---- traffic generator (v0.3 M4; scenario/traffic.py)
+
+    @r.get("/traffic", summary="Standing traffic: state, counters, active sessions, power and the traffic: block")
+    def traffic_get():
+        return engine.traffic.status()
+
+    @r.put("/traffic", summary="Replace the traffic: block (reload; a change restarts the running traffic, "
+           "enabled starts / stops it)")
+    async def traffic_put(body: TrafficConfig):
+        data = engine.config.model_dump()
+        data["traffic"] = body.model_dump()
+        await apply(data)
+        return {"ok": True, **engine.traffic.status()}
+
+    @r.post("/traffic/start", summary="Start the standing traffic now (not saved: traffic.enabled is unchanged)")
+    async def traffic_start():
+        if not engine._started:
+            raise bad(409, "the engine is not running")
+        try:
+            return {"ok": True, **engine.traffic.start()}
+        except ValueError as e:
+            raise bad(400, e) from None
+
+    @r.post("/traffic/stop", summary="Stop the standing traffic (its sessions are stopped and unplugged)")
+    async def traffic_stop():
+        if not await engine.traffic.stop():
+            raise bad(409, "traffic is not running")
+        return {"ok": True, **engine.traffic.status()}
+
+    @r.get("/traffic/plan", summary="Preview the arrivals the traffic: block plans for the next hours (sim); "
+           "deterministic for a seed and start")
+    def traffic_plan(hours: float = Query(1.0, gt=0, le=168), charger: Optional[str] = Query(None),
+                     limit: int = Query(1000, ge=1, le=10000), start: Optional[datetime] = Query(None)):
+        if charger is not None:
+            _act_sync(ops.runtime, engine, charger)
+        try:
+            return engine.traffic.preview(hours, charger, limit, start)
+        except ValueError as e:
+            raise bad(400, e) from None
 
     @r.post("/frames/expect", summary="Wait until a frame matching the filters (and payload matchers) is in the "
             "frame log after seq 'since', or 'within' seconds pass")

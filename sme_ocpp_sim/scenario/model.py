@@ -21,9 +21,11 @@ from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
+from pydantic import (BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, ValidationInfo, field_validator,
+                      model_validator)
 from pydantic.functional_validators import BeforeValidator
 
+from ..config import TrafficConfig
 from .match import MatcherError, check_matcher
 
 FORMAT = "ocppsim-scenario/1"
@@ -286,13 +288,29 @@ class Track(_Strict):
     charger: Optional[str] = Field(None, min_length=1)
     for_each: Optional[ForEach] = None
     repeat: int = Field(1, ge=1, le=MAX_REPEAT)
-    steps: List[Step] = Field(min_length=1)
-    generate: Optional[Any] = None
+    steps: List[Step] = Field(default_factory=list)
+    #: A generator track (traffic generator, :mod:`.traffic`): the ``traffic:`` fields, ``use: traffic`` = start
+    #: from the config's block. One generator per track (``for_each``: one plan for all its chargers).
+    generate: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="after")
     def _target(self) -> "Track":
         if self.generate is not None:
-            raise ValueError("generate: generator tracks come with the traffic generator (v0.3 M4)")
+            if self.steps or self.repeat > 1:
+                raise ValueError("a generate track takes no steps / repeat")
+            g = dict(self.generate)
+            if g.get("use", "traffic") != "traffic":
+                raise ValueError("generate.use: only 'traffic' (the config's traffic: block)")
+            bad = sorted({"enabled", "chargers"} & set(g))
+            if bad:
+                raise ValueError(f"generate: {bad} not allowed (the track's charger / for_each picks the chargers)")
+            g.pop("use", None)
+            try:
+                TrafficConfig.model_validate(g)
+            except ValidationError as e:
+                raise ValueError("generate: " + _errors(e)) from None
+        elif not self.steps:
+            raise ValueError("a track needs steps (or generate)")
         if (self.charger is None) == (self.for_each is None):
             raise ValueError("a track has exactly one of charger / for_each")
         if self.repeat > 1 and any(s.at is not None and parse_time(s.at)[0] != "rel" for s in self.steps):
@@ -318,6 +336,13 @@ class Scenario(_Strict):
     #: The tracks as loaded, before ``${...}`` replacement (:func:`expand` validates the replaced steps).
     _raw_tracks: Optional[List[Any]] = PrivateAttr(default=None)
 
+    @model_validator(mode="after")
+    def _until(self, info: ValidationInfo) -> "Scenario":
+        standing = bool(info.context and info.context.get("standing"))
+        if not standing and self.until is None and any(t.generate is not None for t in self.tracks):
+            raise ValueError("until: required with generate tracks (they never end by themselves)")
+        return self
+
 
 # ------------------------------------------------------------------ loading
 
@@ -330,7 +355,7 @@ def _errors(e: ValidationError) -> str:
     return "; ".join(out)
 
 
-def load_data(data: Any) -> Scenario:
+def load_data(data: Any, *, standing: bool = False) -> Scenario:
     if not isinstance(data, dict):
         raise ScenarioError("a scenario is a mapping with format: ocppsim-scenario/1")
     if data.get("format") != FORMAT:
@@ -343,7 +368,7 @@ def load_data(data: Any) -> Scenario:
         env = {**params, "charger": "CHARGER", "i": 1, "round": 1}
         probe = {**data, "tracks": _subst(data["tracks"], env, "tracks")}
     try:
-        sc = Scenario.model_validate(probe)
+        sc = Scenario.model_validate(probe, context={"standing": standing})
     except ValidationError as e:
         raise ScenarioError(_errors(e)) from None
     sc._raw_tracks = data.get("tracks")
@@ -400,6 +425,8 @@ class PlannedTrack:
     name: str
     charger: str
     steps: Tuple[PlannedStep, ...]
+    generate: Optional[Dict[str, Any]] = None   # a generator track: its generate block (params replaced)
+    group: int = 0                               # index of the scenario track it came from
 
 
 def expand(sc: Scenario, charger_ids: List[str]) -> List[PlannedTrack]:
@@ -421,7 +448,11 @@ def expand(sc: Scenario, charger_ids: List[str]) -> List[PlannedTrack]:
                 where = f"{loc}.for_each.chargers" if tr.for_each is not None else f"{loc}.charger"
                 raise ScenarioError(f"{where}: unknown charger {cid!r} (config: {sorted(known)})")
             steps: List[PlannedStep] = []
-            for r in range(tr.repeat):
+            gen = None
+            if tr.generate is not None:
+                raw_gen = sc._raw_tracks[ti].get("generate") if sc._raw_tracks else tr.generate
+                gen = _subst(raw_gen, dict(sc.params), f"{loc}.generate")
+            for r in range(tr.repeat if gen is None else 0):
                 env = {**sc.params, "charger": cid, "i": i, "round": r}
                 for si, st in enumerate(tr.steps):
                     sloc = f"{loc}.steps.{si}"
@@ -438,7 +469,7 @@ def expand(sc: Scenario, charger_ids: List[str]) -> List[PlannedTrack]:
                     steps.append(PlannedStep(sid, s, parse_time(s.at) if s.at is not None else None, r))
             base = tr.name or f"track{ti + 1}"
             name = f"{base}:{cid}" if tr.for_each is not None or tr.name is None else base
-            out.append(PlannedTrack(name, cid, tuple(steps)))
+            out.append(PlannedTrack(name, cid, tuple(steps), gen, ti))
     names = [t.name for t in out]
     dup = sorted({n for n in names if names.count(n) > 1})
     if dup:

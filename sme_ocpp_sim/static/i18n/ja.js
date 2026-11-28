@@ -10,6 +10,7 @@ Shell.addStrings("ja", {
   "chargers.select_all": "すべて",
   "chargers.count": "{n} 台",
   "chargers.count_online": "{online} / {n} 台オンライン",
+  "chargers.traffic": "トラフィック: {active} セッション・{kw} kW",
   "col.id": "ID",
   "col.conn": "接続",
   "col.version": "OCPP",

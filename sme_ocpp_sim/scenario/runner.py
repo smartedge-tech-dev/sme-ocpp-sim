@@ -21,8 +21,13 @@ clock and judges its assertions on the charger frame stream.
 - **Clock**: ``clock.time_scale`` is restored afterwards unless someone changed the speed meanwhile;
   ``clock.start_at`` restarts the engine's sim clock, which stays where the run left it.
 
-One scenario runs at a time (``engine.scenario``); its chargers are :attr:`ScenarioRunner.chargers` (the traffic
-generator, M4, pauses itself there: Q3).
+One scenario runs at a time (``engine.scenario``); its chargers are :attr:`ScenarioRunner.chargers` (the standing
+traffic skips them and ends its sessions there before the scenario starts: Q3).
+
+**Generator tracks** (``generate:``, :mod:`.traffic`, M4) run a traffic generator per scenario track (one plan
+for its ``for_each`` chargers) until ``until``; their record (kind ``generate``) passes with the session counts.
+The standing traffic (``engine.traffic``) is a runner with ``standing=True``: generator tracks only, no
+``until``, no frame buffer, no verdict use.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from typing import IO, Any, Dict, List, Optional, Tuple
 from .. import __version__
 from ..framelog import FrameEntry
 from . import ops
+from . import traffic as _traffic
 from .match import frame_payload, match_all
 from .model import (DEFAULT_WITHIN_S, FrameSpec, PlannedStep, PlannedTrack, Scenario, ScenarioError, expand,
                     parse_time)
@@ -92,16 +98,34 @@ def _uses_frames(s) -> bool:
 class ScenarioRunner:
     max_frames = MAX_FRAMES
 
-    def __init__(self, engine: Any, scenario: Scenario, *, source: Optional[str] = None) -> None:
+    def __init__(self, engine: Any, scenario: Scenario, *, source: Optional[str] = None, standing: bool = False,
+                 config: Any = None) -> None:
         self.engine = engine
         self.scenario = scenario
         self.source = source
+        self.standing = standing
+        #: The config the generator tracks read (``use: traffic``, vehicle pools); default: the engine's.
+        self.config = config if config is not None else engine.config
         self.tracks: List[PlannedTrack] = expand(scenario, list(engine.chargers))
+        self.generators: Dict[int, _traffic.Generator] = {}
+        for t in self.tracks:
+            if t.generate is None or t.group in self.generators:
+                continue
+            cids = [x.charger for x in self.tracks if x.group == t.group]
+            try:
+                tc = _traffic.merged(self.config, t.generate, scenario.seed)
+                self.config.check_traffic(tc, cids)
+            except ValueError as e:
+                raise ScenarioError(f"tracks.{t.group}.generate: {e}") from None
+            self.generators[t.group] = _traffic.Generator(self, tc, cids, standing=standing)
         self.chargers = frozenset(t.charger for t in self.tracks)
         self._frame_chargers = frozenset(t.charger for t in self.tracks if any(_uses_frames(s.step) for s in t.steps))
         self._keep_all = {t.name for t in self.tracks if any(s.step.from_ == "scenario_start" for s in t.steps)}
         self.records: Dict[Tuple[str, str], StepRecord] = {
             (t.name, s.id): StepRecord(s.id, t.name, s.step.kind) for t in self.tracks for s in t.steps}
+        for t in self.tracks:
+            if t.generate is not None:
+                self.records[(t.name, "generate")] = StepRecord("generate", t.name, "generate")
         self.state = "pending"                      # pending | running | done
         self.result: Optional[str] = None
         self.error: Optional[str] = None
@@ -126,7 +150,7 @@ class ScenarioRunner:
 
     def start(self) -> asyncio.Task:
         if self._task is None:
-            self.state, self._w0, self._s0 = "running", time.monotonic(), self.engine.clock.elapsed_sim()
+            self.state, self._w0, self._s0 = "running", time.monotonic(), self.engine.clock.total_sim()
             self._task = asyncio.ensure_future(self.run())
         return self._task
 
@@ -156,7 +180,7 @@ class ScenarioRunner:
         return self.engine.clock
 
     def _sim(self) -> float:
-        return self.clock.elapsed_sim() - self._s0
+        return self.clock.total_sim() - self._s0
 
     def _wall(self) -> float:
         return time.monotonic() - self._w0
@@ -378,6 +402,11 @@ class ScenarioRunner:
         finally:
             self.prompts.pop(track, None)
 
+    async def _generate(self, tr: PlannedTrack) -> None:
+        rec = self.records[(tr.name, "generate")]
+        rec.status, rec.t_wall, rec.t_sim = "running", round(self._wall(), 3), round(self._sim(), 3)
+        await self.generators[tr.group].run_charger(tr.charger)
+
     async def _track(self, tr: PlannedTrack) -> None:
         cursor = action_mark = self._seq0
         self._floors[tr.name] = (tr.charger, cursor)
@@ -441,11 +470,22 @@ class ScenarioRunner:
                 eng.set_running(time_scale=sc.clock.time_scale)
             if sc.clock.start_at is not None:
                 eng.clock.reset(sc.clock.start_at)
-            self._w0, self._s0 = time.monotonic(), eng.clock.elapsed_sim()
+                if not self.standing:
+                    await eng.traffic.restart("the scenario reset the sim clock")   # plan hours follow the clock
+            if not self.standing:
+                await eng.traffic.preempt(self.chargers)   # Q3: the scenario owns its chargers
+            self._w0, self._s0 = time.monotonic(), eng.clock.total_sim()
             self._ref = eng.clock.now_sim()
             self._seq0 = eng.frame_log.last_seq
-            eng.log_event("scenario", f"scenario {sc.name} started ({len(self.tracks)} track(s))")
-            tasks = [asyncio.ensure_future(self._track(t)) for t in self.tracks]
+            for g in self.generators.values():
+                g.begin(self._ref)
+            if self.standing:
+                seed = next(iter(self.generators.values())).t.seed if self.generators else None
+                eng.log_event("traffic", f"traffic started on {len(self.tracks)} charger(s), seed {seed}")
+            else:
+                eng.log_event("scenario", f"scenario {sc.name} started ({len(self.tracks)} track(s))")
+            tasks = [asyncio.ensure_future(self._generate(t) if t.generate is not None else self._track(t))
+                     for t in self.tracks]
             if sc.until:
                 watch.append(asyncio.ensure_future(self._sleep_until(self._target(parse_time(sc.until)))))
             pending = set(tasks) | set(watch)
@@ -476,6 +516,11 @@ class ScenarioRunner:
                 await asyncio.gather(*tasks, *watch, return_exceptions=True)
             except asyncio.CancelledError:   # cancelled again while cleaning up: finish the cleanup first
                 cancelled = True
+            for g in self.generators.values():
+                try:
+                    await g.close()
+                except asyncio.CancelledError:
+                    cancelled = True
             self._cleanup()
         if cancelled:
             raise asyncio.CancelledError
@@ -497,8 +542,12 @@ class ScenarioRunner:
             return
         self._wall_s, self._sim_s = self._wall(), self._sim()
         not_run = 0
-        for r in self.records.values():
-            if r.status == "running":
+        gens = {t.name: self.generators[t.group] for t in self.tracks if t.generate is not None}
+        for (track, _sid), r in self.records.items():
+            if r.kind == "generate":
+                r.status = "aborted" if self._aborted and not self.standing else "pass"
+                r.message = _short(asdict(gens[track].stats))
+            elif r.status == "running":
                 if self._aborted:
                     r.status, r.message = "aborted", "scenario aborted"
                 elif self._end_reason == "until":
@@ -524,6 +573,9 @@ class ScenarioRunner:
         self.prompts.clear()
         self._bufs.clear()
         self._payloads.clear()
+        if self.standing:
+            self.engine.log_event("traffic", "traffic stopped")
+            return
         self.engine.log_event("scenario", f"scenario {self.scenario.name}: {self.result}"
                               + (f" (until reached, {not_run} step(s) not run)" if self._end_reason == "until"
                                  and not_run else ""))
@@ -550,6 +602,7 @@ class ScenarioRunner:
                 "sim_s": round(max(0.0, self._sim()) if running else self._sim_s, 3),
                 "sim_time": self.clock.now_sim().isoformat() if running else None,
                 "steps": self._counts(), "tracks": tracks,
+                "traffic": [g.status() for g in self.generators.values()],
                 "prompts": [{"track": k, "prompt": v} for k, v in self.prompts.items()]}
 
     def verdict(self) -> Dict[str, Any]:

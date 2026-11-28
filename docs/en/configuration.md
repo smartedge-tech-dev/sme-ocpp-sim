@@ -128,8 +128,8 @@ chargers:
 ```
 
 The draws are deterministic: each connector has its own random stream `vehicle:{charger}:{connector}`, so
-adding a charger does not change the others. There is no seed setting yet (the traffic generator of a later
-release adds one): the seed is fixed at 0, so every connector draws the same sequence on every run. The stream
+adding a charger does not change the others. The seed is `traffic.seed` (default 0; see
+[Traffic generator](traffic.md)), applied live: a new seed restarts the streams. The stream
 starts when the charger starts: a restart, or a configuration change that rebuilds the charger (for example an
 edited `ev_models`), replays it from the beginning. Every draw takes exactly three random numbers (vehicle,
 initial SoC, target SoC), so changing an entry's distribution changes only the values drawn from that entry,

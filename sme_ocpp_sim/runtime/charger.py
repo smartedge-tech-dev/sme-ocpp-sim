@@ -522,6 +522,12 @@ class ChargerRuntime:
             rng = self._vehicle_rngs[connector_id] = stream_rng(self.vehicle_seed, self.cfg.id, connector_id)
         return self.pool.draw(rng)
 
+    def set_vehicle_seed(self, seed: int) -> None:
+        """A new :attr:`vehicle_seed` (``traffic.seed``, applied live): the pool streams start again from it."""
+        if seed != self.vehicle_seed:
+            self.vehicle_seed = seed
+            self._vehicle_rngs.clear()
+
     def step_power(self, pw: PowerState, dt_s: float, evse_limit_w: Optional[float],
                    vehicle: Optional[Vehicle] = None) -> PowerState:
         ev, target = (vehicle.ev, vehicle.target_soc_pct) if vehicle else (self.ev, self.cfg.session.target_soc)

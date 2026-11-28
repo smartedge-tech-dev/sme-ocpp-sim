@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sme_sim_common.mcp_server import McpRegistry, register_base_tools
 
 from . import __version__
-from .config import ImpairmentConfig
+from .config import ImpairmentConfig, TrafficConfig
 from .web import MAX_FRAMES, DataTransferBody, ExpectFrameBody, FaultBody
 
 APP_NAME = "sme-ocpp-sim"
@@ -176,6 +176,29 @@ def build_registry(app: Any) -> McpRegistry:
         "by your own action, read get_frames' last_seq before the action and pass it as since; a warning says "
         "when since is older than the log (oldest_seq).", "POST",
         "/api/frames/expect", _obj(_model_props(ExpectFrameBody), cid=False), destructive=False)
+
+    # ---- traffic generator (v0.3 M4)
+    add("get_traffic", "Standing traffic generator: state, the traffic: settings, counters (arrivals, skipped, "
+        "started, rejected, completed, aborted, failed, preempted, cancelled), active sessions, total power of its chargers and recent "
+        "events.", "GET", "/api/traffic", no_args)
+    add("set_traffic", "Replace the traffic: block (seed, chargers, interval_s, probability, hourly_weights, "
+        "auth_order, stop_after, duration_s, stop_by, max_session_s, idle_after_s, id_tags, id_tag_strategy "
+        "random / round_robin / affinity, affinity_prob, affinity_map, vehicles). Omitted fields get their "
+        "defaults, including enabled: false (send enabled: true to keep it running). A change restarts running "
+        "traffic; toggling enabled starts / stops it.", "PUT", "/api/traffic",
+        _obj(_model_props(TrafficConfig), cid=False), destructive=True)
+    add("start_traffic", "Start the standing traffic now (not saved; traffic.enabled unchanged).", "POST",
+        "/api/traffic/start", no_args, destructive=True)
+    add("stop_traffic", "Stop the standing traffic; its sessions are stopped and unplugged.", "POST",
+        "/api/traffic/stop", no_args, destructive=True)
+    add("preview_traffic_plan", "The arrivals (sim time, charger, connector, id tag, vehicle, SoC, duration, idle) "
+        "the traffic: block plans for the next hours of sim time; deterministic for a seed and start (default: "
+        "the running traffic's start, else now). Arrivals on a busy connector are skipped at run time.", "GET",
+        "/api/traffic/plan",
+        _obj({"hours": {"type": "number", "exclusiveMinimum": 0, "maximum": 168, "default": 1},
+              "charger": {"type": "string", "minLength": 1, "description": "Only this charger"},
+              "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 1000},
+              "start": {"type": "string", "description": "ISO 8601 start time of the plan"}}, cid=False))
 
     # ---- built-in Mini CSMS
     add("mini_csms_status", "Built-in Mini CSMS: status and the stations connected to it (error when "

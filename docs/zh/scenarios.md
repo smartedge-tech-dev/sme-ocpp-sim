@@ -146,7 +146,7 @@ Web UI 暂无场景面板；场景的 `log` 行及开始 / 结果显示在事件
 
 ## 限制
 
-- 生成器 track（`generate:`，流量生成器）随 v0.3 M4 提供；在此之前 `seed` 只做记录。
+- 生成器 track（用 `generate:` 代替 `steps`，需要 `until`）：参见[流量生成器](traffic.md#scenarios)；`seed` 作为其种子。
 - `send` 注入充电桩 → CSMS 的 CALL；CSMS 侧步骤用 `await_csms`（或 Mini CSMS API）。
 - trace 文件是当前的帧日志格式（运行中边跑边写）；带版本的 trace 格式以后提供。
 - `repeat`（最多 1000 轮）中 `at: "+dur"` 从每轮开始计；不能用时刻 / 日期时间形式的 `at`。
