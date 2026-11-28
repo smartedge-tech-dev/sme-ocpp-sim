@@ -442,7 +442,7 @@ class _Evse:
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0
     pw: Optional[PowerState] = None
-    vehicle: Optional[Vehicle] = None  # EV of the current / last session (``host.vehicle``)
+    vehicle: Optional[Vehicle] = None  # EV of the running session (``host.vehicle``), with ``pw``
     last_mono: Optional[float] = None
     meter_task: Optional[asyncio.Task] = None
 
@@ -788,7 +788,7 @@ class Station201(VersionStation):
 
     def _ev(self, e: _Evse) -> EvModel:
         """The EV of e's running session, else the charger's default model."""
-        return e.vehicle.ev if e.pw is not None and e.vehicle is not None else self.ev
+        return e.vehicle.ev if e.vehicle is not None else self.ev
 
     def _samples(self, e: _Evse, measurands: Sequence[str]) -> List[d.Sample]:
         """Readings of ``measurands``; Voltage / Current.Import once without a phase unless
@@ -973,7 +973,7 @@ class Station201(VersionStation):
         if e.meter_task is not None and e.meter_task is not asyncio.current_task():
             e.meter_task.cancel()
         e.meter_task = None
-        e.tx, e.pw, e.last_mono, e.finishing = None, None, None, e.plugged
+        e.tx, e.pw, e.vehicle, e.last_mono, e.finishing = None, None, None, None, e.plugged
         self.profiles.end_transaction(e.id)
         self._queue_event(e, tx, TransactionEventEnumType.ended, trigger,
                           m.TransactionType(transaction_id=tx.tx_id, charging_state=self._charging_state(e),

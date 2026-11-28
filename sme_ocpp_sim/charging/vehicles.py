@@ -10,8 +10,10 @@ traffic generator can all use it.
   ``random.Random``. :func:`stream_rng` gives the per-connector stream ``vehicle:{charger}:{connector}`` of a
   seed, so the same seed gives the same vehicle sequence on every connector, independent of the others.
 - SoC distributions: ``fixed`` (``mean``), ``uniform`` on ``[min, max]``, ``normal`` (``mean``, ``sd``) truncated
-  to ``[min, max]`` (inverse-CDF sampling: no rejection loop, one random number per value). Values are rounded
-  to 0.01 %.
+  to ``[min, max]`` (inverse-CDF sampling: no rejection loop). Values are rounded to 0.01 %.
+- Stream position: every draw consumes exactly three random numbers (entry, initial SoC, target SoC; a ``fixed``
+  value consumes one too), so changing an entry's distribution changes only the values drawn from it, never the
+  later draws on that connector. Changing weights or the set of entries changes which entries are drawn.
 """
 
 from __future__ import annotations
@@ -59,11 +61,11 @@ class SocSpec:
         return cls("fixed", mean=value)
 
     def sample(self, rng: random.Random) -> float:
+        u = rng.random()  # exactly one number per value, whatever the distribution (module docstring)
         if self.dist == "fixed":
             return float(self.mean)  # type: ignore[arg-type]
         if self.dist == "uniform":
-            return round(rng.uniform(self.min, self.max), 2)
-        u = rng.random()  # always consumed: the stream position does not depend on the parameters
+            return round(self.min + (self.max - self.min) * u, 2)
         if not self.sd:
             return float(self.mean)  # type: ignore[arg-type]
         nd = NormalDist(self.mean, self.sd)  # type: ignore[arg-type]

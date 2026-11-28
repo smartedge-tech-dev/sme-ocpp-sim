@@ -87,7 +87,7 @@ trailing digits is a prefix (`CP-` → `CP-1`, `CP-2` …). If any of the new ID
 | `chargers` | One per charger (required sheet) | `id` (required), `template`, `ocpp_version`, `csms_url`, `password`, `vendor`, `model`, `serial`, `firmware`, `connectors`, `max_power_w`, `voltage_v`, `phases`, `line_to_line`, `auth_mode`, `id_tags` (comma separated), `ev_model`, `initial_soc`, `target_soc` (the `session` fields), `extra` |
 | `config_keys` | One per OCPP 1.6 configuration key | `charger`, `key`, `value` |
 | `variables` | One per OCPP 2.0.1 `variables` entry | `charger`, `component`, `component_instance`, `evse`, `connector`, `variable`, `variable_instance`, `value`, `target`, `min_set`, `max_set`, `extra` (definition of a user-defined variable) |
-| `ev_models` | One per `ev_models` entry | `id`, `capacity_kwh`, `max_ac_kw`, `max_current_a`, `phases`, `min_current_a`, `efficiency`, `weight`, `initial_soc_dist`, `initial_soc_min`, `initial_soc_max`, `initial_soc_mean`, `initial_soc_sd` (`initial_soc` flattened; a fixed number is `fixed` with only `initial_soc_mean`), `target_soc` (a fixed number), `extra` (`curve`, `max_dc_kw`, a `target_soc` distribution) |
+| `ev_models` | One per `ev_models` entry | `id`, `capacity_kwh`, `max_ac_kw`, `max_current_a`, `phases`, `min_current_a`, `efficiency`, `weight`, `initial_soc_dist`, `initial_soc_min`, `initial_soc_max`, `initial_soc_mean`, `initial_soc_sd`, `target_soc_dist`, `target_soc_min`, `target_soc_max`, `target_soc_mean`, `target_soc_sd` (`initial_soc` / `target_soc` flattened; a plain number is `fixed` with only `_mean`; a blank `_dist` is `uniform`), `extra` (`curve`, `max_dc_kw`) |
 
 `extra` holds every other field as a YAML flow mapping, e.g. `{verify_tls: false, ramp_up_w_per_s: 500}`.
 

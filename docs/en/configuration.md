@@ -108,7 +108,7 @@ target SoC come from the drawn entry. A SoC distribution is a mapping:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dist` | `uniform` | `fixed` (`mean`), `uniform` on `[min, max]`, or `normal` (`mean`, `sd`) truncated to `[min, max]` |
+| `dist` | `uniform` | `fixed` (`mean`), `uniform` on `[min, max]`, or `normal` (`mean`, `sd`) truncated to `[min, max]`. A missing `dist` with `mean` / `sd` is an error (it is not guessed) |
 | `min` / `max` | `0` / `100` | Bounds (%) |
 | `mean` | none | Fixed value or normal mean (within `[min, max]`; not allowed for `uniform`) |
 | `sd` | none | Standard deviation of `normal` (≥ 0) |
@@ -127,9 +127,18 @@ chargers:
     session: {ev_model: pool}
 ```
 
-The draws are deterministic: each connector has its own random stream (`vehicle:{charger}:{connector}` of a
-seed, 0 for now; the traffic generator of a later release supplies its seed), so a restart replays the same
-vehicle sequence and adding a charger does not change the others. Values are rounded to 0.01 %.
+The draws are deterministic: each connector has its own random stream `vehicle:{charger}:{connector}`, so
+adding a charger does not change the others. There is no seed setting yet (the traffic generator of a later
+release adds one): the seed is fixed at 0, so every connector draws the same sequence on every run. The stream
+starts when the charger starts: a restart, or a configuration change that rebuilds the charger (for example an
+edited `ev_models`), replays it from the beginning. Every draw takes exactly three random numbers (vehicle,
+initial SoC, target SoC), so changing an entry's distribution changes only the values drawn from that entry,
+not the later draws; changing weights or the list of entries changes which vehicles are drawn. Values are
+rounded to 0.01 %.
+
+When an entry's initial SoC can exceed its target SoC (both set; for a distribution, its `max` against the
+target's `min`), loading the YAML file logs a warning: such a session starts above its target and takes no
+energy (SuspendedEV).
 
 Presets (abstract vehicle classes, not real models; pool weight, initial SoC; their target SoC is the
 charger's `session.target_soc`):

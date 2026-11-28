@@ -1,8 +1,8 @@
 """Simulator configuration (YAML, design §7).
 
-Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` / ``mini_csms`` (built-in CSMS,
-M9) and a flat per-charger model
-(``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
+Scope: top-level ``simulation`` / ``frame_log`` / ``csms_defaults`` / ``ev_models`` / ``mini_csms`` (built-in
+CSMS, M9) and a flat per-charger model (``connectors`` count instead of the ``evses`` tree; every connector has
+the same supply and ``max_power_w``).
 A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
 ``ev_models`` entry), or ``pool``: every transaction draws one from the vehicle pool (:mod:`.charging.vehicles`:
@@ -175,7 +175,8 @@ class SocDistConfig(StrictModel):
     """A SoC (%) distribution (:class:`.charging.vehicles.SocSpec`): ``fixed`` (``mean``), ``uniform`` on
     ``[min, max]`` or ``normal`` (``mean``, ``sd``) truncated to ``[min, max]``."""
 
-    dist: Literal["fixed", "uniform", "normal"] = "uniform"
+    #: Blank = ``uniform``, which takes no ``mean`` / ``sd``: a blank dist with a mean is an error naming ``dist``.
+    dist: Optional[Literal["fixed", "uniform", "normal"]] = None
     min: Soc = 0.0
     max: Soc = 100.0
     mean: Optional[Soc] = None
@@ -183,11 +184,21 @@ class SocDistConfig(StrictModel):
 
     @model_validator(mode="after")
     def _check(self) -> "SocDistConfig":
+        if self.dist is None and (self.mean is not None or self.sd is not None):
+            raise ValueError("dist is blank (uniform), but mean / sd are given: set dist to fixed or normal")
         self.to_spec()
         return self
 
     def to_spec(self) -> SocSpec:
-        return SocSpec(self.dist, self.min, self.max, self.mean, self.sd)
+        return SocSpec(self.dist or "uniform", self.min, self.max, self.mean, self.sd)
+
+    @property
+    def low(self) -> float:
+        return self.mean if self.dist == "fixed" else self.min  # type: ignore[return-value]
+
+    @property
+    def high(self) -> float:
+        return self.mean if self.dist == "fixed" else self.max  # type: ignore[return-value]
 
 
 def _soc_kind(v: Any) -> str:
@@ -200,9 +211,13 @@ SocValue = Annotated[Union[Annotated[Soc, Tag("number")], Annotated[SocDistConfi
 
 
 def soc_spec(v: Optional[SocValue]) -> Optional[SocSpec]:
-    if v is None or isinstance(v, SocDistConfig):
-        return v.to_spec() if v is not None else None
-    return SocSpec.fixed(float(v))
+    if v is None:
+        return None
+    return v.to_spec() if isinstance(v, SocDistConfig) else SocSpec.fixed(float(v))
+
+
+def _bounds(v: SocValue) -> Tuple[float, float]:
+    return (v.low, v.high) if isinstance(v, SocDistConfig) else (float(v), float(v))
 
 
 class EvModelConfig(StrictModel):
@@ -595,6 +610,18 @@ class SimConfig(StrictModel):
         except ValueError as e:
             raise ValueError(f"charger {c.id!r}: {e}") from None
 
+    def soc_warnings(self) -> List[str]:
+        """``ev_models`` entries whose initial SoC may reach their target (such a session starts SuspendedEV).
+        Only entries that set both are checked (a session default is per charger)."""
+        out = []
+        for e in self.ev_models:
+            if e.initial_soc is not None and e.target_soc is not None:
+                hi, lo = _bounds(e.initial_soc)[1], _bounds(e.target_soc)[0]
+                if hi > lo:
+                    out.append(f"ev_models {e.id!r}: initial_soc can reach {hi:g} %, above the lowest target_soc "
+                               f"{lo:g} % (such a session takes no energy)")
+        return out
+
     def vehicle_pool(self, charger: ChargerConfig) -> VehiclePool:
         """The vehicle pool of ``charger``: presets + ``ev_models``, SoC defaults from its ``session``."""
         return build_pool(((e.to_model(), e.weight, soc_spec(e.initial_soc), soc_spec(e.target_soc))
@@ -636,7 +663,11 @@ class SimConfig(StrictModel):
 
 
 def parse_text(text: str) -> SimConfig:
-    return SimConfig.model_validate(yaml.safe_load(text) or {})
+    """Validate a YAML document; :meth:`SimConfig.soc_warnings` are logged as warnings."""
+    cfg = SimConfig.model_validate(yaml.safe_load(text) or {})
+    for w in cfg.soc_warnings():
+        log.warning("%s", w)
+    return cfg
 
 
 def load_file(path: Union[str, Path]) -> SimConfig:

@@ -8,9 +8,8 @@ Workbook sheets (row 1 = column headers, row 2 = ``#`` help texts, ``#`` rows ar
 * ``variables`` - one row per 2.0.1 Device Model ``variables`` entry (``charger`` + the entry's fields; the
   definition of a user-defined variable in ``extra``);
 * ``ev_models`` - the ``ev_models`` list (``curve`` / ``max_dc_kw`` in ``extra``). The vehicle pool profile has
-  columns: ``weight``, ``initial_soc`` flattened into ``initial_soc_dist`` / ``_min`` / ``_max`` / ``_mean`` /
-  ``_sd`` (a fixed number = ``fixed`` with only ``_mean``) and a fixed ``target_soc`` (a distribution stays in
-  ``extra``).
+  columns: ``weight``, and ``initial_soc`` / ``target_soc`` each flattened into ``<field>_dist`` / ``_min`` /
+  ``_max`` / ``_mean`` / ``_sd`` (a plain number = ``fixed`` with only ``_mean``).
 
 An import replaces ``chargers`` and ``ev_models`` as a whole (a missing optional sheet means "none"); every other
 block (``simulation``, ``csms_defaults``, ``mini_csms`` ...) is kept from the running config. The engine reload
@@ -120,42 +119,49 @@ EV_MODELS = Sheet("ev_models", [
     ("min_current_a", "Min current (A)"),
     ("efficiency", "Charging efficiency (0-1]"),
     ("weight", "Vehicle pool weight (blank = 1, 0 = never drawn)"),
-    ("initial_soc_dist", "Initial SoC: fixed, uniform or normal (blank = session.initial_soc)"),
+    ("initial_soc_dist", "Initial SoC: fixed, uniform or normal (all blank = session.initial_soc)"),
     ("initial_soc_min", "Initial SoC lower bound (%, uniform / normal; blank = 0)"),
     ("initial_soc_max", "Initial SoC upper bound (%, uniform / normal; blank = 100)"),
-    ("initial_soc_mean", "Initial SoC mean (%, fixed / normal)"),
+    ("initial_soc_mean", "Initial SoC value (fixed) or mean (normal), %"),
     ("initial_soc_sd", "Initial SoC standard deviation (normal)"),
-    ("target_soc", "Fixed target SoC (%, blank = session.target_soc)"),
+    ("target_soc_dist", "Target SoC: fixed, uniform or normal (all blank = session.target_soc)"),
+    ("target_soc_min", "Target SoC lower bound (%, uniform / normal; blank = 0)"),
+    ("target_soc_max", "Target SoC upper bound (%, uniform / normal; blank = 100)"),
+    ("target_soc_mean", "Target SoC value (fixed) or mean (normal), %"),
+    ("target_soc_sd", "Target SoC standard deviation (normal)"),
     ("extra", "Other fields, e.g. {curve: [[0, 1.0], [80, 0.5], [100, 0.1]]}"),
 ], kinds={"capacity_kwh": "number", "max_ac_kw": "number", "max_current_a": "number", "phases": "int",
-          "min_current_a": "number", "efficiency": "number", "weight": "number", "initial_soc_min": "number",
-          "initial_soc_max": "number", "initial_soc_mean": "number", "initial_soc_sd": "number",
-          "target_soc": "number"}, required=("id", "capacity_kwh", "max_ac_kw"), optional=True)
+          "min_current_a": "number", "efficiency": "number", "weight": "number",
+          **{f"{f}_{k}": "number" for f in ("initial_soc", "target_soc") for k in ("min", "max", "mean", "sd")}},
+    required=("id", "capacity_kwh", "max_ac_kw"), optional=True)
 
-#: ``initial_soc`` mapping keys with an ``initial_soc_<key>`` column of their own.
+#: SoC fields of an ``ev_models`` entry and their mapping keys; each key has a ``<field>_<key>`` column.
+SOC_FIELDS = ("initial_soc", "target_soc")
 SOC_KEYS = ("dist", "min", "max", "mean", "sd")
 
 
 def _flatten_ev(d: Dict[str, Any]) -> Dict[str, Any]:
-    """An ``ev_models`` dump -> sheet fields: ``initial_soc`` into its columns (a number as ``fixed``)."""
-    soc = d.pop("initial_soc", None)
-    if soc is None:
-        return d
-    soc = {"dist": "fixed", "mean": soc} if not isinstance(soc, dict) else {"dist": "uniform", **soc}
-    return d | {f"initial_soc_{k}": soc[k] for k in SOC_KEYS if soc.get(k) is not None}
+    """An ``ev_models`` dump -> sheet fields: each SoC field into its columns (a number as ``fixed``)."""
+    for f in SOC_FIELDS:
+        soc = d.pop(f, None)
+        if soc is None:
+            continue
+        soc = soc if isinstance(soc, dict) else {"dist": "fixed", "mean": soc}  # blank dist = uniform
+        d |= {f"{f}_{k}": soc[k] for k in SOC_KEYS if soc.get(k) is not None}
+    return d
 
 
 def _unflatten_ev(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Sheet fields -> an ``ev_models`` mapping (columns win over an ``initial_soc`` in ``extra``); ``fixed`` with
-    only a mean becomes a plain number again."""
-    cols = {k: d.pop(f"initial_soc_{k}") for k in SOC_KEYS if f"initial_soc_{k}" in d}
-    if not cols:
-        return d
-    base = d.get("initial_soc")
-    soc = {**(base if isinstance(base, dict) else {}), **cols}
-    if soc.get("dist") == "fixed" and set(soc) == {"dist", "mean"}:
-        return d | {"initial_soc": soc["mean"]}
-    return d | {"initial_soc": soc}
+    """Sheet fields -> an ``ev_models`` mapping (columns win over a mapping in ``extra``); ``fixed`` with only a
+    mean becomes a plain number again."""
+    for f in SOC_FIELDS:
+        cols = {k: d.pop(f"{f}_{k}") for k in SOC_KEYS if f"{f}_{k}" in d}
+        if not cols:
+            continue
+        base = d.get(f)
+        soc = {**(base if isinstance(base, dict) else {}), **cols}
+        d[f] = soc["mean"] if soc.get("dist") == "fixed" and set(soc) == {"dist", "mean"} else soc
+    return d
 
 SHEETS = (CHARGERS, CONFIG_KEYS, VARIABLES, EV_MODELS)
 
@@ -213,14 +219,14 @@ def _charger_errors(e: ValidationError, row: int, var_rows: List[int], cid: str)
 
 
 def _soc_loc(loc: Tuple[Any, ...]) -> Tuple[Any, ...]:
-    """``(initial_soc, <union tag>, key, ..)`` -> ``(initial_soc_<key>,)``, its column (a mapping-level error:
+    """``(<soc field>, <union tag>, key, ..)`` -> ``(<soc field>_<key>,)``, its column (a mapping-level error:
     ``_dist``; a number: ``_mean``)."""
-    if not loc or loc[0] != "initial_soc":
+    if not loc or loc[0] not in SOC_FIELDS:
         return loc
     key = next((k for k in loc[2:] if k in SOC_KEYS), None)  # loc[1] is the union tag (number / mapping)
     if key is None:
         key = "dist" if loc[1:2] == ("mapping",) else "mean"
-    return (f"initial_soc_{key}",)
+    return (f"{loc[0]}_{key}",)
 
 
 def _rows_errors(e: ValidationError, sheet: Sheet, row: int) -> List[str]:

@@ -86,7 +86,7 @@ config_keys: {MeterValueSampleInterval: "60"}
 | `chargers` | 充電器 1 台につき 1 行（必須シート） | `id`（必須）、`template`、`ocpp_version`、`csms_url`、`password`、`vendor`、`model`、`serial`、`firmware`、`connectors`、`max_power_w`、`voltage_v`、`phases`、`line_to_line`、`auth_mode`、`id_tags`（カンマ区切り）、`ev_model`、`initial_soc`、`target_soc`（`session` の項目）、`extra` |
 | `config_keys` | OCPP 1.6 構成キー 1 個につき 1 行 | `charger`、`key`、`value` |
 | `variables` | OCPP 2.0.1 `variables` 1 件につき 1 行 | `charger`、`component`、`component_instance`、`evse`、`connector`、`variable`、`variable_instance`、`value`、`target`、`min_set`、`max_set`、`extra`（ユーザー定義変数の定義） |
-| `ev_models` | `ev_models` 1 件につき 1 行 | `id`、`capacity_kwh`、`max_ac_kw`、`max_current_a`、`phases`、`min_current_a`、`efficiency`、`weight`、`initial_soc_dist`、`initial_soc_min`、`initial_soc_max`、`initial_soc_mean`、`initial_soc_sd`（`initial_soc` を展開。固定値は `fixed` と `initial_soc_mean` のみ）、`target_soc`（固定値）、`extra`（`curve`、`max_dc_kw`、分布で書いた `target_soc`） |
+| `ev_models` | `ev_models` 1 件につき 1 行 | `id`、`capacity_kwh`、`max_ac_kw`、`max_current_a`、`phases`、`min_current_a`、`efficiency`、`weight`、`initial_soc_dist`、`initial_soc_min`、`initial_soc_max`、`initial_soc_mean`、`initial_soc_sd`、`target_soc_dist`、`target_soc_min`、`target_soc_max`、`target_soc_mean`、`target_soc_sd`（`initial_soc` / `target_soc` を展開。数値は `fixed` と `_mean` のみ。`_dist` が空なら `uniform`）、`extra`（`curve`、`max_dc_kw`） |
 
 `extra` はそれ以外の項目を YAML フロー形式のマッピングで持ちます（例：`{verify_tls: false, ramp_up_w_per_s: 500}`）。
 

@@ -103,7 +103,7 @@ ID 的条目替换该预设），按 `weight` 加权抽取。初始 SoC 与目�
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
-| `dist` | `uniform` | `fixed`（`mean`）、`[min, max]` 上的 `uniform`，或截断到 `[min, max]` 的 `normal`（`mean`、`sd`） |
+| `dist` | `uniform` | `fixed`（`mean`）、`[min, max]` 上的 `uniform`，或截断到 `[min, max]` 的 `normal`（`mean`、`sd`）。省略 `dist` 却写了 `mean` / `sd` 时报错（不做推测） |
 | `min` / `max` | `0` / `100` | 范围（%） |
 | `mean` | 无 | 固定值或正态均值（须在 `[min, max]` 内；`uniform` 不可指定） |
 | `sd` | 无 | `normal` 的标准差（≥ 0） |
@@ -122,8 +122,14 @@ chargers:
     session: {ev_model: pool}
 ```
 
-抽取是确定性的：每个 connector 有独立的随机流（种子〔目前为 0，后续版本的流量生成器会传入自己的种子〕的
-`vehicle:{charger}:{connector}`），因此重启后车辆序列相同，增加充电桩也不影响其它桩的序列。数值四舍五入到 0.01 %。
+抽取是确定性的：每个 connector 有独立的随机流 `vehicle:{charger}:{connector}`，增加充电桩不影响其它桩的序列。
+目前还没有种子设置（后续版本的流量生成器会加入）：种子固定为 0，所以每个 connector 每次运行抽到的序列都相同。
+随机流在充电桩启动时开始；重启或会重建充电桩的配置变更（例如编辑 `ev_models`）会从头重放。每次抽取恰好消耗
+3 个随机数（车辆、初始 SoC、目标 SoC），因此修改某条目的分布只改变从该条目抽出的值，不影响之后的抽取；修改权重或
+条目列表则会改变抽中的车辆。数值四舍五入到 0.01 %。
+
+当条目的初始 SoC 可能超过目标 SoC 时（两者都设置时；分布取其 `max` 与目标的 `min` 比较），加载 YAML 文件会记录
+警告：这样的会话从目标之上开始，不接受功率（SuspendedEV）。
 
 预设（抽象的车辆类别，不对应真实车型；池中权重、初始 SoC；目标 SoC 为充电桩的 `session.target_soc`）：
 

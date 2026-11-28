@@ -96,7 +96,7 @@ def test_golden_sequence():
     assert got == GOLDEN
 
 
-GOLDEN = [('suv-90kwh', 61.93), ('suv-90kwh', 32.93), ('van-75kwh', 34.8), ('kei-20kwh', 22.98)]
+GOLDEN = [('suv-90kwh', 61.93), ('compact-40kwh', 55.94), ('kei-20kwh', 22.98), ('van-75kwh', 32.81)]
 
 
 def test_weighted_override_keeps_only_listed_ids():
@@ -152,6 +152,7 @@ def test_config_keeps_the_yaml_shape():
     ({"initial_soc": 120}, ("initial_soc", "number")),
     ({"target_soc": {"dist": "uniform", "min": 1, "bogus": 2}}, ("target_soc", "mapping", "bogus")),
     ({"weight": -1}, ("weight",)),
+    ({"initial_soc": {"mean": 40}}, ("initial_soc", "mapping")),  # blank dist (uniform) with a mean
     ({"id": "pool"}, ("id",)),
 ])
 def test_ev_model_validation(extra, loc):
@@ -172,13 +173,17 @@ def test_all_zero_weights_rejected_for_pool_chargers():
 
 def test_xlsx_round_trip_of_pool_fields():
     fixed = {"id": "fx", "capacity_kwh": 10, "max_ac_kw": 3, "initial_soc": 20,
-             "target_soc": {"dist": "uniform", "min": 70, "max": 90}}
+             "target_soc": {"dist": "normal", "min": 70, "max": 95, "mean": 85, "sd": 5}}
     uni = {"id": "un", "capacity_kwh": 10, "max_ac_kw": 3, "weight": 0.5, "initial_soc": {"min": 10, "max": 30}}
     cfg = _sim([VAN, fixed, uni])
     rows = {r["id"]: r for r in export_rows(cfg)["ev_models"]}
     assert rows["my-van"]["initial_soc_dist"] == "normal" and rows["my-van"]["initial_soc_sd"] == 10
     assert rows["fx"]["initial_soc_dist"] == "fixed" and rows["fx"]["initial_soc_mean"] == 20
-    assert rows["un"]["initial_soc_dist"] == "uniform" and rows["un"]["weight"] == 0.5
+    assert "initial_soc_dist" not in rows["un"] and rows["un"]["initial_soc_max"] == 30  # blank = uniform
+    assert rows["un"]["weight"] == 0.5
+    assert (rows["fx"]["target_soc_dist"], rows["fx"]["target_soc_sd"]) == ("normal", 5)
+    assert (rows["my-van"]["target_soc_dist"], rows["my-van"]["target_soc_mean"]) == ("fixed", 90)
+    assert not any(k in r for r in rows.values() for k in ("target_soc", "initial_soc", "extra"))
     data, warnings = export_xlsx(cfg)
     back, errors = import_xlsx(data, cfg)
     assert errors == [] and back.ev_models == cfg.ev_models
@@ -198,3 +203,41 @@ def test_xlsx_import_error_names_the_soc_column():
     back, errors = import_xlsx(out.getvalue(), cfg)
     assert back is None
     assert any("ev_models row 3, column 'initial_soc_dist'" in e and "needs sd" in e for e in errors), errors
+
+
+def test_blank_dist_with_mean_names_the_dist_column():
+    cfg = _sim([VAN])
+    data, _ = export_xlsx(cfg)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(data))
+    ws = wb["ev_models"]
+    headers = [c.value for c in ws[1]]
+    ws.cell(row=3, column=headers.index("initial_soc_dist") + 1).value = None
+    out = BytesIO()
+    wb.save(out)
+    back, errors = import_xlsx(out.getvalue(), cfg)
+    assert back is None
+    assert any("column 'initial_soc_dist'" in e and "dist is blank" in e for e in errors), errors
+
+
+def test_stream_position_does_not_depend_on_the_distribution():
+    """Every draw consumes three numbers: a changed distribution leaves the later draws unchanged."""
+    def ids(spec):
+        pool = VehiclePool((PoolEntry(EV_A, 1, spec, FIXED), PoolEntry(EV_B, 1, FIXED, FIXED)))
+        rng = random.Random(5)
+        return [pool.draw(rng).ev.id for _ in range(30)]
+    assert ids(FIXED) == ids(SocSpec("uniform", 0, 50)) == ids(SocSpec("normal", 0, 50, mean=20, sd=9))
+
+
+def test_soc_overlap_warning(caplog):
+    from sme_ocpp_sim.config import parse_text
+    ok = {"id": "ok", "capacity_kwh": 10, "max_ac_kw": 3, "initial_soc": {"min": 10, "max": 60}, "target_soc": 80}
+    bad = {**ok, "id": "bad", "target_soc": {"dist": "uniform", "min": 50, "max": 90}}
+    assert _sim([ok]).soc_warnings() == []
+    assert _sim([ok, bad]).soc_warnings() == [
+        "ev_models 'bad': initial_soc can reach 60 %, above the lowest target_soc 50 % (such a session takes no energy)"]
+    import yaml
+    with caplog.at_level("WARNING", logger="sme_ocpp_sim.config"):
+        parse_text(yaml.safe_dump({"csms_defaults": {"url": "ws://csms"}, "ev_models": [bad]}))
+    assert "ev_models 'bad'" in caplog.text

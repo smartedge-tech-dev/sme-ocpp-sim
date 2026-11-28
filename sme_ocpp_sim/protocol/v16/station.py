@@ -278,7 +278,7 @@ class _Conn:
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0                     # energy register
     pw: Optional[PowerState] = None           # power model state while charging (None otherwise)
-    vehicle: Optional[Vehicle] = None         # EV of the current / last session (``host.vehicle``)
+    vehicle: Optional[Vehicle] = None         # EV of the running session (``host.vehicle``), with ``pw``
     last_mono: Optional[float] = None
     meter_task: Optional[asyncio.Task] = None
 
@@ -928,7 +928,7 @@ class Station16(VersionStation):
 
     def _ev(self, c: _Conn) -> EvModel:
         """The EV of c's running session, else the charger's default model."""
-        return c.vehicle.ev if c.pw is not None and c.vehicle is not None else self.ev
+        return c.vehicle.ev if c.vehicle is not None else self.ev
 
     def _phases(self, connector_id: int) -> int:
         """Phases a limit in A applies to: the EV's while one charges, else the supply's (errata 3.34)."""
@@ -1126,7 +1126,7 @@ class Station16(VersionStation):
         if c.meter_task is not None and c.meter_task is not asyncio.current_task():
             c.meter_task.cancel()
         c.meter_task = None
-        c.tx, c.last_mono, c.finishing, c.pw = None, None, finishing, None
+        c.tx, c.last_mono, c.finishing, c.pw, c.vehicle = None, None, finishing, None, None
         self.profiles.end_transaction(c.id)
         if c.pending_operative is not None:
             c.operative, c.pending_operative = c.pending_operative, None

@@ -13,10 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Vehicle profile pool (v0.3 M1): `session.ev_model: pool` draws the EV of every transaction (OCPP 1.6 and
   2.0.1) from the built-in presets plus `ev_models`, by the new `ev_models` field `weight`, with the new
   `initial_soc` / `target_soc` fields (a number or a `fixed` / `uniform` / truncated `normal` distribution).
-  Draws are deterministic per connector (seeded stream `vehicle:{charger}:{connector}`).
+  Draws are deterministic per connector (stream `vehicle:{charger}:{connector}`). There is no seed setting
+  yet: the seed is fixed at 0, so each connector draws the same sequence on every run (and again after a
+  restart or a config change that rebuilds the charger) until a later release adds one. Loading a YAML file
+  warns when an entry's initial SoC can exceed its target SoC.
 - Three more abstract presets: `suv-90kwh`, `phev-12kwh`, `van-75kwh` (vehicle classes, not real models).
-- Excel `ev_models` sheet: columns `weight`, `initial_soc_dist` / `_min` / `_max` / `_mean` / `_sd`,
-  `target_soc`.
+- Excel `ev_models` sheet: columns `weight`, `initial_soc_dist` / `_min` / `_max` / `_mean` / `_sd` and the
+  same five for `target_soc`.
 
 ## [0.2.2] - 2026-11-28
 

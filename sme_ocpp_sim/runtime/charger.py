@@ -37,7 +37,7 @@ from ..charging import power
 from ..charging.ev import PRESETS, EvModel, Vehicle
 from ..charging.power import AcSupply, PowerState
 from ..charging.vehicles import VehiclePool, build_pool, stream_rng
-from ..config import ChargerConfig, ImpairmentConfig, ReconnectConfig
+from ..config import POOL, ChargerConfig, ImpairmentConfig, ReconnectConfig
 from ..protocol import base as d
 from ..protocol.registry import get_station_class
 from ..protocol.station import VersionStation
@@ -101,13 +101,14 @@ class ChargerRuntime:
     ) -> None:
         """``ev`` defaults to the preset ``cfg.session.ev_model`` (``SimConfig.resolve_ev`` also knows
         ``ev_models``); a :class:`.VehiclePool` (``session.ev_model: pool``, default: the presets) makes
-        :meth:`vehicle` draw the EV of each transaction from it, ``vehicle_seed`` seeding the per-connector streams;
+        :meth:`vehicle` draw the EV of each transaction from it, ``vehicle_seed`` seeding the per-connector streams
+        (they start with the runtime: a rebuilt runtime, e.g. after a config change, replays from the start);
         ``tick_s`` is the power model step, ``time_scale`` its simulated-time factor. time_scale
         speeds up only the power model (ramp, energy, SoC); charging profiles stay on the wall clock (see the
         module docstring). ``station`` overrides the station class registered for ``ocpp_version`` (tests)."""
         if tick_s <= 0 or time_scale <= 0:
             raise ValueError("tick_s and time_scale must be > 0")
-        if ev is None and cfg.session.ev_model == "pool":
+        if ev is None and cfg.session.ev_model == POOL:
             ev = build_pool((), initial_soc_pct=cfg.session.initial_soc, target_soc_pct=cfg.session.target_soc)
         if ev is None and cfg.session.ev_model not in PRESETS:
             raise ValueError(f"EV model {cfg.session.ev_model!r} is not a preset; pass ev=")
