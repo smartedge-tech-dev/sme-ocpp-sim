@@ -186,6 +186,9 @@ class ChargerRuntime:
         """Apply ``imp`` to the running charger (no reconnect); the next inbound CALL already sees it."""
         self.validate_impairments(imp)
         self.impairments = imp.model_copy(deep=True)
+        station = getattr(self, "station", None)
+        if station is not None:
+            station.impairments_changed()  # e.g. a reorder window that shrank releases its held messages
         # Latency / jitter are re-read while a frame is held by the session's ImpairedSocket (the seed applies
         # from the next connection); the drop timer restarts its countdown only when a drop setting changed.
         self._imp_changed.set()

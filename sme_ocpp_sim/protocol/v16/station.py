@@ -930,6 +930,13 @@ class Station16(VersionStation):
     def _faults(self, c: _Conn) -> MeterFaults:
         return meter_faults(self._meter_faults, self.host, self.cfg.id, c.id)
 
+    def impairments_changed(self) -> None:
+        for c in self.conns.values():
+            faults = self._faults(c)
+            if faults.releases:
+                for msg in faults.flush():
+                    self._outq_push(msg)
+
     # ================================================================== power model / smart charging
 
     def _ev(self, c: _Conn) -> EvModel:
@@ -1135,6 +1142,8 @@ class Station16(VersionStation):
         and refresh the states. Shared by a normal end and a failed start."""
         if c.tx is not tx:
             return
+        for msg in self._faults(c).flush():  # held periodic MeterValues are never lost with the transaction
+            self._outq_push(msg)
         if c.meter_task is not None and c.meter_task is not asyncio.current_task():
             c.meter_task.cancel()
         c.meter_task = None

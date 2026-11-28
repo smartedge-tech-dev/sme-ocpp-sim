@@ -99,6 +99,10 @@ connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_
 - `response_delay_ms`：对该 action 的应答迟到（或在 CSMS 超时之后才到）；心跳等其它通信不受影响。
 
 随机抽取（丢弃、顺序、噪声）使用 `seed`（默认：充电桩 id 的 CRC32），每个 connector 一条独立序列，可复现。
+即时修改该块时序列继续（只有改 `seed` 才重新开始），充电桩重启后从头开始。`reorder_window` 攒着的消息在窗口改为 0 / 1 时
+以及交易结束时立即发出；攒着的 2.0.1 event 的 `offline` 标志按入队时的连接状态设置，时间戳与 `seqNo` 保持原值。充电桩重启会丢弃攒着的消息。
+`end_after_stop` 且 `meter.begin_end_messages` 关闭时，OCPP 1.6 在 StopTransaction 之后额外发一条停止时刻读取的
+`Sample.Periodic` MeterValues（迟到的结束读数）。
 
 ### Network impairments
 

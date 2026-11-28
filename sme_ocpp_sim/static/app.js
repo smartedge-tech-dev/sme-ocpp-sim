@@ -978,7 +978,9 @@ function impairBody() {
   }
   for (const [el, k] of Object.entries(IMP_METER)) {
     const v = $(el).value.trim();
-    if (v !== "") body.meter[k] = Number(v);
+    if (v === "") continue;
+    const n = Number(v);  // drop_ratio is a share: clamped to 0 - 1 before it is sent
+    body.meter[k] = k === "drop_ratio" ? Math.min(1, Math.max(0, n)) : n;
   }
   for (const [el, k] of Object.entries(IMP_NUMBERS)) {
     const v = $(el).value.trim();

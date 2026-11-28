@@ -110,7 +110,12 @@ see [Configuration](configuration.md#chargers). What the CSMS sees:
   the charger, including heartbeats, is not delayed.
 
 The random draws (drops, order, noise) use `seed` (default: a CRC32 of the charger id), one stream per connector,
-so a run is reproducible.
+so a run is reproducible. The streams go on across live edits of the block (only a changed `seed` restarts them)
+and start over when the charger restarts. Messages held by `reorder_window` are sent as soon as the window is set
+to 0 / 1 and whenever the transaction ends; a held 2.0.1 event gets its `offline` flag when it is queued (the
+connection at that moment) and keeps its original timestamp and `seqNo`. A charger restart drops held messages.
+With `end_after_stop` and without `meter.begin_end_messages`, OCPP 1.6 sends one extra `Sample.Periodic`
+MeterValues, read at the stop, after the StopTransaction (the late end reading).
 
 ### Network impairments
 

@@ -21,6 +21,18 @@ def _imp(**meter):
     return ImpairmentConfig(seed=7, meter=MeterImpairment(**meter))
 
 
+async def _never(cond, timeout):
+    """Poll ``cond`` for ``timeout`` s; fail as soon as it holds (for things that must not happen)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        assert not cond()
+        await asyncio.sleep(0.02)
+
+
+def _faults(rt):
+    return rt.station._faults(rt.station.conns[1] if hasattr(rt.station, "conns") else rt.station.evses[1])
+
+
 # ---------------------------------------------------------------- config / schema / helper
 
 
@@ -99,14 +111,14 @@ def test_accept_no_tx_answers_accepted_and_starts_nothing(version):
     async def body(peer, rt):
         await _until(lambda: rt.online and CP in peer.sessions)
         s = peer.sessions[CP]
+        n0 = _status_count(s)
         await rt.plug(1)
-        await asyncio.sleep(0.3)
+        await _until(lambda: _status_count(s) > n0)  # the plug is reported
         n, status = _status_count(s), rt.snapshot()["connectors"][0]["status"]
         rt.set_impairments(ImpairmentConfig(remote_start="accept_no_tx"))
         res = await _remote_start(peer, version)
         assert res.status == "Accepted"
-        await asyncio.sleep(1.0)
-        assert not rt.station.has_transaction(1)
+        await _never(lambda: rt.station.has_transaction(1) or _status_count(s) != n, 1.0)
         assert rt.snapshot()["connectors"][0]["status"] == status and _status_count(s) == n
         if version == "1.6":
             assert not s.starts
@@ -135,7 +147,7 @@ def test_drop_all_meter_values_leaves_a_seq_no_gap(version):
         rt.set_impairments(_imp(drop_ratio=1))
         await rt.plug(1)
         await rt.swipe(1, "T")
-        await asyncio.sleep(2.6)
+        await _until(lambda: _faults(rt).dropped >= 2)
         await rt.stop_tx(1)
         if version == "1.6":
             await _until(lambda: s.stops)
@@ -156,16 +168,20 @@ def test_reorder_window_and_end_after_stop(version):
         rt.set_impairments(_imp(reorder_window=10, end_after_stop=True))
         await rt.plug(1)
         await rt.swipe(1, "T")
-        await asyncio.sleep(3.5)
+        await _until(lambda: len(_faults(rt).held) >= 3)
         assert not _periodic(s, version)  # held: the window is not full yet
+        held = len(_faults(rt).held)
         await rt.stop_tx(1)
-        await _until(lambda: len(_periodic(s, version)) >= 4)
-        await asyncio.sleep(0.3)
-        frames = [(d, raw) for d, raw in s.frames if d == "rx"]
         stop_action = '"StopTransaction"' if version == "1.6" else '"Ended"'
-        i_stop = next(i for i, (_, raw) in enumerate(frames) if stop_action in raw)
         meter_action = '"MeterValues"' if version == "1.6" else '"MeterValuePeriodic"'
-        meters = [i for i, (_, raw) in enumerate(frames) if meter_action in raw]
+
+        def order():
+            frames = [raw for d, raw in s.frames if d == "rx"]
+            i_stop = next((i for i, raw in enumerate(frames) if stop_action in raw), None)
+            return i_stop, [i for i, raw in enumerate(frames) if meter_action in raw]
+        await _until(lambda: order()[0] is not None and order()[1] and order()[1][-1] > order()[0])
+        i_stop, meters = order()
+        assert len(meters) >= held + 1
         assert meters[-1] > i_stop and all(i < i_stop for i in meters[:-1])  # held ones first, the last one late
         if version == "2.0.1":
             ended = next(e for e in s.transaction_events if e["event_type"] == "Ended")
@@ -206,4 +222,97 @@ def test_response_delay_only_for_the_named_action(version):
         assert rt.connect_attempts == attempts and rt.online
         with pytest.raises(ValueError, match="response_delay_ms"):
             rt.set_impairments(ImpairmentConfig(response_delay_ms={"NoSuchAction": 1}))
+    _scenario(body, version=version)
+
+
+# ---------------------------------------------------------------- review follow-ups
+
+
+def test_streams_persist_across_live_edits_and_restart_on_a_new_seed():
+    def draws(edits):
+        cache, host = {}, type("H", (), {})()
+        host.impairments = _imp(drop_ratio=0.5)
+        out = []
+        for i in range(30):
+            if i in edits:
+                host.impairments = edits[i]
+            out.append(meter_faults(cache, host, CP, 1).drop())
+        return out
+    base = draws({})
+    assert draws({10: _imp(drop_ratio=0.5, voltage_noise_v=2)}) == base  # another field: the stream goes on
+    reseeded = draws({10: ImpairmentConfig(seed=8, meter=MeterImpairment(drop_ratio=0.5))})
+    assert reseeded[:10] == base[:10] and reseeded[10:] != base[10:]
+
+
+def test_mcp_inlining_keeps_sibling_keys_and_rejects_recursion():
+    from pydantic import BaseModel, Field
+
+    class Inner(BaseModel):
+        x: int = 1
+
+    class Outer(BaseModel):
+        inner: Inner = Field(default_factory=Inner, description="the inner block")
+
+    props = _model_props(Outer)["inner"]
+    assert props["description"] == "the inner block" and props["properties"]["x"]["type"] == "integer"
+
+    class Node(BaseModel):
+        child: "Node | None" = None
+
+    class Tree(BaseModel):
+        root: Node = Node()
+    with pytest.raises(ValueError, match="recursive"):
+        _model_props(Tree)
+
+
+@VERSIONS
+def test_shrinking_the_window_releases_held_messages_at_once(version):
+    async def body(peer, rt):
+        await _until(lambda: rt.online and CP in peer.sessions)
+        s = peer.sessions[CP]
+        rt.set_impairments(_imp(reorder_window=50))
+        await rt.plug(1)
+        await rt.swipe(1, "T")
+        await _until(lambda: len(_faults(rt).held) >= 2)
+        held = len(_faults(rt).held)
+        rt.set_impairments(_imp())
+        assert not _faults(rt).held
+        await _until(lambda: len(_periodic(s, version)) >= held)
+        assert rt.station.has_transaction(1)
+    _scenario(body, version=version, cfg_kw=TICK)
+
+
+@VERSIONS
+def test_a_delayed_answer_is_not_sent_after_a_disconnect(version):
+    async def body(peer, rt):
+        await _until(lambda: rt.online and CP in peer.sessions)
+        s = peer.sessions[CP]
+        rt.set_impairments(ImpairmentConfig(response_delay_ms={"DataTransfer": 600}))
+        rpc = rt._rpc
+        req = asyncio.create_task(peer.data_transfer(CP, "acme"))
+        await _until(lambda: rpc._tasks)  # the handler waits for its delay
+        rt.drop(reconnect_after_s=0.1)
+        await _until(lambda: rpc.closed.is_set() and not rpc._tasks)  # cancelled with the session
+        await _until(lambda: rt.online and peer.sessions[CP] is not s)
+        # Past the delay: the DataTransfer answer never reached the CSMS, on the old session or the new one.
+        await _never(lambda: any(d == "rx" and raw.startswith("[3") and '"status"' in raw
+                                 for x in (s, peer.sessions[CP]) for d, raw in x.frames), 0.8)
+        req.cancel()
+        await asyncio.gather(req, return_exceptions=True)
+    _scenario(body, version=version)
+
+
+@VERSIONS
+def test_a_delay_longer_than_the_csms_timeout(version):
+    async def body(peer, rt):
+        await _until(lambda: rt.online and CP in peer.sessions)
+        s = peer.sessions[CP]
+        cp = s.cp if version == "1.6" else s.cs
+        cp._response_timeout = 0.3
+        rt.set_impairments(ImpairmentConfig(response_delay_ms={"DataTransfer": 700}))
+        with pytest.raises(asyncio.TimeoutError):
+            await peer.data_transfer(CP, "acme")
+        # The late answer still arrives (the CSMS drops it); the charger keeps its connection.
+        await _until(lambda: any(d == "rx" and raw.startswith("[3") and '"status"' in raw for d, raw in s.frames))
+        assert rt.online and peer.sessions[CP] is s
     _scenario(body, version=version)

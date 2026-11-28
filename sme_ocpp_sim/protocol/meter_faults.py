@@ -2,8 +2,10 @@
 
 Shared by the version stations: :meth:`MeterFaults.drop` decides whether a periodic meter message is left out,
 :meth:`MeterFaults.hold` / :meth:`MeterFaults.flush` reorder them (``reorder_window``) and :meth:`MeterFaults.noisy`
-adds Voltage noise. A station keeps one object per connector through :func:`meter_faults`; it is rebuilt (the
-held messages carried over) when the charger's impairments change, so a switch applies without a reconnect.
+adds Voltage noise. A station keeps one object per connector through :func:`meter_faults`. A live edit of the
+impairments only swaps its settings: the random streams (and the held messages) go on, so editing one field
+never resets the others; a changed ``seed`` restarts the streams. A charger restart (a config change that
+rebuilds the charger) builds a new station, so the streams start over and held messages are lost.
 
 Each connector draws from its own seeded streams (``meter:{cid}``, ``reorder:{cid}``, ``noise:{cid}`` of
 :func:`..rpc.impair.make_rng`), so one connector's traffic never shifts another's pattern.
@@ -31,23 +33,37 @@ def impairments_of(host: Any) -> ImpairmentConfig:
     return imp if isinstance(imp, ImpairmentConfig) else NO_IMPAIRMENTS
 
 
-def _key(imp: ImpairmentConfig) -> tuple:
-    return imp.seed, imp.meter.model_dump_json()
-
-
 class MeterFaults:
     def __init__(self, imp: ImpairmentConfig, charger_id: str, connector_id: int) -> None:
-        self.key = _key(imp)
-        self.cfg = imp.meter
-        seed = impairment_seed(imp.seed, charger_id)
-        self._drop = make_rng(seed, f"meter:{connector_id}")
-        self._order = make_rng(seed, f"reorder:{connector_id}")
-        self._noise = make_rng(seed, f"noise:{connector_id}")
         self.held: List[Any] = []
+        #: Periodic meter messages left out so far (``drop_ratio``).
+        self.dropped = 0
+        self._ids = (charger_id, connector_id)
+        self._seed: Any = object()
+        self.apply(imp)
+
+    def apply(self, imp: ImpairmentConfig) -> None:
+        """Take the settings of ``imp``; the random streams restart only when the seed changed."""
+        self.src, self.cfg = imp, imp.meter
+        if imp.seed != self._seed:
+            self._seed = imp.seed
+            charger_id, cid = self._ids
+            seed = impairment_seed(imp.seed, charger_id)
+            self._drop = make_rng(seed, f"meter:{cid}")
+            self._order = make_rng(seed, f"reorder:{cid}")
+            self._noise = make_rng(seed, f"noise:{cid}")
+
+    @property
+    def releases(self) -> bool:
+        """True when messages are held although the window no longer holds any (it shrank to 0 / 1)."""
+        return bool(self.held) and self.cfg.reorder_window <= 1
 
     def drop(self) -> bool:
         """True when this periodic meter message is to be left out (``drop_ratio``)."""
-        return self.cfg.drop_ratio > 0 and self._drop.random() < self.cfg.drop_ratio
+        if self.cfg.drop_ratio > 0 and self._drop.random() < self.cfg.drop_ratio:
+            self.dropped += 1
+            return True
+        return False
 
     def hold(self, item: Any) -> List[Any]:
         """Hold ``item``; returns the messages to send now (all held ones, shuffled, once the window is full)."""
@@ -71,12 +87,12 @@ class MeterFaults:
 
 
 def meter_faults(cache: Dict[int, MeterFaults], host: Any, charger_id: str, connector_id: int) -> MeterFaults:
-    """The connector's :class:`MeterFaults` in ``cache``, rebuilt when the meter impairments or the seed changed."""
+    """The connector's :class:`MeterFaults` in ``cache``, updated in place when the host's impairments object
+    changed (``set_impairments`` installs a new one; the same object is not compared field by field)."""
     imp = impairments_of(host)
     cur = cache.get(connector_id)
-    if cur is None or cur.key != _key(imp):
-        new = MeterFaults(imp, charger_id, connector_id)
-        if cur is not None:
-            new.held = cur.held  # a changed window applies to the messages already held
-        cache[connector_id] = cur = new
+    if cur is None:
+        cache[connector_id] = cur = MeterFaults(imp, charger_id, connector_id)
+    elif cur.src is not imp:
+        cur.apply(imp)
     return cur

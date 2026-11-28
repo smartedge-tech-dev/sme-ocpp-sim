@@ -825,6 +825,20 @@ class Station201(VersionStation):
     def _faults(self, e: _Evse) -> MeterFaults:
         return meter_faults(self._meter_faults, self.host, self.cfg.id, e.id)
 
+    def _push_held(self, out: "_Out") -> None:
+        """Queue an event held by ``impairments.meter.reorder_window``: ``offline`` follows the connection now
+        (when it is queued), the timestamp and ``seqNo`` stay those it was built with."""
+        if out.req is not None:
+            out.req.offline = True if not self.host.connected else None
+        self._push(out)
+
+    def impairments_changed(self) -> None:
+        for e in self.evses.values():
+            faults = self._faults(e)
+            if faults.releases:
+                for out in faults.flush():
+                    self._push_held(out)
+
     def _power_w(self, evse_id: int) -> float:
         """Live active power of an EVSE (EVSE.Power); 0 when it does not charge."""
         e = self.evses[evse_id]
@@ -982,7 +996,7 @@ class Station201(VersionStation):
         late = (self._samples(e, self.dm.list_value(dm.TX_UPDATED_MEASURANDS))
                 if faults.cfg.end_after_stop else [])
         for out in faults.flush():  # periodic events held by impairments.meter.reorder_window go first
-            self._push(out)
+            self._push_held(out)
         delay = self.cfg.meter.post_tx_delay_s
         not_before = self.host.monotonic() + delay if delay > 0 else None
         if e.meter_task is not None and e.meter_task is not asyncio.current_task():
@@ -1038,7 +1052,7 @@ class Station201(VersionStation):
                                     m.TransactionType(transaction_id=tx.tx_id), samples=samples,
                                     context=ReadingContextEnumType.sample_periodic, droppable=True, push=False)
             for o in faults.hold(out):
-                self._push(o)
+                self._push_held(o)
 
     # ================================================================== authorization
 
