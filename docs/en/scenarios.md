@@ -144,6 +144,25 @@ writes the verdict (stdout without `--out`) and exits **0** pass, **1** fail, **
 scenario or config. `--junit` writes one test case per assertion (and per failed action); `--trace` writes the
 frames of the scenario's chargers as JSON lines (the frame log export format).
 
+## Built-in scenarios { #builtin }
+
+The examples of the repository's `scenarios/` folder ship with every build (wheel, Windows exe, Docker image)
+and are referenced as `builtin:<name>`:
+
+```bash
+sme-ocpp-sim scenario run builtin:plug-charge-unplug -c configs/mini-csms-demo.yaml --out verdict.json
+```
+
+| Name | What it does |
+|---|---|
+| `plug-charge-unplug` | One OCPP 1.6 session on `DEMO-16` of `configs/mini-csms-demo.yaml` (2 h sim in about 2 s) |
+| `remote-start-no-tx` | `DEMO-16` with `remote_start: accept_no_tx`: send a RemoteStartTransaction from the CSMS while it waits; it is accepted but no transaction starts |
+| `both-versions` | The same session on every charger of the config (`for_each`), OCPP 1.6 and 2.0.1 in parallel |
+
+Over HTTP: `GET /api/scenarios/builtin` lists them, `POST /api/scenarios/builtin/{name}/run` (or the body
+`builtin:<name>` for `POST /api/scenarios/run`) starts one; MCP: `list_builtin_scenarios`, then `run_scenario`
+with `body: "builtin:<name>"`. The chargers they name must exist in the running config.
+
 ## HTTP API and MCP
 
 | Method | Path | MCP tool | Meaning |
@@ -151,10 +170,15 @@ frames of the scenario's chargers as JSON lines (the frame log export format).
 | POST | `/api/scenarios/run` | `run_scenario` | Body: the scenario YAML (or JSON) text; starts it (409 while one runs) |
 | GET | `/api/scenarios/current` | `get_scenario_status` | `state` (`idle` / `running` / `done`), track progress, step counts, prompts |
 | POST | `/api/scenarios/abort` | `abort_scenario` | Stop it (result `aborted`) |
+| GET | `/api/scenarios/builtin` | `list_builtin_scenarios` | The built-in scenarios (name, title, description); run one with the body `builtin:<name>` or `POST /api/scenarios/builtin/{name}/run` |
 | GET | `/api/scenarios/result?format=json\|junit` | `get_scenario_result` | Verdict of the finished scenario |
 | POST | `/api/frames/expect` | `expect_frame` | One-shot: wait up to `within` s for a matching frame after `since` |
 
-The web UI has no scenario panel yet; it shows the scenario's `log` lines and its start / result in the event log.
+In the web UI, **Simulation → Scenario…** opens the scenario panel: choose a built-in scenario or open a file
+(the YAML lands in the editor, where it can be changed), **Run** / **Abort**, a live table of the steps (pending,
+running, pass, fail, error, skipped, aborted) with their sim time and message, the operator prompts of
+`await_csms` steps, and **Verdict JSON** / **JUnit XML** downloads once the run is done. The scenario's `log`
+lines and its start / result also go to the event log.
 
 ## Limits
 
@@ -168,6 +192,6 @@ The web UI has no scenario panel yet; it shows the scenario's `log` lines and it
   the engine's sim clock, which stays where the run left it.
 - The runner keeps at most 200 000 frames per charger; an assertion that needs a dropped frame fails with
   "frame buffer overflowed".
-- `POST /api/frames/expect`: to catch a frame caused by your own action, read `last_seq` (`GET /api/frames`)
-  before the action and pass it as `since`; the answer has `oldest_seq` and a `warning` when `since` is older
-  than the frame log.
+- `POST /api/frames/expect`: to catch a frame caused by your own action, pass the `last_seq` of the action's answer
+  (every charger action returns it: the frame-log seq before the action) as `since`; the answer has
+  `oldest_seq` and a `warning` when `since` is older than the frame log.

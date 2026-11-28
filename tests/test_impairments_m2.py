@@ -106,14 +106,28 @@ def _status_count(s):
     return len(s.statuses) if hasattr(s, "statuses") else 0
 
 
+def _boot_statuses_seen(s, version):
+    if version == "1.6":
+        return {0, 1} <= {c for c, _st, _e in s.statuses}
+    return any(e == 1 for e, _c, _st in s.statuses)
+
+
+def _plug_reported(s, version):
+    if version == "1.6":
+        return any(c == 1 and st == "Preparing" for c, st, _e in s.statuses)
+    return any(e == 1 and str(getattr(st, "value", st)) == "Occupied" for e, _c, st in s.statuses)
+
+
 @VERSIONS
 def test_accept_no_tx_answers_accepted_and_starts_nothing(version):
     async def body(peer, rt):
         await _until(lambda: rt.online and CP in peer.sessions)
         s = peer.sessions[CP]
-        n0 = _status_count(s)
+        # Wait for the boot StatusNotifications first (1.6: connectors 0 and 1, 2.0.1: EVSE 1), then for the
+        # plug's own status: counting "any new status" raced with a late boot status under load.
+        await _until(lambda: _boot_statuses_seen(s, version))
         await rt.plug(1)
-        await _until(lambda: _status_count(s) > n0)  # the plug is reported
+        await _until(lambda: _plug_reported(s, version))
         n, status = _status_count(s), rt.snapshot()["connectors"][0]["status"]
         rt.set_impairments(ImpairmentConfig(remote_start="accept_no_tx"))
         res = await _remote_start(peer, version)

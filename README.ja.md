@@ -38,6 +38,11 @@ Windows / Linux / Docker で動作します。数十〜数百台の AC 充電器
 - **Excel のインポート / エクスポートと充電器テンプレート。** 充電器一覧を Excel で編集したり、
   組み込みまたは独自のテンプレートから N 台を一括追加したりできます。
 - **フレームログ** ですべての OCPP フレームを絞り込み・JSON Lines エクスポート。テストスクリプト向けに HTTP API と WebSocket、AI アシスタント向けに MCP エンドポイントを提供します。
+- **シナリオとトラフィック（v0.3）。** YAML のテストシナリオ（シミュレーション時計上の並行トラック。数時間を数秒で実行）
+  を実行し、合否を JSON / JUnit で出力。CLI（`scenario run`、組み込み例は `builtin:<名前>`）、HTTP API、MCP、
+  シナリオパネルから使えます。常時負荷向けの seed 付きランダムトラフィック生成、重み付き車両プロファイルプール、
+  通信障害に加えて異常スイッチ（トランザクションを開始しない RemoteStart 受理、メーター値の欠落・順序入替・ノイズ、
+  応答遅延）も備えます。
 - **YAML 設定** をブラウザで編集し、ファイルへ保存できます（Windows exe は `~/.sme-ocpp-sim/config.yaml` に保存）。
 - **英語、日本語、簡体字中国語。** UI はブラウザの言語に従います。
 
@@ -99,6 +104,8 @@ SteVe の準備とすべてのオプションは [クイックスタート](http
 - [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/mini-csms/) — ポート 9000 の内蔵 CSMS
 - [Excel と充電器テンプレート](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/excel-templates/) — インポート / エクスポートとテンプレートからの一括追加
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/http-api/) — REST ルートと `/ws` の仕様
+- [シナリオ](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/scenarios/) — シナリオファイル、判定、組み込み例、`scenario run`
+- [トラフィックジェネレーター](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/traffic/) — 常時負荷向けの seed 付きランダムセッション
 - [MCP・ヘルスチェック・ログ](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/mcp/) — AI アシスタントから充電器を操作（`/mcp`）、`/healthz`、`--log-format json`
 - [開発](https://smartedge-tech-dev.github.io/sme-ocpp-sim/ja/development/)
 - [変更履歴](CHANGELOG.md)

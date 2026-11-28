@@ -37,6 +37,15 @@ jobs:
       - run: python -m pip install build twine
       - run: python -m build
       - run: python -m twine check --strict dist/*
+      - name: The sdist carries the built-in scenarios
+        run: |
+          python - <<'PY'
+          import glob, tarfile
+          names = tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()
+          for f in ("both-versions", "plug-charge-unplug", "remote-start-no-tx"):
+              assert any(n.endswith(f"/scenarios/{f}.yaml") for n in names), f"scenarios/{f}.yaml missing from the sdist"
+          print("sdist OK")
+          PY
       - name: Install the wheel into a fresh venv (outside the source tree)
         run: |
           python -m venv /tmp/wheel-venv
@@ -53,6 +62,7 @@ jobs:
           pkg = files("sme_ocpp_sim")
           assert pkg.joinpath("configs", "demo-site.yaml").is_file(), "configs/demo-site.yaml missing from the wheel"
           assert pkg.joinpath("static", "index.html").is_file(), "static/index.html missing from the wheel"
+          assert pkg.joinpath("scenarios", "plug-charge-unplug.yaml").is_file(), "scenarios/ missing from the wheel"
           from sme_ocpp_sim.config import load_file
           load_file(str(pkg.joinpath("configs", "demo-site.yaml")))
           print("wheel OK")

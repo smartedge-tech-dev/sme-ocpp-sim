@@ -4,7 +4,7 @@ Web UI はテストスクリプトからも呼び出せる同じ HTTP API を使
 エラー: 存在しない充電器は `404`、不正な入力や現在の状態では実行できない操作は `400`（リクエストの検証エラーも `400`）です。
 CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答された場合は `502` になります。
 
-成功したリクエストは `{"ok": true, ...}` を返します（GET ルートはデータそのものを返します）。
+成功したリクエストは `{"ok": true, ...}` を返します（GET ルートはデータそのものを返します）。 充電器のアクション（connect / disconnect と一括、plug、unplug、swipe、start、stop、fault、clear-fault、drop、impairments の PUT、send）は `last_seq` も返します。アクション**前**に取得したフレームログのシーケンス番号です。`POST /api/frames/expect`（または `GET /api/frames`）の `since` に渡すと、そのアクションが起こしたフレームをすべて確認できます。エラー応答には `last_seq` は含まれません。一括ルートはバッチ全体で 1 つの `last_seq` を返します。
 
 ## 共通ルート
 
@@ -169,8 +169,11 @@ OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーシ�
 | メソッド | パス | 意味 |
 |---|---|---|
 | POST | `/api/scenarios/run` | シナリオを開始。本文：YAML（または JSON）テキスト。不正・未知の充電器は 400、実行中は 409 |
-| GET | `/api/scenarios/current` | 現在 / 直前のシナリオの状態（なければ `{"state": "idle"}`） |
+| GET | `/api/scenarios/current` | 現在 / 直前のシナリオの状態（なければ `{"state": "idle"}`） `?steps=true` を付けると `step_list`（各ステップのその時点の状態）が加わります（Web UI のパネルが使用）。 |
 | POST | `/api/scenarios/abort` | 実行中のシナリオを停止（なければ 409） |
+| GET | `/api/scenarios/builtin` | 組み込みシナリオの一覧：`{"scenarios": [{"name", "title", "description"}]}` |
+| GET | `/api/scenarios/builtin/{name}` | 組み込みシナリオの YAML テキスト（不明なら 404） |
+| POST | `/api/scenarios/builtin/{name}/run` | 組み込みシナリオを開始（`POST /api/scenarios/run` に本文 `builtin:<name>` でも可） |
 | GET | `/api/scenarios/result?format=json\|junit` | 終了したシナリオの判定結果（なし 404、実行中 409） |
 | POST | `/api/frames/expect` | `since` 以降で `charger` / `dir` / `action` / `message_type` / `payload` matcher に一致するフレームを最大 `within` 秒（上限 300）待つ。`{"matched": bool, "frame": ...}` |
 

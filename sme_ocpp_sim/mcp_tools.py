@@ -161,8 +161,12 @@ def build_registry(app: Any) -> McpRegistry:
     add("run_scenario", "Load a scenario (YAML text, format ocppsim-scenario/1: tracks of timed actions and "
         "assertions on frames / state per charger id) and start it. One scenario at a time; poll "
         "get_scenario_status, then get_scenario_result for the verdict.", "POST", "/api/scenarios/run",
-        _obj({"body": {"type": "string", "minLength": 1, "description": "The scenario YAML (or JSON) text"}},
+        _obj({"body": {"type": "string", "minLength": 1,
+                       "description": "The scenario YAML (or JSON) text, or builtin:<name> for a built-in scenario "
+                                      "(list_builtin_scenarios)"}},
              ["body"], cid=False), body="text", destructive=True)
+    add("list_builtin_scenarios", "The scenarios shipped with OCPPSim (name, title, description); run one with "
+        "run_scenario body 'builtin:<name>'.", "GET", "/api/scenarios/builtin", no_args)
     add("get_scenario_status", "State of the current / last scenario: running / done, per-track progress, step "
         "counts, operator prompts of await_csms steps.", "GET", "/api/scenarios/current", no_args)
     add("get_scenario_result", "Verdict of the last finished scenario (ocppsim-verdict/1): result pass / fail / "

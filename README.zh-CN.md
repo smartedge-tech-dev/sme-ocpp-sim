@@ -24,6 +24,10 @@
 - **内置 Mini CSMS**（端口 9000）：在同一进程中运行的简易 OCPP 1.6J / 2.0.1 CSMS，无需 SteVe 即可试用，可查看充电站上报的内容，并用 JSON 编辑器发送任意 CALL。
 - **Excel 导入 / 导出与充电桩模板。** 在 Excel 中编辑充电桩列表，或从内置或自定义模板一次添加 N 台。
 - **帧日志** 记录每一个 OCPP 帧，可过滤并导出 JSON Lines；为测试脚本提供 HTTP API 和 WebSocket，为 AI 助手提供 MCP 端点。
+- **场景与流量（v0.3）。** 用 YAML 编写测试场景（模拟时钟上的并行轨道，数小时只需数秒），以 JSON 或 JUnit
+  输出通过 / 失败判定；可从 CLI（`scenario run`，内置示例用 `builtin:<名称>`）、HTTP API、MCP 或场景面板运行。
+  另有带 seed 的随机流量生成器（常驻负载）、带权重的车辆档案池，以及连接故障之外的异常开关（接受 RemoteStart
+  但不开始交易、电表值丢弃 / 乱序 / 噪声、慢应答）。
 - **YAML 配置**，可在浏览器中编辑并保存回文件（Windows exe 保存在 `~/.sme-ocpp-sim/config.yaml`）。
 - **英语、日语和简体中文。** UI 跟随浏览器语言。
 
@@ -81,6 +85,8 @@ docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway ghcr.i
 - [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/mini-csms/)——端口 9000 上的内置 CSMS
 - [Excel 与充电桩模板](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/excel-templates/)——导入 / 导出与从模板批量添加
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/http-api/)——REST 路由与 `/ws` 约定
+- [场景](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/scenarios/)——场景文件、判定、内置示例、`scenario run`
+- [流量生成器](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/traffic/)——带 seed 的随机会话，用于常驻负载
 - [MCP、健康检查与日志](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/mcp/)——从 AI 助手操作充电桩（`/mcp`）、`/healthz`、`--log-format json`
 - [开发](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/development/)
 - [更新日志](CHANGELOG.md)

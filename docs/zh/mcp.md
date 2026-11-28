@@ -47,15 +47,19 @@ Web UI 中的按钮相同。充电桩相关工具通过 `cid` 接收充电桩 ID
 | `mini_csms_status` | `GET /api/csms` | 内置 [Mini CSMS](mini-csms.md) 的状态 |
 | `mini_csms_actions` | `GET /api/csms/actions` | Mini CSMS 可发送的 CSMS → 充电桩动作 |
 | `mini_csms_call` | `POST /api/csms/chargers/{id}/call` | 从 Mini CSMS 发送 CSMS → 充电桩的 CALL |
-| `run_scenario` | `POST /api/scenarios/run` | 启动[场景](scenarios.md)（参数 `body`：YAML 文本） |
+| `run_scenario` | `POST /api/scenarios/run` | 启动[场景](scenarios.md)（参数 `body`：YAML 文本，或 `builtin:<name>`。未知的内置场景为 404 错误，无效 YAML 为指明问题的 400 错误） |
 | `get_scenario_status` | `GET /api/scenarios/current` | 场景状态与进度 |
 | `get_scenario_result` | `GET /api/scenarios/result` | 已结束场景的判定结果 |
 | `abort_scenario` | `POST /api/scenarios/abort` | 停止正在运行的场景 |
+| `list_builtin_scenarios` | `GET /api/scenarios/builtin` | 内置场景（name、title、description） |
 | `get_traffic` | `GET /api/traffic` | 常驻[流量](traffic.md)的状态、计数、功率 |
 | `set_traffic` | `PUT /api/traffic` | 替换 `traffic:` 块 |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | 启动 / 停止常驻流量 |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | 计划的到达（对 seed 确定） |
 | `expect_frame` | `POST /api/frames/expect` | 等待匹配条件与 payload matcher 的帧 |
+
+充电桩动作类工具（`plug_in`、`start_charging`、`send_frame` 等）返回 `last_seq`（动作之前的帧日志序号）：
+作为 `since` 传给 `expect_frame`，就不会漏掉动作引起的帧。出错的结果不含 `last_seq`；批量工具对整批只返回一个。
 
 只读工具标有 `readOnlyHint`；`disconnect_charger`、`drop_connection`、`set_impairments`、`send_frame` 和 `mini_csms_call` 标有 `destructiveHint`，
 客户端可以在调用前请求确认。

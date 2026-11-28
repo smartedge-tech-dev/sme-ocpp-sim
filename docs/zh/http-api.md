@@ -4,7 +4,7 @@ Web UI 使用的 HTTP API 同样可以从测试脚本调用。基础 URL：`http
 错误：未知充电桩为 `404`；输入无效或当前状态不允许的操作为 `400`（请求校验错误也是 `400`）。
 CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答时为 `502`。
 
-成功的请求返回 `{"ok": true, ...}`（GET 路由直接返回数据本身）。
+成功的请求返回 `{"ok": true, ...}`（GET 路由直接返回数据本身）。 充电桩动作（connect / disconnect 及批量、plug、unplug、swipe、start、stop、fault、clear-fault、drop、impairments 的 PUT、send）还返回 `last_seq`：动作**之前**取得的帧日志序号。把它作为 `since` 传给 `POST /api/frames/expect`（或 `GET /api/frames`），即可看到该动作引起的所有帧。出错的应答不含 `last_seq`；批量路由对整批只返回一个 `last_seq`。
 
 ## 通用路由
 
@@ -158,8 +158,11 @@ connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_
 | 方法 | 路径 | 含义 |
 |---|---|---|
 | POST | `/api/scenarios/run` | 启动场景；请求体：YAML（或 JSON）文本。无效 / 未知充电桩 400，已有场景运行 409 |
-| GET | `/api/scenarios/current` | 当前 / 上一个场景的状态（没有时 `{"state": "idle"}`） |
+| GET | `/api/scenarios/current` | 当前 / 上一个场景的状态（没有时 `{"state": "idle"}`） 加 `?steps=true` 会附带 `step_list`（每个步骤当前的状态；Web UI 面板使用）。 |
 | POST | `/api/scenarios/abort` | 停止正在运行的场景（没有时 409） |
+| GET | `/api/scenarios/builtin` | 内置场景列表：`{"scenarios": [{"name", "title", "description"}]}` |
+| GET | `/api/scenarios/builtin/{name}` | 内置场景的 YAML 文本（未知时 404） |
+| POST | `/api/scenarios/builtin/{name}/run` | 启动内置场景（也可 `POST /api/scenarios/run`，正文 `builtin:<name>`） |
 | GET | `/api/scenarios/result?format=json\|junit` | 已结束场景的判定结果（没有 404，仍在运行 409） |
 | POST | `/api/frames/expect` | 最多等 `within` 秒（上限 300），等 `since` 之后匹配 `charger` / `dir` / `action` / `message_type` / `payload` matcher 的帧；返回 `{"matched": bool, "frame": ...}` |
 

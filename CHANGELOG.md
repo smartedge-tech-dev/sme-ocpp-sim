@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Scenario and Traffic panels in the web UI (v0.3 M9, **Simulation** menu): load a built-in scenario or a file,
+  edit it, run / abort, a live step table (pending / running / pass / fail ...), the operator prompts, and
+  verdict JSON / JUnit downloads; the traffic panel shows state, counters, active sessions, power and the recent
+  events, starts / stops the standing traffic and previews the plan of the next N sim hours. Scenario, Traffic and
+  the built-in scenarios are documented in en / ja / zh.
+- Built-in scenarios: the examples of `scenarios/` ship in the wheel, the Windows exe and the Docker image;
+  `scenario run builtin:<name>`, `GET /api/scenarios/builtin` (+ `/{name}` for the YAML text),
+  `POST /api/scenarios/builtin/{name}/run`, the body `builtin:<name>` for `POST /api/scenarios/run` / MCP
+  `run_scenario`, and the MCP tool `list_builtin_scenarios`. `GET /api/scenarios/current?steps=true` adds the
+  step list with the status of every step so far.
+- The charger actions (HTTP routes and MCP tools: connect / disconnect, plug, unplug, swipe, start, stop, fault,
+  clear-fault, drop, impairments PUT, send) return `last_seq`, the frame-log seq captured before the action, to
+  pass as `since` to `POST /api/frames/expect` (no more reading `/api/frames` first).
 - Traffic generator (v0.3 M4): the new top-level `traffic:` block runs seeded random sessions on idle
   connectors: an arrival check every `interval_s` (sim) per connector with `probability` x `hourly_weights`,
   `auth_order` plug / tag first, charging until `stop_after` (`duration` in `duration_s`, the vehicle's target

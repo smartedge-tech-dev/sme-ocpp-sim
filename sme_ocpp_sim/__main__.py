@@ -93,12 +93,15 @@ def _on_sigint(loop, abort):
 
 def scenario_main(argv) -> int:
     """``scenario run`` / ``scenario validate`` (exit codes: :mod:`.scenario.verdict`)."""
+    from .scenario import builtin
+
     ap = argparse.ArgumentParser(prog=f"{APP_NAME} scenario", description="Run or check a scenario file "
                                  "(format ocppsim-scenario/1) against a simulator config, without the web UI")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("run", "validate"):
         p = sub.add_parser(name, help="run the scenario headless" if name == "run" else "check the scenario only")
-        p.add_argument("file", help="scenario YAML")
+        p.add_argument("file", help="scenario YAML, or builtin:<name> for a built-in scenario "
+                       f"({', '.join(e['name'] for e in builtin.listing()) or 'none'})")
         p.add_argument("-c", "--config", help="simulator config YAML (default: as the web app)")
         if name == "run":
             p.add_argument("--out", help="verdict JSON file (default: stdout)")
@@ -113,11 +116,14 @@ def scenario_main(argv) -> int:
         setup_logging(verbose=args.verbose, log_format=args.log_format)
 
     from .scenario import verdict as vd
-    from .scenario.model import ScenarioError, expand, load_file as load_scenario
+    from .scenario.model import ScenarioError, expand, load_file as load_scenario, load_text
 
     try:
         cfg, _path = _load_config(args.config)
-        sc = load_scenario(args.file)
+        if args.file.startswith(builtin.PREFIX):
+            sc = load_text(builtin.text(args.file))
+        else:
+            sc = load_scenario(args.file)
         if getattr(args, "time_scale", None) is not None:
             if args.time_scale <= 0:
                 raise ScenarioError("--time-scale: must be > 0")

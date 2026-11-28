@@ -132,6 +132,24 @@ sme-ocpp-sim scenario validate FILE [-c CONFIG]
 退出码 **0** pass、**1** fail、**2** error / aborted / 场景或配置无效。`--junit` 每个断言（及每个失败的动作）一个测试用例；
 `--trace` 以 JSON Lines（帧日志导出格式）写出场景所用充电桩的帧。
 
+## 内置场景 { #builtin }
+
+仓库 `scenarios/` 目录中的示例随所有构建（wheel、Windows exe、Docker 镜像）一起发布，用 `builtin:<名称>` 引用：
+
+```bash
+sme-ocpp-sim scenario run builtin:plug-charge-unplug -c configs/mini-csms-demo.yaml --out verdict.json
+```
+
+| 名称 | 内容 |
+|---|---|
+| `plug-charge-unplug` | 在 `configs/mini-csms-demo.yaml` 的 `DEMO-16` 上跑一次 OCPP 1.6 会话（模拟 2 小时约 2 秒） |
+| `remote-start-no-tx` | `DEMO-16` 设为 `remote_start: accept_no_tx`：等待期间从 CSMS 发 RemoteStartTransaction，被接受但不开始交易 |
+| `both-versions` | 在配置的所有充电桩上（`for_each`）并行跑同一会话，OCPP 1.6 与 2.0.1 混合 |
+
+HTTP：`GET /api/scenarios/builtin` 列出，`POST /api/scenarios/builtin/{name}/run`（或 `POST /api/scenarios/run`
+正文 `builtin:<name>`）启动；MCP：先 `list_builtin_scenarios`，再 `run_scenario` 传 `body: "builtin:<name>"`。
+场景引用的充电桩必须存在于当前配置中。
+
 ## HTTP API 与 MCP
 
 | 方法 | 路径 | MCP 工具 | 含义 |
@@ -139,10 +157,13 @@ sme-ocpp-sim scenario validate FILE [-c CONFIG]
 | POST | `/api/scenarios/run` | `run_scenario` | 请求体：场景 YAML（或 JSON）文本；启动（已有场景运行时 409） |
 | GET | `/api/scenarios/current` | `get_scenario_status` | `state`（`idle` / `running` / `done`）、track 进度、步骤计数、prompt |
 | POST | `/api/scenarios/abort` | `abort_scenario` | 停止（result `aborted`） |
+| GET | `/api/scenarios/builtin` | `list_builtin_scenarios` | 内置场景（name、title、description）；用正文 `builtin:<name>` 或 `POST /api/scenarios/builtin/{name}/run` 运行 |
 | GET | `/api/scenarios/result?format=json\|junit` | `get_scenario_result` | 已结束场景的判定结果 |
 | POST | `/api/frames/expect` | `expect_frame` | 一次性：最多等 `within` 秒，等 `since` 之后出现匹配的帧 |
 
-Web UI 暂无场景面板；场景的 `log` 行及开始 / 结果显示在事件日志中。
+Web UI 中 **模拟 → 场景…** 打开场景面板：选择内置场景或打开文件（YAML 进入编辑框，可修改），**运行** / **中止**，
+步骤实时表（等待、运行中、通过、失败、错误、跳过、已中止，含模拟时间与消息），`await_csms` 步骤给操作员的提示，
+运行结束后可下载 **判定 JSON** / **JUnit XML**。场景的 `log` 行及开始 / 结果也会进入事件日志。
 
 ## 限制
 
@@ -152,5 +173,5 @@ Web UI 暂无场景面板；场景的 `log` 行及开始 / 结果显示在事件
 - `repeat`（最多 1000 轮）中 `at: "+dur"` 从每轮开始计；不能用时刻 / 日期时间形式的 `at`。
 - `clock.time_scale` 运行后恢复（期间速度被改过则不恢复）；`clock.start_at` 让引擎的仿真时钟重新开始，运行后保持原样。
 - 每个充电桩最多保留 200 000 帧；需要已丢弃帧的断言以 "frame buffer overflowed" 判 fail。
-- `POST /api/frames/expect`：为免漏掉自己动作引起的帧，动作前先读 `last_seq`（`GET /api/frames`）并作为 `since`
-  传入；`since` 早于帧日志时，返回中带 `oldest_seq` 和 `warning`。
+- `POST /api/frames/expect`：为免漏掉自己动作引起的帧，把动作应答里的 `last_seq`（所有充电桩动作都会返回：
+  动作之前的帧日志序号）作为 `since` 传入；`since` 早于帧日志时，应答带 `oldest_seq` 与 `warning`。

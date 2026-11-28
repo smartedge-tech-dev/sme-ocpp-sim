@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 import socket
+import subprocess
+import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -18,7 +22,7 @@ from peers.ocpp201_peer import CsmsPeer201
 from sme_ocpp_sim.__main__ import main
 from sme_ocpp_sim.config import SimConfig
 from sme_ocpp_sim.engine import OcppEngine
-from sme_ocpp_sim.scenario import ops
+from sme_ocpp_sim.scenario import builtin, ops
 from sme_ocpp_sim.scenario.match import check_matcher, get_path, is_missing, match_all, matches, MatcherError
 from sme_ocpp_sim.scenario.model import ScenarioError, expand, load_data, load_text, parse_duration
 from sme_ocpp_sim.scenario.runner import ScenarioRunner
@@ -435,3 +439,71 @@ def test_cli_output_error_is_exit_2(tmp_path, capsys):
     sc.write_text(yaml.safe_dump(_sc([{"charger": "CP1", "steps": [{"do": "log", "message": "x"}]}])), "utf-8")
     assert main(["scenario", "run", str(sc), "-c", str(cfg), "--out", str(tmp_path)]) == 2  # a directory
     assert "scenario error" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot deliver SIGINT to one child process: "
+                    "CTRL_C_EVENT is ignored by a CREATE_NEW_PROCESS_GROUP child and CTRL_BREAK_EVENT is SIGBREAK, "
+                    "not the SIGINT the handler of scenario run listens for")
+def test_cli_sigint_aborts_and_writes_the_verdict(tmp_path):
+    """Ctrl+C on ``scenario run``: the run is aborted, the verdict is still written, exit code 2."""
+    with socket.socket() as listener:  # a fake CSMS: the charger's TCP connect means the run has started
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(30)
+        port = listener.getsockname()[1]
+        cfg = tmp_path / "sim.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "csms_defaults": {"url": f"ws://127.0.0.1:{port}/ocpp", "reconnect": {"min_s": 0.05, "max_s": 0.2}},
+            "chargers": [{"id": "CP1"}]}), encoding="utf-8")
+        sc = tmp_path / "s.yaml"
+        sc.write_text(yaml.safe_dump(_sc([{"charger": "CP1", "steps": [{"do": "wait", "duration": "1h"}]}])),
+                      encoding="utf-8")
+        out = tmp_path / "v.json"
+        proc = subprocess.Popen([sys.executable, "-m", "sme_ocpp_sim", "scenario", "run", str(sc), "-c", str(cfg),
+                                 "--out", str(out)], cwd=str(Path(__file__).resolve().parents[1]),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            conn, _ = listener.accept()
+            conn.close()
+            # The connect can come just before the runner starts (an abort then is a no-op): repeat the signal
+            # until the process ends; the handler stays installed until the run is over.
+            deadline = time.monotonic() + 30
+            while proc.poll() is None and time.monotonic() < deadline:
+                proc.send_signal(signal.SIGINT)
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            _stdout, stderr = proc.communicate(timeout=5)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    assert proc.returncode == 2, stderr
+    v = json.loads(out.read_text("utf-8"))
+    assert v["result"] == "aborted" and v["scenario"] == "t", v
+
+
+def test_builtin_scenarios(tmp_path):
+    names = [e["name"] for e in builtin.listing()]
+    assert {"both-versions", "plug-charge-unplug", "remote-start-no-tx"} <= set(names)
+    assert all(e["title"] for e in builtin.listing())
+    assert load_text(builtin.text("builtin:plug-charge-unplug")).name == "plug-charge-unplug"
+    for bad in ("nope", "../configs/demo-site", ""):
+        with pytest.raises(ScenarioError, match="unknown built-in"):
+            builtin.path(bad)
+    engine = OcppEngine(SimConfig.model_validate({"csms_defaults": {"url": "ws://127.0.0.1:9/ocpp"},
+                                                  "chargers": [{"id": "DEMO-16"}, {"id": "DEMO-201"}]}))
+    with TestClient(create_app(engine)) as c:
+        assert [e["name"] for e in c.get("/api/scenarios/builtin").json()["scenarios"]] == names
+        assert "plug-charge-unplug" in c.get("/api/scenarios/builtin/plug-charge-unplug").text
+        assert c.get("/api/scenarios/builtin/nope").status_code == 404
+        assert c.post("/api/scenarios/builtin/nope/run").status_code == 404
+        assert c.post("/api/scenarios/run", content="builtin:nope").status_code == 404
+        r = c.post("/api/scenarios/run", content="builtin:plug-charge-unplug\n")
+        assert r.status_code == 200 and r.json()["name"] == "plug-charge-unplug", r.text
+        assert c.post("/api/scenarios/builtin/plug-charge-unplug/run").status_code == 409  # one at a time
+        assert c.post("/api/scenarios/abort").status_code == 200
+    rc = main(["scenario", "validate", "builtin:plug-charge-unplug", "-c", "configs/mini-csms-demo.yaml"])
+    assert rc == 0
+    assert main(["scenario", "validate", "builtin:nope"]) == 2

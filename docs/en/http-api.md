@@ -5,7 +5,7 @@ Errors: an unknown charger is `404`; invalid input, or an operation the current 
 (request validation errors are `400` as well). A DataTransfer the CSMS does not answer in time is `504`, one it
 answers with CALLERROR is `502`.
 
-Successful requests answer `{"ok": true, ...}` (GET routes return the data itself).
+Successful requests answer `{"ok": true, ...}` (GET routes return the data itself). The charger actions (connect / disconnect and bulk, plug, unplug, swipe, start, stop, fault, clear-fault, drop, impairments PUT, send) also return `last_seq`: the frame-log sequence number captured **before** the action. Pass it as `since` to `POST /api/frames/expect` (or `GET /api/frames`) to see every frame the action caused. An error answer has no `last_seq`; the bulk routes return one `last_seq` for the whole batch.
 
 ## Common routes
 
@@ -179,8 +179,11 @@ The frame log contains OCPP frames only, never HTTP headers or passwords.
 | Method | Path | Meaning |
 |---|---|---|
 | POST | `/api/scenarios/run` | Start a scenario; body: its YAML (or JSON) text. 400 invalid / unknown charger, 409 one is running |
-| GET | `/api/scenarios/current` | Status of the current / last scenario (`{"state": "idle"}` when none) |
+| GET | `/api/scenarios/current` | Status of the current / last scenario (`{"state": "idle"}` when none) `?steps=true` adds `step_list`, every step with its status so far (the web UI panel uses it). |
 | POST | `/api/scenarios/abort` | Stop the running scenario (409 when none runs) |
+| GET | `/api/scenarios/builtin` | The built-in scenarios: `{"scenarios": [{"name", "title", "description"}]}` |
+| GET | `/api/scenarios/builtin/{name}` | The YAML text of a built-in scenario (404 unknown) |
+| POST | `/api/scenarios/builtin/{name}/run` | Start a built-in scenario (also: `POST /api/scenarios/run` with the body `builtin:<name>`) |
 | GET | `/api/scenarios/result?format=json\|junit` | Verdict of the finished scenario (404 none, 409 still running) |
 | POST | `/api/frames/expect` | Wait up to `within` s (max 300) for a frame after `since` matching `charger` / `dir` / `action` / `message_type` / `payload` matchers; `{"matched": bool, "frame": ...}` |
 

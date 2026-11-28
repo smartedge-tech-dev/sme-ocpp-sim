@@ -13,6 +13,7 @@ RUN apt-get update \
 COPY pyproject.toml README.md LICENSE THIRD-PARTY-NOTICES /src/
 COPY sme_ocpp_sim /src/sme_ocpp_sim
 COPY configs /src/configs
+COPY scenarios /src/scenarios
 RUN pip install --prefix=/install /src
 
 
