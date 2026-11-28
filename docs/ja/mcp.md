@@ -52,15 +52,19 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `mini_csms_status` | `GET /api/csms` | 内蔵 [Mini CSMS](mini-csms.md) の状態 |
 | `mini_csms_actions` | `GET /api/csms/actions` | Mini CSMS が送信できる CSMS → 充電器のアクション |
 | `mini_csms_call` | `POST /api/csms/chargers/{id}/call` | Mini CSMS から CSMS → 充電器の CALL を送信 |
-| `run_scenario` | `POST /api/scenarios/run` | [シナリオ](scenarios.md)を開始（引数 `body`：YAML テキスト） |
+| `run_scenario` | `POST /api/scenarios/run` | [シナリオ](scenarios.md)を開始（引数 `body`：YAML テキスト、または `builtin:<name>`） |
 | `get_scenario_status` | `GET /api/scenarios/current` | シナリオの状態と進捗 |
 | `get_scenario_result` | `GET /api/scenarios/result` | 終了したシナリオの判定結果 |
 | `abort_scenario` | `POST /api/scenarios/abort` | 実行中のシナリオを停止 |
+| `list_builtin_scenarios` | `GET /api/scenarios/builtin` | 組み込みシナリオ（name、title、description） |
 | `get_traffic` | `GET /api/traffic` | 常駐[トラフィック](traffic.md)の状態、カウンター、電力 |
 | `set_traffic` | `PUT /api/traffic` | `traffic:` ブロックを置き換え |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | 常駐トラフィックの起動 / 停止 |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | 計画された到着（シードで決定的） |
 | `expect_frame` | `POST /api/frames/expect` | 条件と payload matcher に一致するフレームを待つ |
+
+充電器のアクションのツール（`plug_in`、`start_charging`、`send_frame` など）は `last_seq`（アクション前のフレームログの
+シーケンス番号）を返します。`expect_frame` の `since` に渡すと、アクションが起こしたフレームを取りこぼしません。
 
 読み取り専用のツールには `readOnlyHint`、`disconnect_charger`・`drop_connection`・`set_impairments`・`send_frame`・`mini_csms_call` には `destructiveHint`
 が付いているので、クライアントは呼び出し前に確認を求められます。

@@ -139,6 +139,25 @@ sme-ocpp-sim scenario validate FILE [-c CONFIG]
 `--junit` は判定ごと（と失敗したアクションごと）に 1 テストケース、`--trace` はシナリオの充電器のフレームを
 JSON Lines（フレームログのエクスポート形式）で書き出します。
 
+## 組み込みシナリオ { #builtin }
+
+リポジトリの `scenarios/` フォルダの例は全ビルド（wheel、Windows exe、Docker イメージ）に同梱され、
+`builtin:<名前>` で参照できます。
+
+```bash
+sme-ocpp-sim scenario run builtin:plug-charge-unplug -c configs/mini-csms-demo.yaml --out verdict.json
+```
+
+| 名前 | 内容 |
+|---|---|
+| `plug-charge-unplug` | `configs/mini-csms-demo.yaml` の `DEMO-16` で OCPP 1.6 のセッションを 1 回（シミュレーション 2 時間を約 2 秒） |
+| `remote-start-no-tx` | `DEMO-16` を `remote_start: accept_no_tx` に：待機中に CSMS から RemoteStartTransaction を送ると受理されるがトランザクションは始まらない |
+| `both-versions` | 設定の全充電器（`for_each`）で同じセッションを OCPP 1.6 と 2.0.1 並行で実行 |
+
+HTTP では `GET /api/scenarios/builtin` で一覧、`POST /api/scenarios/builtin/{name}/run`（または
+`POST /api/scenarios/run` の本文 `builtin:<name>`）で開始。MCP では `list_builtin_scenarios` のあと
+`run_scenario` に `body: "builtin:<name>"`。参照する充電器が実行中の設定に存在する必要があります。
+
 ## HTTP API と MCP
 
 | メソッド | パス | MCP ツール | 意味 |
@@ -146,10 +165,14 @@ JSON Lines（フレームログのエクスポート形式）で書き出しま�
 | POST | `/api/scenarios/run` | `run_scenario` | 本文：シナリオの YAML（または JSON）テキスト。開始する（実行中は 409） |
 | GET | `/api/scenarios/current` | `get_scenario_status` | `state`（`idle` / `running` / `done`）、トラックの進捗、ステップ数、prompt |
 | POST | `/api/scenarios/abort` | `abort_scenario` | 停止（result `aborted`） |
+| GET | `/api/scenarios/builtin` | `list_builtin_scenarios` | 組み込みシナリオ（name、title、description）。本文 `builtin:<name>` または `POST /api/scenarios/builtin/{name}/run` で実行 |
 | GET | `/api/scenarios/result?format=json\|junit` | `get_scenario_result` | 終了したシナリオの判定結果 |
 | POST | `/api/frames/expect` | `expect_frame` | 単発：`since` 以降に一致するフレームを最大 `within` 秒待つ |
 
-Web UI にはまだシナリオパネルはありません。シナリオの `log` 行と開始・結果はイベントログに表示されます。
+Web UI では **シミュレーション → シナリオ…** でシナリオパネルを開きます。組み込みシナリオを選ぶかファイルを開き
+（YAML はエディタに入り、編集できます）、**実行** / **中止**、ステップのライブ表（待機・実行中・合格・不合格・エラー・
+スキップ・中止、シミュレーション時刻とメッセージ）、`await_csms` ステップのオペレーター向け表示、終了後は
+**判定 JSON** / **JUnit XML** のダウンロード。シナリオの `log` 行と開始・結果はイベントログにも出ます。
 
 ## 制限
 
@@ -161,6 +184,6 @@ Web UI にはまだシナリオパネルはありません。シナリオの `lo
   シミュレーション時刻を再開させ、実行後もそのままです。
 - 保持するフレームは充電器ごとに最大 200 000 件です。破棄済みのフレームが必要な判定は
   "frame buffer overflowed" で fail します。
-- `POST /api/frames/expect`：自分のアクションによるフレームを取りこぼさないよう、アクション前に `last_seq`
-  （`GET /api/frames`）を読み、`since` に渡してください。`since` がフレームログより古い場合、応答に
-  `oldest_seq` と `warning` が付きます。
+- `POST /api/frames/expect`：自分のアクションによるフレームを取りこぼさないよう、アクションの応答の `last_seq`
+  （充電器のアクションはすべて返します。アクション前のフレームログのシーケンス番号）を `since` に渡します。
+  `since` がフレームログより古いと、応答に `oldest_seq` と `warning` が付きます。

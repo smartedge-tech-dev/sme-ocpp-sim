@@ -681,9 +681,6 @@ def _router(engine: OcppEngine) -> APIRouter:
     @r.post("/scenarios/run", summary="Load a scenario (YAML or JSON text body, format ocppsim-scenario/1) and "
             "start it; 409 while another one runs")
     async def scenario_run(request: Request):
-        from .scenario.model import ScenarioError, load_text
-        from .scenario.runner import ScenarioRunner
-
         try:
             declared = int(request.headers.get("content-length") or 0)
         except ValueError:
@@ -697,21 +694,66 @@ def _router(engine: OcppEngine) -> APIRouter:
             text = body.decode("utf-8")
         except UnicodeDecodeError as e:
             raise bad(400, f"scenario: not UTF-8 text ({e.reason} at byte {e.start})") from None
+        return start_scenario(text)
+
+    def start_scenario(text: str, name: Optional[str] = None):
+        """Start the scenario ``text``; a one-line ``builtin:<name>`` body (or ``name``) is a built-in."""
+        from .scenario import builtin
+        from .scenario.model import ScenarioError, load_text
+        from .scenario.runner import ScenarioRunner
+
         cur = current_runner()
         if cur is not None and not cur.done:
             raise bad(409, f"scenario {cur.scenario.name!r} is running (abort it first)")
+        ref = text.strip()
+        if name is None and ref.startswith(builtin.PREFIX) and "\n" not in ref:
+            name = ref
+        source = None
+        if name is not None:
+            name = name.removeprefix(builtin.PREFIX)
+            source = builtin.PREFIX + name
+            try:
+                text = builtin.text(name)
+            except ScenarioError as e:
+                raise bad(404, e) from None
         try:
-            runner = ScenarioRunner(engine, load_text(text))
+            runner = ScenarioRunner(engine, load_text(text), source=source)
         except ScenarioError as e:
             raise bad(400, e) from None
         engine.scenario = runner
         runner.start()
         return {"ok": True, **runner.status()}
 
-    @r.get("/scenarios/current", summary="Status of the current / last scenario (state idle when none)")
-    def scenario_current():
+    @r.get("/scenarios/builtin", summary="The built-in scenarios (name, title, description); run one with "
+           "POST /api/scenarios/builtin/{name}/run or the body builtin:<name>")
+    def scenario_builtin_list():
+        from .scenario import builtin
+        return {"scenarios": builtin.listing()}
+
+    @r.get("/scenarios/builtin/{name}", summary="The YAML text of a built-in scenario",
+           response_class=PlainTextResponse)
+    def scenario_builtin_text(name: str):
+        from .scenario import builtin
+        from .scenario.model import ScenarioError
+        try:
+            return builtin.text(name)
+        except ScenarioError as e:
+            raise bad(404, e) from None
+
+    @r.post("/scenarios/builtin/{name}/run", summary="Start a built-in scenario; 409 while another one runs")
+    async def scenario_builtin_run(name: str):
+        return start_scenario("", name)
+
+    @r.get("/scenarios/current", summary="Status of the current / last scenario (state idle when none); "
+           "steps=true adds step_list, every step with its status so far (the web UI's live view)")
+    def scenario_current(steps: bool = Query(False)):
         cur = current_runner()
-        return {"state": "idle"} if cur is None else cur.status()
+        if cur is None:
+            return {"state": "idle"}
+        out = cur.status()
+        if steps:
+            out["step_list"] = cur.verdict()["steps"]
+        return out
 
     @r.post("/scenarios/abort", summary="Stop the running scenario (result aborted)")
     async def scenario_abort():

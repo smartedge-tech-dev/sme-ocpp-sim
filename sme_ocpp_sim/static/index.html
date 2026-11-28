@@ -362,6 +362,65 @@
   </form>
 </dialog>
 
+<dialog id="dlgScenario" class="dialog wide sh-dialog">
+  <form method="dialog" class="dlgform">
+    <h3 data-i18n="scn.title">Scenario</h3>
+    <div class="scn-load">
+      <label class="inline"><span data-i18n="scn.builtin">Built-in</span> <select id="scnBuiltin"></select></label>
+      <button class="btn small" id="scnOpen" type="button" data-i18n="scn.open_file">Open file…</button>
+      <input id="scnFile" type="file" accept=".yaml,.yml,.json,text/yaml,application/json" hidden>
+      <span id="scnDesc" class="muted"></span>
+    </div>
+    <textarea id="scnText" rows="9" spellcheck="false" data-i18n-placeholder="scn.text"></textarea>
+    <div class="scn-bar">
+      <button class="btn small primary" id="scnRun" type="button" data-i18n="scn.run">Run</button>
+      <button class="btn small danger" id="scnAbort" type="button" data-i18n="scn.abort">Abort</button>
+      <a class="btn small" id="scnJson" href="/api/scenarios/result?format=json" download="verdict.json" data-i18n="scn.dl_json">Verdict JSON</a>
+      <a class="btn small" id="scnJunit" href="/api/scenarios/result?format=junit" download="junit.xml" data-i18n="scn.dl_junit">JUnit XML</a>
+      <span id="scnStatus" class="muted"></span>
+    </div>
+    <p id="scnError" class="err"></p>
+    <ul id="scnPrompts" class="plist"></ul>
+    <div id="scnSteps" class="tablewrap scn-steps"></div>
+    <div class="dlgbtns">
+      <button class="btn primary" value="cancel" data-i18n="common.dlg.close">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgTraffic" class="dialog wide sh-dialog">
+  <form method="dialog" class="dlgform">
+    <h3 data-i18n="trf.title">Traffic generator</h3>
+    <div class="scn-bar">
+      <button class="btn small primary" id="trfStart" type="button" data-i18n="trf.start">Start</button>
+      <button class="btn small" id="trfStop" type="button" data-i18n="trf.stop">Stop</button>
+      <span id="trfStatus" class="muted"></span>
+    </div>
+    <p class="muted" data-i18n="trf.hint">Start / Stop do not change traffic.enabled in the config.</p>
+    <p id="trfError" class="err"></p>
+    <div id="trfCounters" class="trf-counters"></div>
+    <div class="trf-grid">
+      <div>
+        <h4 data-i18n="trf.recent">Recent events</h4>
+        <div id="trfRecent" class="tablewrap trf-table"></div>
+      </div>
+      <div>
+        <h4 data-i18n="trf.plan">Plan preview</h4>
+        <div class="scn-bar">
+          <label class="inline"><span data-i18n="trf.plan.hours">Next hours (sim)</span>
+            <input id="trfHours" type="number" min="0.1" max="168" step="any" value="4"></label>
+          <button class="btn small" id="trfPreview" type="button" data-i18n="trf.plan.preview">Preview</button>
+          <span id="trfPlanInfo" class="muted"></span>
+        </div>
+        <div id="trfPlan" class="tablewrap trf-table"></div>
+      </div>
+    </div>
+    <div class="dlgbtns">
+      <button class="btn primary" value="cancel" data-i18n="common.dlg.close">Close</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Vendor preset (Shell.vendors.smartEdge + vendor.* strings) and common.* strings, then product strings. -->
 <script src="/sme-sim-common/vendor/vendor.js?v=__SME_SIM_COMMON_VERSION__"></script>
 <script src="/sme-sim-common/i18n/common.js?v=__SME_SIM_COMMON_VERSION__"></script>
@@ -370,5 +429,6 @@
 <script src="/static/i18n/zh.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/csms.js"></script>
+<script src="/static/panels.js"></script>
 </body>
 </html>

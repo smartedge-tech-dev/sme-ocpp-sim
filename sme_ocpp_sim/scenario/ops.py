@@ -2,7 +2,8 @@
 
 The web routes (and through them the MCP tools), and later the scenario runner and the traffic generator, all go
 through these functions, so UI / API / MCP / scenarios behave the same. Each action returns the JSON body the
-matching ``POST /api/chargers/{id}/<action>`` route answers (``{"ok": ..., ...}``) and reports a rejected action
+matching ``POST /api/chargers/{id}/<action>`` route answers (``{"ok": ..., ..., "last_seq": n}``; ``last_seq``
+is the frame-log seq before the action) and reports a rejected action
 as :class:`OpError`, whose ``kind`` the web layer maps to an HTTP status (:data:`HTTP_STATUS`).
 
 ==============  =======================================  ==========================================
@@ -30,6 +31,8 @@ fault codes of its version, transaction state).
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import random
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
@@ -101,6 +104,23 @@ def _ready(engine: OcppEngine, cid: str, connector: int):
     return rt
 
 
+def _seq(fn):
+    """Add ``last_seq`` to the action's answer: the frame-log seq captured *before* the action, so a client can
+    pass it as ``since`` to ``POST /api/frames/expect`` (or ``GET /api/frames``) and see every frame the action
+    caused."""
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def wrapper(engine: OcppEngine, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+            seq = engine.frame_log.last_seq
+            return {**await fn(engine, *args, **kwargs), "last_seq": seq}
+    else:
+        @functools.wraps(fn)
+        def wrapper(engine: OcppEngine, *args: Any, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[misc]
+            seq = engine.frame_log.last_seq
+            return {**fn(engine, *args, **kwargs), "last_seq": seq}
+    return wrapper
+
+
 # ------------------------------------------------------------------ connection
 
 async def _engine_op(fn, cid: str) -> bool:
@@ -112,22 +132,26 @@ async def _engine_op(fn, cid: str) -> bool:
         raise OpError("invalid", e) from None
 
 
+@_seq
 async def connect(engine: OcppEngine, cid: str) -> Dict[str, Any]:
     """Start the connection loop again; ``changed`` = it was not running."""
     return {"ok": True, "changed": await _engine_op(engine.connect, cid)}
 
 
+@_seq
 async def disconnect(engine: OcppEngine, cid: str) -> Dict[str, Any]:
     """Close the connection and keep it closed; ``changed`` = it was running."""
     return {"ok": True, "changed": await _engine_op(engine.disconnect, cid)}
 
 
+@_seq
 async def connect_many(engine: OcppEngine, ids: List[str], *, up: bool) -> Dict[str, Any]:
     """:func:`connect` (``up``) or :func:`disconnect` for each of ``ids``, in order."""
     fn = engine.connect if up else engine.disconnect
     return {"ok": True, "changed": {cid: await _engine_op(fn, cid) for cid in ids}}
 
 
+@_seq
 def drop(engine: OcppEngine, cid: str, mode: Optional[str] = None,
          reconnect_after_s: Optional[float] = None) -> Dict[str, Any]:
     """Drop the connection now; both default to the charger's ``impairments`` (``drop_mode`` / ``down_s``)."""
@@ -141,6 +165,7 @@ def drop(engine: OcppEngine, cid: str, mode: Optional[str] = None,
             "reconnect_after_s": imp.down_s if reconnect_after_s is None else reconnect_after_s}
 
 
+@_seq
 async def impair(engine: OcppEngine, cid: str, impairments: Union[ImpairmentConfig, dict]) -> Dict[str, Any]:
     """Replace the charger's ``impairments`` block (a reload; applied live, the charger keeps its connection)."""
     if not isinstance(impairments, ImpairmentConfig):
@@ -157,18 +182,21 @@ async def impair(engine: OcppEngine, cid: str, impairments: Union[ImpairmentConf
 
 # ------------------------------------------------------------------ connector
 
+@_seq
 async def plug(engine: OcppEngine, cid: str, connector: int = 1) -> Dict[str, Any]:
     """Plug the EV cable in."""
     await _ready(engine, cid, connector).plug(connector)
     return {"ok": True}
 
 
+@_seq
 async def unplug(engine: OcppEngine, cid: str, connector: int = 1) -> Dict[str, Any]:
     """Unplug the EV cable (ends a transaction)."""
     await _ready(engine, cid, connector).unplug(connector)
     return {"ok": True}
 
 
+@_seq
 async def swipe(engine: OcppEngine, cid: str, connector: int = 1, id_tag: Optional[str] = None) -> Dict[str, Any]:
     """Present an id tag (start / stop like an RFID reader)."""
     rt = _ready(engine, cid, connector)
@@ -178,6 +206,7 @@ async def swipe(engine: OcppEngine, cid: str, connector: int = 1, id_tag: Option
     return {"ok": True, "status": status.value}
 
 
+@_seq
 async def start(engine: OcppEngine, cid: str, connector: int = 1, id_tag: Optional[str] = None) -> Dict[str, Any]:
     """Plug in and present an id tag (default: the charger's first configured one).
 
@@ -197,6 +226,7 @@ async def start(engine: OcppEngine, cid: str, connector: int = 1, id_tag: Option
     return {"ok": True, "status": status.value, "id_tag": tag}
 
 
+@_seq
 async def stop(engine: OcppEngine, cid: str, connector: int = 1) -> Dict[str, Any]:
     """Stop the transaction locally (reason Local)."""
     if not await _ready(engine, cid, connector).stop_tx(connector):
@@ -204,6 +234,7 @@ async def stop(engine: OcppEngine, cid: str, connector: int = 1) -> Dict[str, An
     return {"ok": True}
 
 
+@_seq
 async def fault(engine: OcppEngine, cid: str, connector: int = 1, error_code: str = "OtherError") -> Dict[str, Any]:
     """Fault a connector (StatusNotification Faulted)."""
     rt = _ready(engine, cid, connector)
@@ -213,6 +244,7 @@ async def fault(engine: OcppEngine, cid: str, connector: int = 1, error_code: st
     return {"ok": True}
 
 
+@_seq
 async def clear_fault(engine: OcppEngine, cid: str, connector: int = 1) -> Dict[str, Any]:
     """Clear a connector fault."""
     if not await _ready(engine, cid, connector).clear_fault(connector):
@@ -222,6 +254,7 @@ async def clear_fault(engine: OcppEngine, cid: str, connector: int = 1) -> Dict[
 
 # ------------------------------------------------------------------ frame injection
 
+@_seq
 async def send(engine: OcppEngine, cid: str, *, action: Optional[str] = None, payload: Any = UNSET,
                raw: Optional[str] = None, validate: bool = True, timeout: Optional[float] = None) -> Dict[str, Any]:
     """Inject a CALL (``action`` + ``payload``) or a raw frame (``raw``); no station state change.
@@ -271,6 +304,7 @@ async def send(engine: OcppEngine, cid: str, *, action: Optional[str] = None, pa
 
 # ------------------------------------------------------------------ vehicle
 
+@_seq
 def set_ev(engine: OcppEngine, cid: str, connector: int = 1, ev_model: Optional[str] = None,
            initial_soc: Optional[float] = None, target_soc: Optional[float] = None) -> Dict[str, Any]:
     """Set the EV of the connector's next transaction (used once). ``ev_model``: an id of the charger's vehicle

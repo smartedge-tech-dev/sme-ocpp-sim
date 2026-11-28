@@ -51,8 +51,9 @@ sme-ocpp-sim = "sme_ocpp_sim.__main__:main"
 version = { attr = "sme_ocpp_sim.__version__" }
 
 [tool.setuptools]
-# configs/ ships inside the wheel as sme_ocpp_sim/configs so that a pip / pipx install has the demo config
-# (source tree, Docker image and Windows exe: configs/ beside the package). List new subpackages here.
+# configs/ and scenarios/ ship inside the wheel as sme_ocpp_sim/configs and sme_ocpp_sim/scenarios so that a pip / pipx install has the demo config
+# (source tree, Docker image and Windows exe: configs/ and scenarios/ beside the package; built-in scenarios:
+# scenario/builtin.py). List new subpackages here.
 packages = [
   "sme_ocpp_sim",
   "sme_ocpp_sim.charging",
@@ -64,13 +65,15 @@ packages = [
   "sme_ocpp_sim.runtime",
   "sme_ocpp_sim.scenario",
   "sme_ocpp_sim.configs",
+  "sme_ocpp_sim.scenarios",
 ]
-package-dir = { "sme_ocpp_sim.configs" = "configs" }
+package-dir = { "sme_ocpp_sim.configs" = "configs", "sme_ocpp_sim.scenarios" = "scenarios" }
 license-files = ["LICENSE", "THIRD-PARTY-NOTICES"]
 
 [tool.setuptools.package-data]
 sme_ocpp_sim = ["static/**/*"]
 "sme_ocpp_sim.configs" = ["*.yaml"]
+"sme_ocpp_sim.scenarios" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

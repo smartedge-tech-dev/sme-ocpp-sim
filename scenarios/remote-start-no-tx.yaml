@@ -3,6 +3,7 @@
 # scenario waits; the scenario then checks that no StartTransaction follows.
 format: ocppsim-scenario/1
 name: remote-start-no-tx
+description: DEMO-16 accepts a RemoteStartTransaction from the CSMS but never starts the transaction (send it while the scenario waits).
 tracks:
   - charger: DEMO-16
     steps:

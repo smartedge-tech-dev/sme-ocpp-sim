@@ -42,6 +42,13 @@ PRODUCT_ROUTES = {
      ("get", "/api/csms-defaults"), ("put", "/api/csms-defaults"), ("get", "/api/chargers/{cid}/settings"),
      ("patch", "/api/chargers/{cid}/settings"), ("get", "/api/chargers/{cid}/configuration")}
 
+def _noseq(body: dict) -> dict:
+    """An action answer without its ``last_seq`` (the frame-log seq before the action, checked to be an int)."""
+    body = dict(body)
+    assert isinstance(body.pop("last_seq"), int), body
+    return body
+
+
 
 @pytest.fixture
 def setup(tmp_path):
@@ -116,7 +123,7 @@ def test_invalid_query_is_400(setup):
 
 def test_plug_fault_clear_unplug(setup):
     client, _, _ = setup
-    assert client.post("/api/chargers/CP001/plug", json={"connector": 2}).json() == {"ok": True}
+    assert _noseq(client.post("/api/chargers/CP001/plug", json={"connector": 2}).json()) == {"ok": True}
     assert _conn(client, "CP001", 2)[1]["plugged"] is True
     assert client.post("/api/chargers/CP001/fault", json={"connector": 2}).status_code == 200
     c = _conn(client, "CP001", 2)[1]
@@ -170,7 +177,7 @@ def test_connect_disconnect_and_bulk(setup):
         return {c["id"]: c["enabled"] for c in client.get("/api/state").json()["chargers"]}
 
     assert enabled() == {"CP001": True, "CP002": True}
-    assert client.post("/api/chargers/CP001/disconnect").json() == {"ok": True, "changed": True}
+    assert _noseq(client.post("/api/chargers/CP001/disconnect").json()) == {"ok": True, "changed": True}
     assert client.post("/api/chargers/CP001/disconnect").json()["changed"] is False
     assert enabled() == {"CP001": False, "CP002": True}
     assert client.post("/api/chargers/CP001/connect").json()["changed"] is True
@@ -486,10 +493,10 @@ def test_online_operations():
                 async with asyncio.timeout(10):
                     while not rt.online:
                         await asyncio.sleep(0.02)
-                r = (await c.post("/api/chargers/CP/start")).json()
+                r = _noseq((await c.post("/api/chargers/CP/start")).json())
                 assert r == {"ok": True, "status": "Accepted", "id_tag": "T1"}
                 assert (await c.post("/api/chargers/CP/start")).status_code == 400  # already running
-                assert (await c.post("/api/chargers/CP/stop")).json() == {"ok": True}
+                assert _noseq((await c.post("/api/chargers/CP/stop")).json()) == {"ok": True}
                 assert (await c.post("/api/chargers/CP/stop")).status_code == 400
                 assert (await c.post("/api/chargers/CP/swipe", json={"id_tag": "T2"})).json()["status"] == "Accepted"
                 assert (await c.post("/api/chargers/CP/swipe", json={"id_tag": "T2"})).json()["status"] == "Stopped"
@@ -586,7 +593,7 @@ def test_impairments_put_validates_and_saves(setup):
     for body in ({"block": {"NoSuchAction": "NoReply"}}, {"block": {"Reset": "Maybe"}}, {"other": 1}):
         assert client.put("/api/chargers/CP001/impairments", json=body).status_code == 400, body
     r = client.put("/api/chargers/CP001/impairments", json={"block": {"Reset": "NotSupported"}})
-    assert r.status_code == 200 and r.json() == {"ok": True, **ImpairmentConfig(block={"Reset": "NotSupported"}).model_dump(mode="json")}
+    assert r.status_code == 200 and _noseq(r.json()) == {"ok": True, **ImpairmentConfig(block={"Reset": "NotSupported"}).model_dump(mode="json")}
     assert engine.charger("CP001") is rt and rt._block_mode("Reset") == "NotSupported"
     assert client.put("/api/chargers/NOPE/impairments", json={"block": {}}).status_code == 404
     assert client.post("/api/config/save").status_code == 200
@@ -644,7 +651,7 @@ def test_latency_and_drop_live_against_mini_csms():
                 assert (await c.post("/api/chargers/CP/send", json={"action": "Heartbeat"})).json()["ok"] is True
                 assert time.monotonic() - t0 >= 0.1
                 r = await c.post("/api/chargers/CP/drop", json={"mode": "close", "reconnect_after_s": 0.2})
-                assert r.json() == {"ok": True, "mode": "close", "reconnect_after_s": 0.2}
+                assert _noseq(r.json()) == {"ok": True, "mode": "close", "reconnect_after_s": 0.2}
                 async with asyncio.timeout(5):
                     while (rt.last_error or {}).get("kind") != "simulated_drop":
                         await asyncio.sleep(0.01)
@@ -685,9 +692,9 @@ def test_send_payload_null_timeout_and_callerror(setup):
 
     rt.inject_raw, rt.inject_call = inject_raw, inject_call
     assert client.post("/api/chargers/CP001/send", json={"raw": "[2]", "payload": None}).status_code == 400
-    assert client.post("/api/chargers/CP001/send", json={"raw": "[2]"}).json() == {"ok": True, "raw": True}
+    assert _noseq(client.post("/api/chargers/CP001/send", json={"raw": "[2]"}).json()) == {"ok": True, "raw": True}
     r = client.post("/api/chargers/CP001/send", json={"action": "DataTransfer", "payload": None, "validate": False})
-    assert r.status_code == 200 and r.json() == {"ok": True, "result": {}}
+    assert r.status_code == 200 and _noseq(r.json()) == {"ok": True, "result": {}}
     r = client.post("/api/chargers/CP001/send", json={"action": "Heartbeat", "validate": False})
     assert r.status_code == 200
     assert sent == [("raw", "[2]"), ("DataTransfer", None), ("Heartbeat", {})]
@@ -766,7 +773,7 @@ def test_block_and_inject_against_mini_csms(version):
                 assert r["ok"] is False and r["error"]["code"] == {"1.6": "FormationViolation",
                                                                    "2.0.1": "FormatViolation"}[version]
                 r = await c.post("/api/chargers/CP/send", json={"raw": '[2,"inj-1","Heartbeat",{}]'})
-                assert r.json() == {"ok": True, "raw": True}
+                assert _noseq(r.json()) == {"ok": True, "raw": True}
                 async with asyncio.timeout(5):
                     while True:
                         rows = [e.to_dict() for e in engine.frame_log.since(0, charger="CP", limit=1000)]

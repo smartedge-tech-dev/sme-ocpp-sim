@@ -1182,6 +1182,8 @@ Shell.init({
       { id: "sim.disconnect_all", label: "menu.disconnect_all", onClick: () => api("POST", "/api/chargers/bulk/disconnect", { all: true }).catch(fail) },
       { separator: true },
       { id: "sim.csms", label: "menu.mini_csms", onClick: () => window.openCsmsPanel() },
+      { id: "sim.scenario", label: "menu.scenario", onClick: () => window.openScenarioPanel() },
+      { id: "sim.traffic", label: "menu.traffic", onClick: () => window.openTrafficPanel() },
     ] },
     { id: "view", label: "common.menu.view", items: [Shell.themeItem(), Shell.langItem()] },
     Shell.helpMenu(),

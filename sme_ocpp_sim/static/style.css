@@ -140,3 +140,17 @@ select option:disabled { color: var(--muted); }
 .csms-editor textarea { font-family: var(--mono); font-size: 12px; }
 .csms-frames { max-height: 30vh; overflow: auto; }
 .csms-frames td.payload { font-family: var(--mono); font-size: 11px; word-break: break-all; }
+.scn-load, .scn-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#scnText { font-family: var(--mono); font-size: 12px; width: 100%; box-sizing: border-box; resize: vertical; }
+.btn.disabled { pointer-events: none; opacity: .45; }
+.scn-steps { max-height: 38vh; overflow: auto; }
+.tbl td.wrap { white-space: normal; word-break: break-word; }
+.trf-counters { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+.trf-counters .kv { display: flex; justify-content: space-between; gap: 6px; padding: 4px 8px; background: var(--pale); font-size: 12px; }
+.trf-counters .kv span { color: var(--muted); }
+.trf-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 800px) { .trf-grid { grid-template-columns: 1fr; } }
+.trf-grid h4 { margin: 4px 0; font-size: 13px; }
+.trf-table { max-height: 40vh; overflow: auto; }
+.dlgform label.chk, .dlgform label.inline { flex-direction: row; align-items: center; align-self: flex-start; gap: 6px; font-size: 12px; font-weight: normal; letter-spacing: 0; }
+#trfHours { width: 70px; }

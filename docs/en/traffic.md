@@ -85,6 +85,13 @@ until: "+4h"
 A running scenario owns its chargers: before it starts, the standing traffic stops and unplugs its sessions
 there (`preempted`) and skips arrivals there until the scenario ends; its other chargers go on.
 
+## Web UI { #ui }
+
+**Simulation → Traffic generator…** opens the traffic panel: state, seed and sim time, **Start** / **Stop** (like
+the API, they do not change `traffic.enabled`), the counters with the active sessions and total power, the recent
+events, and a plan preview: the planned arrivals of the next N sim hours (charger, connector, id tag, plugged
+time, EV model and SoC). The charger list header keeps the short "Traffic: N sessions, kW" indicator.
+
 ## API and MCP { #api }
 
 | Method | Path | MCP tool | Meaning |

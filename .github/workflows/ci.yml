@@ -53,6 +53,7 @@ jobs:
           pkg = files("sme_ocpp_sim")
           assert pkg.joinpath("configs", "demo-site.yaml").is_file(), "configs/demo-site.yaml missing from the wheel"
           assert pkg.joinpath("static", "index.html").is_file(), "static/index.html missing from the wheel"
+          assert pkg.joinpath("scenarios", "plug-charge-unplug.yaml").is_file(), "scenarios/ missing from the wheel"
           from sme_ocpp_sim.config import load_file
           load_file(str(pkg.joinpath("configs", "demo-site.yaml")))
           print("wheel OK")

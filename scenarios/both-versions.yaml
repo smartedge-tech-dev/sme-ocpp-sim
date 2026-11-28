@@ -4,6 +4,7 @@
 #   sme-ocpp-sim scenario run scenarios/both-versions.yaml -c configs/mini-csms-demo.yaml --junit junit.xml
 format: ocppsim-scenario/1
 name: both-versions
+description: The same charging session on every charger of the config (OCPP 1.6 and 2.0.1) in parallel, state checks only.
 clock: {time_scale: 3600}
 tracks:
   - for_each: {chargers: "*"}

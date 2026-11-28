@@ -40,6 +40,11 @@ CSMS (SteVe, your own CSMS, an EMS...) sends.
 - **Excel import / export and charger templates.** Edit the charger list in Excel, or add N chargers at
   once from a built-in or your own template.
 - **Frame log** of every OCPP frame with filters and JSON Lines export; HTTP API and WebSocket for test scripts, and an MCP endpoint for AI assistants.
+- **Scenarios and traffic (v0.3).** Scripted test scenarios (YAML, parallel tracks on a sim clock that runs
+  hours in seconds) with a pass / fail verdict as JSON or JUnit, from the CLI (`scenario run`, built-in examples
+  as `builtin:<name>`), the HTTP API, MCP or the Scenario panel; a seeded random traffic generator for standing
+  load; a weighted vehicle profile pool; and anomaly switches (remote start accepted without a transaction,
+  dropped / reordered / noisy meter values, slow answers) next to the connection faults.
 - **YAML configuration**, edited in the browser and saved back to the file (the Windows exe keeps it in
   `~/.sme-ocpp-sim/config.yaml`).
 - **English, Japanese and Simplified Chinese.** The UI follows the browser language.
@@ -103,6 +108,8 @@ Open <http://127.0.0.1:8082/>. The demo configuration connects three chargers to
 - [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/mini-csms/) — the built-in CSMS on port 9000
 - [Excel & charger templates](https://smartedge-tech-dev.github.io/sme-ocpp-sim/excel-templates/) — import / export and bulk add from a template
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/http-api/) — REST routes and the `/ws` contract
+- [Scenarios](https://smartedge-tech-dev.github.io/sme-ocpp-sim/scenarios/) — scenario files, verdict, built-in examples, `scenario run`
+- [Traffic generator](https://smartedge-tech-dev.github.io/sme-ocpp-sim/traffic/) — seeded random sessions for standing load
 - [MCP, health check and logs](https://smartedge-tech-dev.github.io/sme-ocpp-sim/mcp/) — drive the chargers from an AI assistant (`/mcp`), `/healthz`, `--log-format json`
 - [Development](https://smartedge-tech-dev.github.io/sme-ocpp-sim/development/)
 - [Changelog](CHANGELOG.md)

@@ -24,6 +24,8 @@ datas = [
     # Demo config, beside the package as in the source tree and the Docker image
     (os.path.join(root, "configs", "demo-site.yaml"), "configs"),
     (os.path.join(root, "configs", "mini-csms-demo.yaml"), "configs"),
+    # Built-in scenarios (scenario run builtin:<name>, GET /api/scenarios/builtin)
+    (os.path.join(root, "scenarios"), "scenarios"),
     (os.path.join(root, "LICENSE"), "."),
     (os.path.join(root, "THIRD-PARTY-NOTICES"), "."),
 ]
