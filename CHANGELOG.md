@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-28
+
 ### Added
 
 - OCPP 2.1 core (v0.3.1, 2.1-M1): the `ocpp2.1` subprotocol, `protocol/v21` (models, codec, adapter, station), OCPP-J
