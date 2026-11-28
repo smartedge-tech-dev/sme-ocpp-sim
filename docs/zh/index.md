@@ -21,8 +21,14 @@ description: 免费开源的 OCPP 充电桩模拟器（仿真软件），支持 
 - **EV 与功率模型。** 电池容量、SoC、充电曲线、相数、最小电流、功率爬坡，以及日本 200 V 单相和三相三角形接法供电；
   状态在 Charging / SuspendedEV / SuspendedEVSE 之间切换。
 - **大量充电桩。** 单进程 200 台以上；可单独或批量连接 / 断开。
-- **安全配置文件（Security Profile）0 / 1 / 2。** 支持 `ws://`、HTTP Basic 认证，以及带 Basic 认证的 `wss://`。
-  详见 [安全配置文件](security-profiles.md)。
+- **认证、预约与维护（1.6 与 2.0.1）。** 本地授权列表与授权缓存、ReserveNow / CancelReservation，
+  以及带状态通知和故障注入的固件升级、诊断 / 日志上传模拟。详见 [OCPP 消息](messages.md)。
+- **安全配置文件（Security Profile）0 / 1 / 2 / 3。** 支持 `ws://`、HTTP Basic 认证、带 Basic 认证的 `wss://`
+  以及带 TLS 客户端证书的 `wss://`，并支持证书管理和 SecurityEventNotification。详见 [安全配置文件](security-profiles.md)。
+- **内置 Mini CSMS。** 在同一进程中运行于端口 9000 的简易 OCPP 1.6J / 2.0.1 CSMS：无需外部 CSMS 即可试用，
+  并可用 JSON 编辑器发送任意 CALL。详见 [Mini CSMS](mini-csms.md)。
+- **Excel 与充电桩模板。** 以 Excel 工作簿导入 / 导出充电桩列表，并可从模板一次添加多台充电桩。
+  详见 [Excel 导入导出与充电桩模板](excel-templates.md)。
 - **帧日志。** 记录每一个 OCPP 帧，可按充电桩、action 和方向过滤，并导出为 JSON Lines。
 - **YAML 配置。** 在浏览器中编辑充电桩并保存回文件。详见 [配置](configuration.md)。
 - **英语、日语和简体中文** UI，支持浅色 / 深色主题。

@@ -81,12 +81,35 @@ class ChargerTemplates(TemplateRegistry):
         return Path(env).expanduser() if env else user_data_dir() / "templates"
 
     def register_charger(self, name: str, title: str, fields: Dict[str, Any], *, description: str,
-                         params: Optional[Dict[str, Any]] = None) -> None:
+                         params: Optional[Dict[str, Any]] = None,
+                         descriptions: Optional[Dict[str, str]] = None) -> None:
+        """``descriptions``: the description in other UI languages (``{"ja": ..., "zh": ...}``; English is
+        ``description``)."""
         unknown = set(fields) - set(TEMPLATE_FIELDS)
         if unknown:
             raise ValueError(f"template {name}: not template fields {sorted(unknown)}")
         self.register(name, title, dict(params or {}), lambda _p: [], description)
         self.builtins[name]["extras"] = dict(fields)
+        if descriptions:
+            self.builtins[name]["descriptions"] = {"en": description, **descriptions}
+
+    def catalog(self) -> List[Dict[str, Any]]:
+        """The base catalog plus, per template, ``fields``: the model / connectors / max power a charger gets
+        from it with the default params (what the Add charger dialog shows), and ``descriptions`` (per UI
+        language) for the built-ins that have them."""
+        from .config import ChargerConfig
+
+        out = super().catalog()
+        for e in out:
+            t = self.get(e["name"]) or {}
+            if t.get("descriptions"):
+                e["descriptions"] = dict(t["descriptions"])
+            try:
+                ref = ChargerConfig.model_validate({"id": "template-ref", "template": e["name"]})
+                e["fields"] = {k: getattr(ref, k) for k in _DIALOG_FIELDS}
+            except (ValueError, TypeError):
+                pass  # cannot be expanded: the dialog keeps its own values
+        return out
 
     def _user_template(self, data: Any, path) -> Dict[str, Any]:
         t = super()._user_template(data, path)
@@ -126,6 +149,9 @@ def _substituted(t: Dict[str, Any]) -> Dict[str, Any]:
 
     return {k: substitute(v, dict(t["params"])) for k, v in (t.get("extras") or {}).items()}
 
+
+#: Fields the Add charger dialog shows (catalog `fields`).
+_DIALOG_FIELDS = ("model", "connectors", "max_power_w")
 
 REGISTRY = ChargerTemplates()
 _loaded = False
@@ -199,23 +225,35 @@ def next_ids(first: str, count: int) -> List[str]:
 # ------------------------------------------------------------------ built-in templates
 
 _JP = "Japanese AC normal charging, single-phase 200 V"
+_JP_JA = "日本の AC 普通充電、単相 200 V"
+_JP_ZH = "日本 AC 普通充电，单相 200 V"
 REGISTRY.register_charger("jp-ac-3kw", "AC 3 kW, 1 phase 200 V 15 A (Japan)",
                           {"model": "SIM-AC3", "connectors": 1, "max_power_w": 3000.0, "voltage_v": 200.0,
                            "phases": 1, "line_to_line": False},
-                          description=f"{_JP}, 15 A (e.g. a home or hotel outlet-type charger)")
+                          description=f"{_JP}, 15 A (e.g. a home or hotel outlet-type charger)",
+                          descriptions={"ja": f"{_JP_JA}、15 A（住宅・ホテルのコンセント型充電器など）",
+                                        "zh": f"{_JP_ZH}，15 A（如住宅、酒店的插座型充电器）"})
 REGISTRY.register_charger("jp-ac-6kw", "AC 6 kW, 1 phase 200 V 30 A (Japan)",
                           {"model": "SIM-AC6", "connectors": 1, "max_power_w": 6000.0, "voltage_v": 200.0,
                            "phases": 1, "line_to_line": False},
-                          description=f"{_JP}, 30 A (the typical public / workplace wallbox)")
+                          description=f"{_JP}, 30 A (the typical public / workplace wallbox)",
+                          descriptions={"ja": f"{_JP_JA}、30 A（公共・職場向けの一般的な壁掛け型充電器）",
+                                        "zh": f"{_JP_ZH}，30 A（典型的公共 / 办公场所壁挂式充电桩）"})
 REGISTRY.register_charger("jp-ac-6kw-dual", "AC 6 kW x 2 connectors, 1 phase 200 V (Japan)",
                           {"model": "SIM-AC6D", "connectors": 2, "max_power_w": 6000.0, "voltage_v": 200.0,
                            "phases": 1, "line_to_line": False},
-                          description=f"{_JP}, two connectors (EVSEs) of 6 kW each")
+                          description=f"{_JP}, two connectors (EVSEs) of 6 kW each",
+                          descriptions={"ja": f"{_JP_JA}、6 kW のコネクタ（EVSE）2 口",
+                                        "zh": f"{_JP_ZH}，2 个 6 kW 连接器（EVSE）"})
 REGISTRY.register_charger("eu-ac-11kw", "AC 11 kW, 3 phase 230/400 V 16 A",
                           {"model": "SIM-AC11", "connectors": 1, "max_power_w": 11000.0, "voltage_v": 230.0,
                            "phases": 3, "line_to_line": False},
-                          description="European three-phase wallbox, 16 A per phase (voltage given per phase)")
+                          description="European three-phase wallbox, 16 A per phase (voltage given per phase)",
+                          descriptions={"ja": "欧州の三相壁掛け型充電器、各相 16 A（電圧は相電圧）",
+                                        "zh": "欧洲三相壁挂式充电桩，每相 16 A（电压为相电压）"})
 REGISTRY.register_charger("eu-ac-22kw", "AC 22 kW, 3 phase 230/400 V 32 A",
                           {"model": "SIM-AC22", "connectors": 1, "max_power_w": 22000.0, "voltage_v": 230.0,
                            "phases": 3, "line_to_line": False},
-                          description="European three-phase charger, 32 A per phase (voltage given per phase)")
+                          description="European three-phase charger, 32 A per phase (voltage given per phase)",
+                          descriptions={"ja": "欧州の三相充電器、各相 32 A（電圧は相電圧）",
+                                        "zh": "欧洲三相充电桩，每相 32 A（电压为相电压）"})

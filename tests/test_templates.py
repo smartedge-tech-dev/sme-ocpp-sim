@@ -43,6 +43,14 @@ def test_builtin_catalog():
     assert entry["source"] == "builtin" and "200 V" in entry["title"] and entry["description"]
 
 
+def test_catalog_has_dialog_fields_and_descriptions_per_language():
+    cat = {e["name"]: e for e in registry().catalog()}
+    assert cat["jp-ac-6kw-dual"]["fields"] == {"model": "SIM-AC6D", "connectors": 2, "max_power_w": 6000.0}
+    for e in (cat[n] for n in ("jp-ac-3kw", "jp-ac-6kw", "jp-ac-6kw-dual", "eu-ac-11kw", "eu-ac-22kw")):
+        d = e["descriptions"]
+        assert d["en"] == e["description"] and d["ja"] and d["zh"] and d["ja"] != d["en"]
+
+
 def test_explicit_fields_override_template_and_dump_keeps_only_overrides():
     cfg = _cfg({"id": "A", "template": "jp-ac-6kw-dual", "max_power_w": 3000, "model": "SIM-AC6D"},
                {"id": "B", "template": "eu-ac-22kw", "config_keys": {"HeartbeatInterval": 60}})

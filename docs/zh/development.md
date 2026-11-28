@@ -63,8 +63,10 @@ README 和文档中的图片由 `scripts/screenshots.py` 生成（开发依赖�
 脚本在临时目录中运行：在同一进程内启动开发用 CSMS `tests/peers/ocpp16_peer.py` 与 `tests/peers/ocpp201_peer.py`，用 `scripts/screenshots.yaml`
 （8 台充电桩，其中 3 台为 OCPP 2.0.1、错开的 `initial_soc`、`time_scale` 60）在 `127.0.0.1` 的空闲端口上启动模拟器，在每台充电桩上开始
 transaction，并向 2.0.1 充电站 `CP-0001` 下发 TxDefaultProfile 和外部限值。然后以浅色主题拍摄每种语言，外加深色概览，把 `overview.png`、
-`charger.png`、`smart-charging.png`、`frames.png`、`variables.png`、`settings.png`、`overview-dark.png` 和 `live.gif` 写入
-`docs/assets/screenshots/{en,ja,zh}/`（另有日文宽图 `ja/overview-wide.png`）。语言和主题通过上面的 `localStorage`
+`charger.png`、`smart-charging.png`、`frames.png`、`variables.png`、`settings.png`、`add-charger.png`（已填好从模板批量添加的
+添加充电桩对话框，不提交）、`overview-dark.png` 和 `live.gif` 写入
+`docs/assets/screenshots/{en,ja,zh}/`（另有日文宽图 `ja/overview-wide.png`）。`mini-csms.png` 来自第二个模拟器：它以空闲端口上的
+Mini CSMS 运行 `configs/mini-csms-demo.yaml`。语言和主题通过上面的 `localStorage`
 键设置。
 
 ## 文档

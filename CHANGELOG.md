@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   CertificateEntries counts the installed certificates, AdditionalRootCertificateCheck is `false`.
 - Web UI: the charger detail shows the security profile and the client certificate subject; the settings
   dialog has profile 3 and the client certificate / key files.
+- Documentation (#22): the READMEs (en / ja / zh) and the documentation home pages list the local
+  authorization list, reservations, firmware / diagnostics simulation, security profile 3 and certificate
+  management, the Mini CSMS and Excel / charger templates; retaken screenshots, new `mini-csms.png` and
+  `add-charger.png` (`scripts/screenshots.py` also runs `configs/mini-csms-demo.yaml`).
 
 ### Changed
 

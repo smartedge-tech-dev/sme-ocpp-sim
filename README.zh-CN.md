@@ -19,9 +19,12 @@
 - **功率闭环的 Smart Charging。** 支持 SetChargingProfile、ClearChargingProfile 和 GetCompositeSchedule。功率限值与应答 GetCompositeSchedule 的是同一个函数，计划与 MeterValues 不会不一致。规范未明确之处的解释全部写在文档中。
 - **EV 与功率模型。** 电池、SoC、充电曲线、相数、爬坡，以及日本 200 V 单相和三相三角形接法供电；Charging / SuspendedEV / SuspendedEVSE 由模型决定。
 - **单进程 200 台以上**，可单独或批量连接。
-- **Security Profile 0 / 1 / 2**：`ws://`、HTTP Basic、带 Basic 认证的 `wss://`。
+- **认证、预约与维护（1.6 与 2.0.1）。** 本地授权列表与授权缓存、ReserveNow / CancelReservation，以及带状态通知和故障注入的固件升级、诊断 / 日志上传模拟。
+- **Security Profile 0 / 1 / 2 / 3**：`ws://`、HTTP Basic、带 Basic 认证的 `wss://`、带 TLS 客户端证书的 `wss://`；证书管理（用生成的 CSR 进行 SignCertificate、CertificateSigned、InstallCertificate 等）和 SecurityEventNotification。
+- **内置 Mini CSMS**（端口 9000）：在同一进程中运行的简易 OCPP 1.6J / 2.0.1 CSMS，无需 SteVe 即可试用，可查看充电站上报的内容，并用 JSON 编辑器发送任意 CALL。
+- **Excel 导入 / 导出与充电桩模板。** 在 Excel 中编辑充电桩列表，或从内置或自定义模板一次添加 N 台。
 - **帧日志** 记录每一个 OCPP 帧，可过滤并导出 JSON Lines；为测试脚本提供 HTTP API 和 WebSocket。
-- **YAML 配置**，可在浏览器中编辑并保存回文件。
+- **YAML 配置**，可在浏览器中编辑并保存回文件（Windows exe 保存在 `~/.sme-ocpp-sim/config.yaml`）。
 - **英语、日语和简体中文。** UI 跟随浏览器语言。
 
 SME OCPPSim 免费且采用 MIT 许可证，由 [smart-edge (智届科技)](https://smartedge-tech.com) 开发——可提供定制开发，详见 [商业支持与定制开发](#商业支持与定制开发)。
@@ -43,6 +46,10 @@ SME OCPPSim 免费且采用 MIT 许可证，由 [smart-edge (智届科技)](http
   </tr>
   <tr>
     <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/variables.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/variables.png" alt="OCPP 2.0.1 Device Model 变量（只读）"></a><br><sub>OCPP 2.0.1 Device Model 变量（只读）</sub></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/mini-csms.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/mini-csms.png" alt="Mini CSMS：内置 CSMS，显示已连接的充电站及其记录，可用 JSON 编辑器发送任意 CALL"></a><br><sub>Mini CSMS：内置 CSMS，显示已连接的充电站及其记录，可用 JSON 编辑器发送任意 CALL</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/add-charger.png"><img src="https://raw.githubusercontent.com/smartedge-tech-dev/sme-ocpp-sim/main/docs/assets/screenshots/zh/add-charger.png" alt="添加充电桩：从充电桩模板一次添加多台"></a><br><sub>添加充电桩：从充电桩模板一次添加多台</sub></td>
     <td width="50%"><sub>1.6 / 2.0.1 混合站点示例：<code>configs/mixed-site.yaml</code></sub></td>
   </tr>
 </table>
@@ -68,9 +75,11 @@ docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway ghcr.i
 ## 文档
 
 - [配置](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/configuration/)——YAML 的全部字段。从 UI 保存会重写整个 `chargers:` 块，所以不要在单台充电桩的条目里写注释。
-- [OCPP 1.6J 消息](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/messages/)——支持与不支持的 action
+- [OCPP 消息](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/messages/)——1.6J / 2.0.1 支持与不支持的 action
 - [Smart Charging](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/smart-charging/)——规则与本实现的解释
-- [安全配置文件](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/security-profiles/)
+- [安全配置文件](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/security-profiles/)——Profile 0〜3 与证书管理
+- [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/mini-csms/)——端口 9000 上的内置 CSMS
+- [Excel 与充电桩模板](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/excel-templates/)——导入 / 导出与从模板批量添加
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/http-api/)——REST 路由与 `/ws` 约定
 - [开发](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/development/)
 - [更新日志](CHANGELOG.md)

@@ -39,6 +39,8 @@ NotifyEVChargingSchedule → `Accepted`。其余应答均为空对象。所有�
 
 ## 面板
 
+![Mini CSMS 面板：已连接的充电站、记录和 JSON 编辑器](../assets/screenshots/zh/mini-csms.png)
+
 **模拟 → Mini CSMS** 显示：
 
 - 监听 URL（或未运行的原因）以及被拒绝的连接（密码错误、不支持的子协议）；

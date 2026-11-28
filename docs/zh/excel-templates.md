@@ -64,6 +64,8 @@ config_keys: {MeterValueSampleInterval: "60"}
 
 ### 批量添加
 
+![添加充电桩对话框：从充电桩模板添加 10 台](../assets/screenshots/zh/add-charger.png)
+
 **添加充电桩** 对话框可以选择模板和台数。添加多台时，ID 和密码按末尾数字递增：首个 ID `CP-0001`、3 台 →
 `CP-0001`、`CP-0002`、`CP-0003`；密码 `pass01` → `pass01`、`pass02`、`pass03`（末尾不是数字的密码各台相同）。
 末尾不是数字的 ID 作为前缀（`CP-` → `CP-1`、`CP-2` …）。只要有一个新 ID 已存在，就一台也不添加。
