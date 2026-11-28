@@ -444,6 +444,8 @@ class TxEnded:
     reason: Optional["StopReason"] = None
     id_token: Optional[str] = None
     samples: Sequence[Sample] = ()
+    #: Readings taken during the transaction (``charging.tx_data.TxReading``), sent before ``samples``.
+    readings: Sequence[Any] = ()
 
 
 @dataclass(frozen=True)

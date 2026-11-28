@@ -25,7 +25,8 @@ def _config(**extra):
         "chargers": [
             {"id": "0123", "password": "pw1", "connectors": 2, "id_tags": ["TAG1", "TAG2"], "verify_tls": False,
              "config_keys": {"HeartbeatInterval": "300", "MeterValuesSampledData": "Energy.Active.Import.Register"},
-             "session": {"ev_model": "van", "initial_soc": 20}, "maintenance": {"fail_install": True}},
+             "session": {"ev_model": "van", "initial_soc": 20}, "maintenance": {"fail_install": True},
+             "meter": {"phase_values": "L-L", "post_tx_delay_s": 2.5, "begin_end_messages": True}},
             {"id": "1e5", "password": "pw2", "template": "jp-ac-6kw-dual", "max_power_w": 3000},
             {"id": "V2", "password": "pw3", "ocpp_version": "2.0.1", "serial": "000777",
              "variables": [{"component": "OCPPCommCtrlr", "variable": "HeartbeatInterval", "value": "120"},

@@ -126,6 +126,10 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `session.ev_model` | `compact-40kwh` | 插在 connector 上的 EV（预设或 `ev_models` 的 ID） |
 | `session.initial_soc` | `30.0` | 每次交易开始时的 SoC（%） |
 | `session.target_soc` | `90.0` | 达到后 EV 不再接受功率（SuspendedEV） |
+| `meter.begin_end_messages` | `false` | OCPP 1.6：在被接受的 StartTransaction 之后再发一条 context 为 `Transaction.Begin` 的 MeterValues，在 StopTransaction 之前发一条 `Transaction.End`（measurand 取自 `MeterValuesSampledData`）。OCPP 2.0.1 始终在 `Started` / `Ended` 事件里带这些值 |
+| `meter.phase_values` | `off` | `off`：不带 phase 的一个 `Voltage` 和一个均衡的 `Current.Import`。`L-N`：每个供电相一个 `Voltage`（`L1-N`、`L2-N`、`L3-N`）；`L-L`：三相供电时报线电压（`L1-L2`、`L2-L3`、`L3-L1`，相电压的 √3 倍），单相 / 两相时同 `L-N`。两种模式下 `Current.Import` 都按供电相报（`L1`..，EV 未使用的相为 0 A）。使用 `voltage_v` / `phases` / `line_to_line` |
+| `meter.post_tx_delay_s` | `0` | 交易结束到发送其 StopTransaction（1.6）/ `Ended` TransactionEvent（2.0.1）之间的秒数。发送队列保持顺序，所以排在它之后的消息（如 Finishing 的 StatusNotification）也一起等待 |
+| `meter.tx_data_max_samples` | `100` | 每笔交易为 StopTransaction `transactionData` / `Ended` `meterValue` 保留的中间读数上限（1–10000），超出时丢弃最旧的。开始和结束读数不计入 |
 | `template` | 无 | 充电桩模板（内置或用户模板，见 [Excel 与模板](excel-templates.md)）；本充电桩未设置的模板字段取模板的值 |
 | `params` | `{}` | 含 `{param}` 占位符的用户模板的参数 |
 | `meter_sample_interval_s` | 键的默认值 | `config_keys` 未设置时 `MeterValueSampleInterval` 的默认值；2.0.1 为 `SampledDataCtrlr.TxUpdatedInterval` 的初始值 |

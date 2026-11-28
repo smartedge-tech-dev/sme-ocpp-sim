@@ -130,6 +130,10 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `session.ev_model` | `compact-40kwh` | The EV plugged into the connectors (preset or `ev_models` id) |
 | `session.initial_soc` | `30.0` | SoC (%) at the start of every transaction |
 | `session.target_soc` | `90.0` | When reached, the EV stops accepting power (SuspendedEV) |
+| `meter.begin_end_messages` | `false` | OCPP 1.6: also send a MeterValues with context `Transaction.Begin` after the accepted StartTransaction and one with `Transaction.End` right before the StopTransaction (measurands from `MeterValuesSampledData`). OCPP 2.0.1 always has them in the `Started` / `Ended` events |
+| `meter.phase_values` | `off` | `off`: one `Voltage` and one balanced `Current.Import` without a phase. `L-N`: one `Voltage` per supply phase (`L1-N`, `L2-N`, `L3-N`); `L-L`: line-to-line voltages (`L1-L2`, `L2-L3`, `L3-L1`, √3 × the phase voltage) on a 3-phase supply, `L-N` on 1 or 2 phases. With either, `Current.Import` is reported per supply phase (`L1`..; 0 A on the phases the EV does not use). Uses `voltage_v` / `phases` / `line_to_line` |
+| `meter.post_tx_delay_s` | `0` | Seconds between the end of a transaction and sending its StopTransaction (1.6) / `Ended` TransactionEvent (2.0.1). The outbox stays in order, so messages queued after it (e.g. the Finishing StatusNotification) wait as well |
+| `meter.tx_data_max_samples` | `100` | At most this many interval readings are kept per transaction for StopTransaction `transactionData` / `Ended` `meterValue` (1–10000); the oldest is dropped first. The start and end readings are not counted |
 | `template` | none | Charger template (built-in or user, see [Excel and templates](excel-templates.md)); the template fields this charger does not set come from it |
 | `params` | `{}` | Parameters of a user template with `{param}` placeholders |
 | `meter_sample_interval_s` | key default | Default `MeterValueSampleInterval` when `config_keys` does not set it; for 2.0.1 the initial `SampledDataCtrlr.TxUpdatedInterval` |

@@ -23,6 +23,15 @@ E01.FR.16) and the meter start (``Transaction.Begin``); periodic
 ``Updated`` with ``ChargingStateChanged``; ``Ended`` carries the final energy register (``Transaction.End``) and
 ``stoppedReason``.
 
+Ended meter data (E06 / J02 / 2.7.8, v0.2.2 B): ``Ended.meterValue`` holds the union of SampledDataCtrlr and
+AlignedDataCtrlr TxEndedMeasurands at the start (``Transaction.Begin``) and at the end (``Transaction.End``),
+the SampledDataCtrlr.TxEndedMeasurands every SampledDataCtrlr.TxEndedInterval from the start
+(``Sample.Periodic``; 0 = only the start and end values) and the AlignedDataCtrlr.TxEndedMeasurands at every
+AlignedDataCtrlr.TxEndedInterval clock boundary (``Sample.Clock``; 0 = none). Readings are taken on the tick
+(``charging.tx_data``); at most ``meter.tx_data_max_samples`` interval readings are kept. Simulator options
+(``config.MeterOptions``): ``phase_values`` reports Voltage / Current.Import per phase, ``post_tx_delay_s`` holds
+the Ended event (and what is queued behind it) for that long after the end.
+
 Outbox: every TransactionEvent and every StatusNotification caused by a state change goes through ONE ordered
 queue, sent by ONE worker per session that runs once the boot is accepted (as in the 1.6 station, but written
 for 2.0.1). Enqueueing is synchronous, so the operator API never waits for the CSMS. A lost connection keeps the
@@ -99,8 +108,9 @@ Interpretations (not defined by the spec)
   closes the connection and reconnects (without back-off) with the new password, SecurityProfile updated. The
   password lives in memory only (it is not written to the YAML).
 - Triggered / operator MeterValues (outside the transaction flow) report AlignedDataCtrlr.Measurands
-  (F06.FR.06), a triggered TransactionEvent the TxUpdatedMeasurands (F06.FR.07). No clock-aligned sampling is
-  modelled.
+  (F06.FR.06), a triggered TransactionEvent the TxUpdatedMeasurands (F06.FR.07). Clock-aligned readings are
+  modelled only for the Ended meterValue (AlignedDataCtrlr.TxEndedInterval); no clock-aligned MeterValues /
+  Updated events are sent (AlignedDataCtrlr.Interval is not served).
 - Operator fault codes are the fault-type values of ``ReasonEnumType`` (:attr:`Station201.fault_codes`): a 2.0.1
   StatusNotification has no error code, so the code is only the ``stoppedReason`` of an interrupted transaction
   (NotifyEvent is not sent).
@@ -279,6 +289,7 @@ from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Sequen
 
 from ...charging import power
 from ...charging.power import PowerState
+from ...charging.tx_data import TxDataBuffer, TxReading, union
 from ...rpc import CallError, wait_event
 from ...runtime.local_auth import AuthCache, ListUpdate, LocalAuthList, Reservation
 from ...runtime.maintenance import FirmwareJob, LogJob, Maintenance
@@ -401,6 +412,7 @@ class _Tx:
     evse_sent: bool = False  # ``evse`` went out in the first event (E01.FR.16)
     deauthorized: bool = False  # the CSMS refused the token, StopTxOnInvalidId false: no energy (E05.FR.02)
     reservation_id: Optional[int] = None  # the reservation this transaction used (H01.FR.15)
+    data: Optional[TxDataBuffer] = None  # readings for the Ended meterValue (TxEndedInterval)
 
     def seq(self) -> int:
         n, self.next_seq = self.next_seq, self.next_seq + 1
@@ -449,6 +461,7 @@ class _Out:
     tx: Optional[_Tx] = None
     req: Optional[m.TransactionEventRequest] = None
     failures: int = 0
+    not_before: Optional[float] = None  # monotonic time before which it is not sent (meter.post_tx_delay_s)
 
 
 class Station201(VersionStation):
@@ -651,6 +664,8 @@ class Station201(VersionStation):
                     if item.failures:
                         await asyncio.sleep(self.dm.int_value(dm.MESSAGE_ATTEMPT_INTERVAL, dm.INSTANCE_TX_EVENT)
                                             * item.failures)
+                    if item.not_before is not None:
+                        await asyncio.sleep(max(0.0, item.not_before - self.host.monotonic()))
                     delivery, value = await self._deliver(item)
                 finally:
                     self._outq_busy = None
@@ -770,11 +785,23 @@ class Station201(VersionStation):
     # ================================================================== readings / power model
 
     def _samples(self, e: _Evse, measurands: Sequence[str]) -> List[d.Sample]:
+        """Readings of ``measurands``; Voltage / Current.Import once without a phase unless
+        ``meter.phase_values`` asks for one value per phase (SampledValue.phase)."""
         r = power.meter_reading(e.pw, self.ev, self.supply) if e.pw is not None else None
         watts = r.power_active_import_w if r else 0.0
         amps = r.current_import_a if r else 0.0
+        mode = self.cfg.meter.phase_values
         out: List[d.Sample] = []
         for name in measurands:
+            if mode != "off" and name == VOLTAGE:
+                out += [d.Sample(name, v, "V", phase=p, location=LOCATION)
+                        for p, v in power.phase_voltages(self.supply, mode)]
+                continue
+            if mode != "off" and name == CURRENT:
+                used = r.phases if r else self.supply.phases_used(self.ev)
+                out += [d.Sample(name, round(a, CURRENT_DECIMALS), "A", phase=p, location=LOCATION)
+                        for p, a in power.phase_currents(amps, self.supply, used)]
+                continue
             if name == ENERGY:
                 out.append(d.Sample(name, round(e.meter_wh), "Wh", location=LOCATION))
             elif name == POWER:
@@ -827,6 +854,24 @@ class Station201(VersionStation):
                 self._advance(e)
                 self._refresh(e)
                 self._report_charging_state(e)
+            self._collect_tx_data(e)
+
+    def _ended_measurands(self) -> Tuple[str, ...]:
+        """SampledDataCtrlr ∪ AlignedDataCtrlr TxEndedMeasurands: the start / end readings of Ended."""
+        return union(self.dm.list_value(dm.TX_ENDED_MEASURANDS), self.dm.list_value(dm.ALIGNED_TX_ENDED_MEASURANDS))
+
+    def _collect_tx_data(self, e: _Evse) -> None:
+        """Take the due readings for the Ended meterValue (Sampled / Aligned TxEndedInterval)."""
+        tx = e.tx
+        if tx is None or tx.data is None:
+            return
+        if tx.data.sampled_due(self.host.monotonic(), self.dm.int_value(dm.TX_ENDED_INTERVAL)):
+            tx.data.add(TxReading(self.host.clock(), self._samples(e, self.dm.list_value(dm.TX_ENDED_MEASURANDS)),
+                                  ReadingContextEnumType.sample_periodic.value))
+        boundary = tx.data.aligned_due(self.host.clock(), self.dm.int_value(dm.ALIGNED_TX_ENDED_INTERVAL))
+        if boundary is not None:
+            tx.data.add(TxReading(boundary, self._samples(e, self.dm.list_value(dm.ALIGNED_TX_ENDED_MEASURANDS)),
+                                  ReadingContextEnumType.sample_clock.value))
 
     @staticmethod
     def _charging_state(e: _Evse) -> ChargingStateEnumType:
@@ -850,17 +895,23 @@ class Station201(VersionStation):
                      info: m.TransactionType, *, samples: Sequence[d.Sample] = (),
                      context: Optional[ReadingContextEnumType] = None, token: Optional[str] = None,
                      token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, droppable: bool = False,
-                     reservation_id: Optional[int] = None) -> None:
+                     reservation_id: Optional[int] = None, readings: Optional[Sequence[TxReading]] = None,
+                     not_before: Optional[float] = None) -> None:
+        """Queue a TransactionEvent; ``readings`` (Ended) replaces the one ``samples`` meterValue."""
         now = self.host.clock()
+        if readings is not None:
+            values = [meter_value(r.timestamp, r.samples, r.context) for r in readings if r.samples] or None
+        else:
+            values = [meter_value(now, samples, context.value)] if samples and context else None
         req = m.TransactionEventRequest(
             event_type=event, timestamp=now, trigger_reason=trigger, seq_no=tx.seq(),
             offline=True if not self.host.connected else None, transaction_info=info,
             evse=None if tx.evse_sent else m.EVSEType(id=e.id, connector_id=CONNECTOR_ID),
             id_token=id_token(token, token_type) if token is not None else None, reservation_id=reservation_id,
-            meter_value=[meter_value(now, samples, context.value)] if samples and context else None)
+            meter_value=values)
         tx.evse_sent = True
         self._push(_Out(f"TransactionEvent {event.value}", lambda: self._adapter.send_transaction_event(req),
-                        transactional=True, droppable=droppable, evse=e, tx=tx, req=req))
+                        transactional=True, droppable=droppable, evse=e, tx=tx, req=req, not_before=not_before))
 
     def _start_tx(self, e: _Evse, tag: str, trigger: TriggerReasonEnumType, *,
                   token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, remote_start_id: Optional[int] = None,
@@ -880,6 +931,9 @@ class Station201(VersionStation):
         if profile is not None:
             self._bind_profile(e, tx, *profile)
         self._advance(e)  # zero-length step: initial power and suspension
+        tx.data = TxDataBuffer(self.host.monotonic(), tx.started_at, self.cfg.meter.tx_data_max_samples,
+                               begin=TxReading(tx.started_at, self._samples(e, self._ended_measurands()),
+                                               ReadingContextEnumType.transaction_begin.value))
         tx.charging_state = self._charging_state(e)
         self._queue_event(e, tx, TransactionEventEnumType.started, trigger,
                           m.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state,
@@ -898,7 +952,12 @@ class Station201(VersionStation):
         if tx is None:
             return
         self._advance(e)
-        samples = self._samples(e, self.dm.list_value(dm.TX_ENDED_MEASURANDS))
+        self._collect_tx_data(e)  # a reading due right now is not lost to the tick
+        end = TxReading(self.host.clock(), self._samples(e, self._ended_measurands()),
+                        ReadingContextEnumType.transaction_end.value)
+        readings = tx.data.all(end) if tx.data is not None else [end]
+        tx.data = None
+        delay = self.cfg.meter.post_tx_delay_s
         if e.meter_task is not None and e.meter_task is not asyncio.current_task():
             e.meter_task.cancel()
         e.meter_task = None
@@ -907,7 +966,8 @@ class Station201(VersionStation):
         self._queue_event(e, tx, TransactionEventEnumType.ended, trigger,
                           m.TransactionType(transaction_id=tx.tx_id, charging_state=self._charging_state(e),
                                             stopped_reason=reason),
-                          samples=samples, context=ReadingContextEnumType.transaction_end, token=token)
+                          readings=readings, token=token,
+                          not_before=self.host.monotonic() + delay if delay > 0 else None)
         if e.pending_operative is not None:  # a Scheduled ChangeAvailability takes effect now
             self._set_operative(e, e.pending_operative)
         self._refresh(e)

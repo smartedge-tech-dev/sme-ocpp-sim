@@ -156,7 +156,7 @@ def test_offline_transaction_events_are_numbered_and_flagged():
         started, ended = _queued(s)
         assert started.transaction_info.transaction_id == ended.transaction_info.transaction_id
         assert (started.seq_no, ended.seq_no) == (0, 1) and started.offline is ended.offline is True
-        assert ended.meter_value[0].sampled_value[0].context.value == "Transaction.End"
+        assert ended.meter_value[-1].sampled_value[0].context.value == "Transaction.End"
         assert s.snapshot()["tx_queue"] == 2
         await s.plug(2)
         await s.swipe(2, "U")

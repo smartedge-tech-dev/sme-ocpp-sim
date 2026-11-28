@@ -114,6 +114,9 @@ class ConfigStore:
         norm = normalize(d, value)
         if norm is None:
             return ConfigStatus.REJECTED
+        limit = self._defs.get(key + "MaxLength")  # e.g. StopTxnSampledDataMaxLength (§9.1.28)
+        if d.type is KeyType.CSL and limit is not None and norm and len(norm.split(",")) > int(self._values[limit.name]):
+            return ConfigStatus.REJECTED
         changed = self._values[key] != norm
         self._values[key] = norm
         if changed:

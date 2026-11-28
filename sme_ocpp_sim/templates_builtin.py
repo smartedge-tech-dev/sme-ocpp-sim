@@ -58,7 +58,8 @@ def user_data_dir() -> Path:
 #: Charger fields a template may set (``TemplateRegistry`` extra keys).
 TEMPLATE_FIELDS = ("vendor", "model", "firmware", "connectors", "max_power_w", "voltage_v", "phases",
                    "line_to_line", "ramp_up_w_per_s", "ramp_down_w_per_s", "auth_mode", "boot_retry_s",
-                   "meter_sample_interval_s", "require_subprotocol", "config_keys", "session", "maintenance")
+                   "meter_sample_interval_s", "require_subprotocol", "config_keys", "session", "maintenance",
+                   "meter")
 
 
 class _NoItem(BaseModel):

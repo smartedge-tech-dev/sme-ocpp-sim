@@ -39,7 +39,11 @@ from .enums import Measurand
 
 _BOOL, _INT, _CSL = KeyType.BOOL, KeyType.INT, KeyType.CSL
 
-_MEASURANDS = frozenset(m.value for m in Measurand)
+#: Measurands the simulated meter reports (a subset of ``Measurand``). A MeterValues*Data / StopTxn*Data value with
+#: any other measurand is Rejected (§3.16.4 / §9.1.15-27: "not supported" measurands).
+SUPPORTED_MEASURANDS = frozenset(m.value for m in (Measurand.energy_active_import_register, Measurand.power_active_import,
+                                                   Measurand.current_import, Measurand.voltage, Measurand.soc))
+_MEASURANDS = SUPPORTED_MEASURANDS
 _PROFILES = frozenset({"Core", "FirmwareManagement", "LocalAuthListManagement", "Reservation",
                        "SmartCharging", "RemoteTrigger"})
 

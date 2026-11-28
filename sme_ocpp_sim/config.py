@@ -218,6 +218,28 @@ class MaintenanceConfig(StrictModel):
     fail_upload: bool = False
 
 
+class MeterOptions(StrictModel):
+    """Meter value options OCPP has no configuration key for (simulator-only; v0.2.2 B).
+
+    - ``begin_end_messages`` (OCPP 1.6 only): a MeterValues with context ``Transaction.Begin`` right after the
+      accepted StartTransaction and one with ``Transaction.End`` right before the StopTransaction, both with the
+      MeterValuesSampledData measurands. OCPP 2.0.1 always reports them in the Started / Ended events
+      (SampledDataCtrlr.TxStartedMeasurands / TxEndedMeasurands).
+    - ``phase_values``: ``off`` = one Voltage and one balanced Current.Import without a phase; ``L-N`` / ``L-L`` =
+      one Voltage per supply phase (line-to-neutral ``L1-N``.., or line-to-line ``L1-L2``.. on a 3-phase supply)
+      and one Current.Import per supply phase (``L1``..), each with its ``phase``.
+    - ``post_tx_delay_s``: seconds between the end of a transaction and sending its StopTransaction / Ended
+      TransactionEvent; the outbox is strictly ordered, so the messages queued after it wait as well.
+    - ``tx_data_max_samples``: at most this many interval readings are kept for one transaction's StopTransaction
+      ``transactionData`` / Ended ``meterValue`` (the oldest is dropped first).
+    """
+
+    begin_end_messages: bool = False
+    phase_values: Literal["off", "L-N", "L-L"] = "off"
+    post_tx_delay_s: float = Field(0.0, ge=0)
+    tx_data_max_samples: int = Field(100, ge=1, le=10000)
+
+
 #: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.
 PASSWORD_MASK = "********"
 
@@ -279,6 +301,8 @@ class ChargerConfig(StrictModel):
     variables: List[VariableConfig] = Field(default_factory=list)
     #: Firmware / diagnostics simulation timings and failure injection (M7).
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+    #: Simulator-only meter value options (v0.2.2 B).
+    meter: MeterOptions = Field(default_factory=MeterOptions)
     #: Charger template (:mod:`.templates_builtin`): the template fields this charger does not set come from it.
     template: Optional[Annotated[QuotedStr, Field(min_length=1)]] = None
     #: Template parameters (``{param}`` placeholders of a user template), overriding the template's defaults.

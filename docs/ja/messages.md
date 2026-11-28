@@ -17,7 +17,7 @@ SME OCPPSim は OCPP 1.6J の Charge Point と OCPP 2.0.1 の Charging Station �
 | StatusNotification | コネクター 0 と各コネクター。`errorCode`、`info`、`vendorErrorCode` |
 | Authorize | `auth_mode` に従います（[設定](configuration.md) を参照） |
 | StartTransaction | `transactionId` を取得します。`idTagInfo` が Accepted 以外ならトランザクションを停止します |
-| StopTransaction | `reason`、`transactionData` |
+| StopTransaction | `reason`、`transactionData`：トランザクション開始から `MeterValueSampleInterval` ごとの `StopTxnSampledData` の測定項目（`Sample.Periodic`）と終了時の値（`Transaction.End`）、`ClockAlignedDataInterval` の時刻境界ごとの `StopTxnAlignedData` の測定項目（`Sample.Clock`）。両キーが空なら含めません。メーターが報告しない測定項目（Energy.Active.Import.Register、Power.Active.Import、Current.Import、Voltage、SoC 以外）や `*MaxLength` キーより長いリストは ChangeConfiguration で `Rejected` |
 | MeterValues | 定期サンプル（`MeterValueSampleInterval`）と時刻同期（`ClockAlignedDataInterval`）。measurand は `MeterValuesSampledData`。`location` / `context` 付き |
 | DataTransfer | UI または HTTP API から手動で送信します |
 | FirmwareStatusNotification | Downloading → Downloaded → Installing →（再起動、BootNotification）→ Installed。失敗注入で DownloadFailed / InstallationFailed |
@@ -92,7 +92,7 @@ Web UI や HTTP API が「コネクター」と言う場合は EVSE id を指し
 | SecurityEventNotification | 対応 | StartupOfTheDevice、ResetOrReboot、FirmwareUpdated、InvalidCsmsCertificate、InvalidTLSVersion、FailedToAuthenticateAtCsms、InvalidChargingStationCertificate、DiscardedRenewedClientCertificate、ReconfigurationOfSecurityParameters。critical なイベントはオフライン中もキューに保持し、次に Boot が受理された後に送信。それ以外は接続中に発生したものだけ送信 |
 | SignCertificate | 対応 | TriggerMessage `SignChargingStationCertificate` の後に新しい EC P-256 鍵と CSR（CN = `serial`、未設定なら充電器 ID。O = `SecurityCtrlr.OrganizationName`）を送信、`certificateType` は `ChargingStationCertificate`。応答のない CSR は再送しない（CertSigningWaitMinimum は未モデル化） |
 | StatusNotification | 対応 | EVSE ごと（コネクター 1）に送信し、EVSE 0 の分はありません。`connectorStatus` は Available / Occupied / Reserved / Unavailable / Faulted。より細かい状態（充電中、一時停止）は TransactionEvent の `chargingState` で表します |
-| TransactionEvent | 対応 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）はステーションが生成します。`seqNo` はトランザクションごとに 0 から。定期 `Updated` は `SampledDataCtrlr.TxUpdatedInterval` ごと。切断中に発生したイベントは `offline: true` |
+| TransactionEvent | 対応 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）はステーションが生成します。`seqNo` はトランザクションごとに 0 から。定期 `Updated` は `SampledDataCtrlr.TxUpdatedInterval` ごと。切断中に発生したイベントは `offline: true`。`Started` には `SampledDataCtrlr.TxStartedMeasurands`。`Ended` には `SampledDataCtrlr` と `AlignedDataCtrlr` の `TxEndedMeasurands` の和集合の開始時（`Transaction.Begin`）・終了時（`Transaction.End`）の値、開始から `SampledDataCtrlr.TxEndedInterval` ごとのサンプル値（`Sample.Periodic`、0 = 開始と終了のみ）、`AlignedDataCtrlr.TxEndedInterval` の時刻境界ごとの値（`Sample.Clock`、0 = なし） |
 
 TransactionEvent と状態変化による StatusNotification は、1.6 と同様に 1 本の順序付きキューで送信されます。
 失敗した TransactionEvent は `OCPPCommCtrlr.MessageAttempts[TransactionEvent]` 回まで、
