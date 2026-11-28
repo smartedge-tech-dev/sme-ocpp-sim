@@ -13,6 +13,8 @@ That is pure CPU work (no I/O) and runs under the engine lock, so it never inter
 Clock: ``time_scale`` and run / pause are forwarded to every runtime (``set_running``, reload, start). Pause freezes
 every charger's power model (no energy / SoC / ramp advance, power reported as-is, no catch-up of the paused
 interval on resume, see :meth:`ChargerRuntime.set_paused`); the OCPP sessions (heartbeats, CSMS calls) keep running.
+The engine's :class:`.simclock.SimClock` (``self.clock``, the time base of scenarios / traffic) follows the same run /
+pause and ``time_scale`` at the same points (``_sync_clock``), including a reload's rollback.
 
 Tasks: one ``ChargerRuntime.run`` task per started charger in ``_runs``. Stopping a charger sets its stop event,
 gives it ``stop_grace_s`` to close its socket (a back-off wait ends at once) and then cancels it; ``stop`` does
@@ -71,6 +73,7 @@ from .csms import MiniCsms
 from .framelog import FrameLog
 from .runtime.charger import ChargerRuntime
 from .runtime.loop_noise import install_proactor_filter
+from .simclock import SimClock
 
 log = logging.getLogger(__name__)
 
@@ -171,6 +174,7 @@ class OcppEngine(BaseEngine):
         self.csms: Optional[MiniCsms] = None
         self.csms_error: Optional[str] = None
         super().__init__(config, **kwargs)
+        self.clock = SimClock(self.time_scale, self.running)
 
     @property
     def chargers(self) -> Dict[str, ChargerRuntime]:
@@ -215,6 +219,10 @@ class OcppEngine(BaseEngine):
             rt.set_time_scale(time_scale)
             rt.set_paused(not running)
 
+    def _sync_clock(self, time_scale: float, running: bool) -> None:
+        """Keep the sim clock in step with the clock just applied to the runtimes."""
+        self.clock.set(time_scale, running)
+
     @staticmethod
     def _apply_impairments(state: Dict[str, _Entry], config: SimConfig) -> None:
         """Hand each charger of ``config`` its ``impairments`` (a kept runtime still has the old ones; a new one
@@ -242,6 +250,7 @@ class OcppEngine(BaseEngine):
             sim = new_config.simulation
             self._apply_impairments(merged, new_config)
             self._apply_clock((e.runtime for e in merged.values()), sim.time_scale, sim.running)
+            self._sync_clock(sim.time_scale, sim.running)
         except BaseException:  # incl. cancellation, which BaseEngine.reload does not roll back
             await _shielded(self._undo(old, launched, old_config))
             raise
@@ -294,6 +303,7 @@ class OcppEngine(BaseEngine):
                     if cid not in self._runs and cid not in self._held:
                         self._launch(cid, e.runtime)
             self._apply_clock((e.runtime for e in old_state.values()), self.time_scale, self.running)
+            self._sync_clock(self.time_scale, self.running)
             self._apply_impairments(old_state, old_config)
         except Exception as e:  # noqa: BLE001 - surface it; the caller re-raises the original error
             self.log_event("error", f"reload rollback failed: {type(e).__name__}: {e}")
@@ -354,6 +364,7 @@ class OcppEngine(BaseEngine):
         install_proactor_filter(asyncio.get_running_loop())
         await self._sync_csms(self.config.mini_csms)
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
+        self._sync_clock(self.time_scale, self.running)
         for cid, e in self.state.items():
             if cid not in self._held:
                 self._launch(cid, e.runtime)
@@ -372,9 +383,11 @@ class OcppEngine(BaseEngine):
     # ------------------------------------------------------------ clock
 
     def set_running(self, running: Optional[bool] = None, time_scale: Optional[float] = None) -> None:
-        """Run / pause and time scale, forwarded to every runtime (pause freezes the power models only)."""
+        """Run / pause and time scale, forwarded to every runtime (pause freezes the power models only) and to the
+        sim clock."""
         super().set_running(running, time_scale)
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
+        self._sync_clock(self.time_scale, self.running)
 
     # ------------------------------------------------------------ pub / sub and push
 

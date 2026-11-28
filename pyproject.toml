@@ -62,6 +62,7 @@ packages = [
   "sme_ocpp_sim.protocol.v201",
   "sme_ocpp_sim.rpc",
   "sme_ocpp_sim.runtime",
+  "sme_ocpp_sim.scenario",
   "sme_ocpp_sim.configs",
 ]
 package-dir = { "sme_ocpp_sim.configs" = "configs" }
