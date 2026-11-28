@@ -61,6 +61,7 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `set_traffic` | `PUT /api/traffic` | `traffic:` ブロックを置き換え |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | 常駐トラフィックの起動 / 停止 |
 | `get_trace` / `start_trace` / `stop_trace` | `GET /api/trace`、`POST /api/trace/start` / `stop` | [トレース](trace-replay.md)の記録 |
+| `start_replay` / `get_replay` | `POST /api/replay`、`GET /api/replay/{id}` | CSMS への[トレースのリプレイ](trace-replay.md#replay) |
 | `analyze_frames` | `GET /api/frames/analyze` | フレームログの解析 |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | 計画された到着（シードで決定的） |
 | `expect_frame` | `POST /api/frames/expect` | 条件と payload matcher に一致するフレームを待つ |

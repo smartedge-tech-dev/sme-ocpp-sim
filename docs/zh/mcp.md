@@ -56,6 +56,7 @@ Web UI 中的按钮相同。充电桩相关工具通过 `cid` 接收充电桩 ID
 | `set_traffic` | `PUT /api/traffic` | 替换 `traffic:` 块 |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | 启动 / 停止常驻流量 |
 | `get_trace` / `start_trace` / `stop_trace` | `GET /api/trace`、`POST /api/trace/start` / `stop` | [Trace](trace-replay.md) 录制 |
+| `start_replay` / `get_replay` | `POST /api/replay`、`GET /api/replay/{id}` | 对 CSMS [回放 trace](trace-replay.md#replay) |
 | `analyze_frames` | `GET /api/frames/analyze` | 帧日志分析 |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | 计划的到达（对 seed 确定） |
 | `expect_frame` | `POST /api/frames/expect` | 等待匹配条件与 payload matcher 的帧 |

@@ -1,8 +1,7 @@
-# Trace 录制与分析
+# Trace 录制、分析与回放
 
 **trace** 是一次运行中所有 OCPP 帧以及相关事件（连接、操作员与场景的操作、时钟变化）的记录文件。
-可用于保存测试证据、比较多次运行，并通过 `analyze` 得到汇总报告。向 CSMS 回放 trace（replay）将在后续版本提供，
-格式已包含回放所需的信息。
+可用于保存测试证据、比较多次运行，并通过 `analyze` 得到汇总报告。还可以用 `replay` 对 CSMS 回放 trace 来验证 CSMS。
 
 ## 格式 `ocppsim-trace/1`
 
@@ -16,7 +15,7 @@ JSON Lines（每行一个 JSON 对象），每行都有 `type`：
 | `footer` | 正常关闭的录制的最后一行：`frames`、`events`、`dropped`（磁盘跟不上而丢失的行数）、`next`（下一分段，见轮转） |
 
 密钥与帧日志一样被脱敏（例如 ChangeConfiguration 的 `AuthorizationKey` 值为 `********`）。trace 中不含密码；
-将来的回放通过参数传入凭据。
+[回放](#replay)时通过参数传入凭据。
 
 没有 header 的文件（如 `/api/frames.jsonl` 导出的帧日志）按 **版本 0** 读取：每行都是一帧。`analyze` 两种都接受。
 
@@ -84,6 +83,81 @@ sme-ocpp-sim analyze frames.jsonl --charger CP001 --ocpp-version 2.0.1
 
 分析只读取帧和事件，不读模拟器状态，因此也适用于真实充电桩的 trace。不生成图表，可用 JSON 自行绘制。
 
+## Replay
+
+`replay` 把 trace 中的**一台充电桩**对 CSMS 回放：在新的 WebSocket 连接上重新发送该桩发出的 CALL
+（`direction: tx`），并把本次 CSMS 的应答与 trace 中记录的应答比较。可用于 CSMS 升级后用录好的会话回归验证，
+或用真实充电桩的 trace 复现问题。
+
+```
+python -m sme_ocpp_sim replay run1.jsonl --csms ws://csms.example:9000/ocpp \
+    [--charger CP001] [--as CP900] [--timing original|scale:N|asap] [--password PW] \
+    [--out report.json] [--trace replay1.jsonl] [--json] [--fail-on-diff]
+```
+
+`--csms` 是不含充电桩 ID 的 CSMS URL（与模拟桩一样，ID 会追加在末尾）。trace 中有多台桩时需要 `--charger`。
+OCPP 版本（及 WebSocket 子协议）取自 trace 的 header；没有 header 的 v0 文件按 action 判定，或用 `--ocpp-version` 指定。
+
+### What is replayed
+
+回放是**充电桩侧**、**按原始帧**进行的：CSMS 是被测对象，模拟器扮演录制下来的充电桩，不经过模拟器的 station
+状态机。发送的是记录的帧，只在第二次运行必须改的地方改写：
+
+| 改写 | 规则 |
+|---|---|
+| uniqueId | 每个 CALL 新生成 |
+| 时间戳 | payload 中所有 ISO 8601 时间整体平移同一偏移量：被回放 CALL 中最早的时间变为「现在」，时间间隔保持不变 |
+| 1.6 `transactionId` | 用本次 CSMS 对 StartTransaction 应答的 ID 替换后续帧（StopTransaction、MeterValues）中记录的 ID |
+| 2.0.1 / 2.1 `transactionId` | 该 ID 由充电桩生成，因此追加本次运行的后缀 `-<replay id>`（保持在 36 字符以内）。`--no-tx-suffix` 保留记录的 ID |
+| `--as ID` | 以另一个充电桩 ID 连接（URL 路径与 Basic 认证用户名），payload 不变 |
+
+CALL 按顺序逐个发送：按 OCPP-J 的要求，收到应答或超时（`--call-timeout`，默认 30 秒）后才发下一个。
+2.1 的 SEND 帧也按顺序重发（无应答）。
+
+回放不重现连接事件：整个回放只用一条连接，trace 中的断线不会重复。CSMS 关闭连接时回放停止，剩余 CALL
+在报告中记为 `not_sent`。
+
+### Timing
+
+| `--timing` | 两个 CALL 之间的间隔 |
+|---|---|
+| `original`（默认） | 按记录的间隔（从上一次发送开始计）；应答慢时下一个 CALL 顺延 |
+| `scale:N` | 记录的间隔除以 N（`scale:10` = 10 倍速） |
+| `asap` | 无间隔：收到应答后立即发送下一个 |
+
+### CALLs from the CSMS
+
+回放期间 CSMS 发来的 CALL（如 TriggerMessage、GetConfiguration）用 trace 中充电桩当时的应答回复，按 action 与出现序号
+对应（第 2 次 GetConfiguration 用第 2 个记录的应答）；记录的应答用完后重复使用最后一个。记录为 CALLERROR 时回同样的
+CALLERROR；trace 中未应答的 CALL 不应答。trace 中从未应答过的 action 由 `--unknown-call` 决定：`reject`（默认）回
+CALLERROR `NotImplemented`，`noreply` 不应答。
+
+### Credentials
+
+trace 已脱敏，不含密码。凭据通过参数传入：`--password`（Security Profile 1 / 2 的 Basic 认证）、`wss://` 用的
+`--ca-file` 或 `--insecure`、Profile 3 用的 `--client-cert` / `--client-key`。报告中不会出现密码。
+
+### Report `ocppsim-replay/1`
+
+`--out` 把 JSON 报告写入文件，`--json` 输出到标准输出，默认输出文本摘要。`--trace` 把本次回放录制成新的 trace 文件，
+其 header 条目带 `replay_of`（源 trace、充电桩、replay id）。
+
+| 字段 | 内容 |
+|---|---|
+| `id`、`charger`、`as`、`ocpp_version`、`csms_url`、`security_profile`、`timing` | 回放了什么、怎么回放的 |
+| `result` | `match`、`diff`（至少一个应答不同）或 `error`（连接失败或断开，或被停止；原因见 `error`） |
+| `summary` | `calls`、`sent`、`matched`、`differed`、`not_compared`、`timeouts`、`not_sent`、`inbound`（CSMS 的 CALL）、`inbound_not_in_trace` |
+| `calls[]` | 每个 CALL 的 `action`、trace 中的 `seq`、`recorded` 与 `replayed` 结果、`match` 与 `diff` |
+| `inbound[]` | 每个 CSMS CALL 的 `action`、`occurrence`、`answer`（`result`、`error <code>`、`not_implemented`、`no_reply`）、`in_trace`、`reused` |
+| `notes` | 未能改写的内容（例：1.6 StartTransaction 本次没有返回 `transactionId`） |
+
+结果为 `result`（附 `idTagInfo.status` 等 status 类字段）、`error`（附 CALLERROR 的 `code`）、`timeout`、`closed` 或
+`not_sent`。trace 中没有应答时记录侧结果为 `none`，该 CALL 不参与比较。status 类字段指键名为 `status` 或以 `Status`
+结尾的字段；`currentTime`、`interval` 等每次运行都会变化的字段不比较。
+
+差异不会让回放失败。退出码：0 = 完成（有差异也是 0），1 = 指定 `--fail-on-diff` 时有差异，2 = 错误（trace 无法读取、
+参数错误、连接失败或断开）。
+
 ## HTTP API
 
 | 方法 | 路径 | 含义 |
@@ -96,5 +170,9 @@ sme-ocpp-sim analyze frames.jsonl --charger CP001 --ocpp-version 2.0.1
 | GET | `/api/trace/files/{file}/analyze?charger=&format=json\|text` | 分析 trace 文件 |
 | GET | `/api/frames/analyze?<帧筛选>&format=json\|text` | 分析内存中的帧日志（无连接事件） |
 | GET | `/api/frames.jsonl?format=v1` | 带 v1 header 的帧日志导出（默认仍为原格式） |
+| POST | `/api/replay` | 回放 trace 目录中的 trace 文件：body `{"file", "csms_url", "charger", "as_id", "timing", "password", "ocpp_version", "unknown_call", "tx_suffix", "call_timeout", "verify_tls"}`（`file` 与 `csms_url` 必填）。使用独立连接，不占用模拟桩，并录制到 trace 目录的 `replay-<id>.jsonl`。返回 `id` |
+| GET | `/api/replay` | 本次启动以来的回放列表 |
+| GET | `/api/replay/{id}` | 状态（`running` / `done`、`sent` / `total`），完成后带 `report` |
+| POST | `/api/replay/{id}/stop` | 当前 CALL 完成后停止 |
 
-MCP 工具：`get_trace`、`start_trace`、`stop_trace`、`analyze_frames`。
+MCP 工具：`get_trace`、`start_trace`、`stop_trace`、`analyze_frames`、`start_replay`、`get_replay`。

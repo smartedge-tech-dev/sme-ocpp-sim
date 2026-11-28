@@ -155,7 +155,7 @@ connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_
 
 ## Trace { #trace }
 
-`GET /api/trace`、`POST /api/trace/start` / `stop`、`GET /api/trace/files[/{file}[/analyze]]`、`GET /api/frames/analyze`、`GET /api/frames.jsonl?format=v1`：详见 [Trace 录制与分析](trace-replay.md#http-api)。
+`GET /api/trace`、`POST /api/trace/start` / `stop`、`GET /api/trace/files[/{file}[/analyze]]`、`GET /api/frames/analyze`、`GET /api/frames.jsonl?format=v1`、`POST /api/replay`、`GET /api/replay[/{id}]`、`POST /api/replay/{id}/stop`：详见 [Trace 录制与分析](trace-replay.md#http-api)。
 
 ## 场景 { #scenarios }
 

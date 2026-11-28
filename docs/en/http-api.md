@@ -176,7 +176,7 @@ The frame log contains OCPP frames only, never HTTP headers or passwords.
 
 ## Trace { #trace }
 
-`GET /api/trace`, `POST /api/trace/start` / `stop`, `GET /api/trace/files[/{file}[/analyze]]`, `GET /api/frames/analyze` and `GET /api/frames.jsonl?format=v1`: see [Trace recording and analysis](trace-replay.md#http-api).
+`GET /api/trace`, `POST /api/trace/start` / `stop`, `GET /api/trace/files[/{file}[/analyze]]`, `GET /api/frames/analyze` `GET /api/frames.jsonl?format=v1` and `POST /api/replay`, `GET /api/replay[/{id}]`, `POST /api/replay/{id}/stop`: see [Trace recording and analysis](trace-replay.md#http-api).
 
 ## Scenarios { #scenarios }
 
