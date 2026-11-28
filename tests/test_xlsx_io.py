@@ -269,20 +269,32 @@ def test_export_writes_no_formula_cells():
     assert ch.vendor == "=1+1" and ch.id_tags == ["=1+1", "@SUM(A1)"] and ch.config_keys == {"K": "=1+1", "L": "+5"}
 
 
-def test_import_row_cap():
-    from sme_ocpp_sim.xlsx_io import MAX_IMPORT_ROWS
+def test_layout_rows_match_the_template():
+    from sme_ocpp_sim.xlsx_io import LAYOUT_ROWS
 
     wb = _book(SCHEMA.blank_template())
-    for i in range(MAX_IMPORT_ROWS + 1):
+    assert {ws.title: ws.max_row for ws in wb.worksheets} == {ws.title: LAYOUT_ROWS for ws in wb.worksheets}
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_import_row_cap_boundary(extra):
+    """Exactly MAX_IMPORT_ROWS charger data rows pass the row cap, one more is refused."""
+    from sme_ocpp_sim.xlsx_io import CHARGERS_ROW_CAP, MAX_IMPORT_ROWS
+
+    wb = _book(SCHEMA.blank_template())
+    for i in range(MAX_IMPORT_ROWS + extra):
         wb["chargers"].append([f"R{i}"])
     cfg, errors = import_xlsx(_bytes(wb))  # sme-sim-common's per-sheet row cap (Sheet.max_rows)
-    assert cfg is None and f"chargers: more than {MAX_IMPORT_ROWS} rows (row limit), import refused" in errors
+    capped = f"chargers: more than {CHARGERS_ROW_CAP} rows (row limit), import refused"
+    assert (capped in errors) == bool(extra), errors[:3]
+    if extra:
+        assert cfg is None
 
 
 def test_import_row_cap_other_sheets():
-    from sme_ocpp_sim.xlsx_io import MAX_IMPORT_ROWS
+    from sme_ocpp_sim.xlsx_io import LAYOUT_ROWS, MAX_IMPORT_ROWS
 
-    assert SCHEMA.max_rows == 10 * MAX_IMPORT_ROWS  # config_keys / variables / ev_models
+    assert SCHEMA.max_rows == 10 * MAX_IMPORT_ROWS + LAYOUT_ROWS  # config_keys / variables / ev_models
     wb = _book(SCHEMA.blank_template())
     wb["chargers"].append(["A"])
     for i in range(MAX_IMPORT_ROWS + 1):  # more than chargers allows, within the other sheets' cap

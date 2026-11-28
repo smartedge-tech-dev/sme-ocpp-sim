@@ -26,8 +26,8 @@ Formula injection: every exported text cell is a plain string cell, never a form
 ``XlsxSchema.write`` (1.2.1+) writes a text starting with ``= + - @ ＠``, a tab or a CR (``FORMULA_PREFIXES``) as a
 literal string with Excel's quote prefix, so editing the cell in Excel keeps it text. The value itself is unchanged
 (no ``'`` is added), so the import reads it back as the same text. Limits (also upstream): a ``chargers`` sheet with
-more than :data:`MAX_IMPORT_ROWS` rows, or another sheet with ten times as many, is rejected (``Sheet.max_rows`` /
-``XlsxSchema.max_rows``); the upload size is capped by ``make_base_app(max_import_bytes=)`` in :mod:`.web`.
+more than :data:`MAX_IMPORT_ROWS` data rows, or another sheet with ten times as many, is rejected (``Sheet.max_rows``
+/ ``XlsxSchema.max_rows``, which also count the header / help rows and blank or ``#`` rows); the upload size is capped by ``make_base_app(max_import_bytes=)`` in :mod:`.web`.
 """
 
 from __future__ import annotations
@@ -41,9 +41,15 @@ from .config import PASSWORD_MASK, ChargerConfig, EvModelConfig, SimConfig
 from .templates_builtin import registry
 
 SESSION_COLUMNS = ("ev_model", "initial_soc", "target_soc")
-#: Data rows read per sheet on import (``chargers``; the other sheets get ten times as many); more is an error
-#: (``sme_sim_common.xlsx`` row cap: ``Sheet.max_rows`` / ``XlsxSchema.max_rows``).
+#: Data rows accepted per sheet on import (``chargers``; the other sheets get ten times as many); more is an error.
 MAX_IMPORT_ROWS = 5000
+#: Rows above the data in every sheet of an exported workbook or template: row 1 the column headers, row 2 the
+#: ``#`` help texts (``XlsxSchema.write``; ``tests/test_xlsx_io.py`` checks it against a blank template).
+LAYOUT_ROWS = 2
+#: ``sme_sim_common.xlsx`` row caps (``Sheet.max_rows`` / ``XlsxSchema.max_rows``) count every sheet row, the
+#: layout rows included: these leave room for them, so MAX_IMPORT_ROWS data rows are still accepted.
+CHARGERS_ROW_CAP = MAX_IMPORT_ROWS + LAYOUT_ROWS
+OTHER_ROW_CAP = 10 * MAX_IMPORT_ROWS + LAYOUT_ROWS
 
 
 def _text(v: Any) -> str:
@@ -78,7 +84,7 @@ CHARGERS = Sheet("chargers", [
     ("extra", "Other fields as YAML flow mapping, e.g. {verify_tls: false}"),
 ], kinds={"connectors": "int", "max_power_w": "number", "voltage_v": "number", "phases": "int",
           "line_to_line": "bool", "id_tags": "list", "initial_soc": "number", "target_soc": "number"},
-    required=("id",), max_rows=MAX_IMPORT_ROWS)
+    required=("id",), max_rows=CHARGERS_ROW_CAP)
 
 CONFIG_KEYS = Sheet("config_keys", [
     ("charger", "Charger id (chargers sheet)"),
@@ -275,7 +281,7 @@ def build(tables: Dict[str, List[SheetRow]], base: Optional[SimConfig], errors: 
 
 
 SCHEMA = XlsxSchema(SHEETS, export_rows=export_rows, build=build, template_file="sme-ocpp-sim-template.xlsx",
-                     export_file="sme-ocpp-sim-chargers.xlsx", max_rows=MAX_IMPORT_ROWS * 10)
+                     export_file="sme-ocpp-sim-chargers.xlsx", max_rows=OTHER_ROW_CAP)
 
 
 def export_xlsx(cfg: SimConfig) -> Tuple[bytes, List[str]]:

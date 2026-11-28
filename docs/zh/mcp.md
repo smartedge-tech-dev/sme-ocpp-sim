@@ -11,6 +11,8 @@ Desktop 及其他 MCP 客户端）可以借此操作模拟充电桩：列出充�
 
 Claude Code：
 
+DNS 重绑定防护只作用于 `/mcp`：HTTP API 的其余路由与 Web UI 一样没有这项防护，请绑定到回环地址或可信网络。
+
 ```bash
 claude mcp add --transport http ocpp http://127.0.0.1:8082/mcp
 ```
@@ -36,15 +38,17 @@ Web UI 中的按钮相同。充电桩相关工具通过 `cid` 接收充电桩 ID
 | `plug_in` / `unplug` | `POST /api/chargers/{id}/plug` / `unplug` | EV 充电枪 |
 | `authorize` | `POST /api/chargers/{id}/swipe` | 出示 ID 标签（开始 / 停止） |
 | `start_transaction` / `stop_transaction` | `POST /api/chargers/{id}/start` / `stop` | 插枪 + ID 标签 / 本地停止 |
+| `data_transfer` | `POST /api/chargers/{id}/datatransfer` | 向 CSMS 发送 DataTransfer |
 | `set_fault` / `clear_fault` | `POST /api/chargers/{id}/fault` / `clear-fault` | 连接器故障 |
 | `set_external_limit` | `POST /api/chargers/{id}/external-limit` | 外部充电限制（2.0.1） |
 | `set_impairments` | `PUT /api/chargers/{id}/impairments` | 命令屏蔽、延迟、周期断线 |
 | `drop_connection` | `POST /api/chargers/{id}/drop` | 立即断开连接 |
 | `send_frame` | `POST /api/chargers/{id}/send` | 注入 CALL 或原始帧（专家用途） |
 | `mini_csms_status` | `GET /api/csms` | 内置 [Mini CSMS](mini-csms.md) 的状态 |
+| `mini_csms_actions` | `GET /api/csms/actions` | Mini CSMS 可发送的 CSMS → 充电桩动作 |
 | `mini_csms_call` | `POST /api/csms/chargers/{id}/call` | 从 Mini CSMS 发送 CSMS → 充电桩的 CALL |
 
-只读工具标有 `readOnlyHint`；`set_impairments`、`send_frame` 和 `mini_csms_call` 标有 `destructiveHint`，
+只读工具标有 `readOnlyHint`；`disconnect_charger`、`drop_connection`、`set_impairments`、`send_frame` 和 `mini_csms_call` 标有 `destructiveHint`，
 客户端可以在调用前请求确认。
 
 ## 健康检查

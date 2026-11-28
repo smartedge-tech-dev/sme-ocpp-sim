@@ -11,6 +11,9 @@ SME OCPPSim は Web ポートで [MCP](https://modelcontextprotocol.io/) エン�
   ヘッダーがループバックのリクエストだけを受け付けます（DNS リバインディング対策）。`--host 0.0.0.0`（Docker、LAN）
   ではポートに届く誰からでも利用できます。
 
+DNS リバインディング対策は `/mcp` だけに適用されます。HTTP API の他のルートは Web UI と同じく対策がないため、
+ループバックか信頼できるネットワークにバインドしてください。
+
 Claude Code:
 
 ```bash
@@ -40,15 +43,17 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `plug_in` / `unplug` | `POST /api/chargers/{id}/plug` / `unplug` | EV ケーブル |
 | `authorize` | `POST /api/chargers/{id}/swipe` | ID タグの提示（開始 / 停止） |
 | `start_transaction` / `stop_transaction` | `POST /api/chargers/{id}/start` / `stop` | プラグ接続 + ID タグ / ローカル停止 |
+| `data_transfer` | `POST /api/chargers/{id}/datatransfer` | CSMS へ DataTransfer を送信 |
 | `set_fault` / `clear_fault` | `POST /api/chargers/{id}/fault` / `clear-fault` | コネクタの故障 |
 | `set_external_limit` | `POST /api/chargers/{id}/external-limit` | 外部充電制限（2.0.1） |
 | `set_impairments` | `PUT /api/chargers/{id}/impairments` | コマンドブロック、遅延、定期切断 |
 | `drop_connection` | `POST /api/chargers/{id}/drop` | 接続を今すぐ切断 |
 | `send_frame` | `POST /api/chargers/{id}/send` | CALL または生フレームの注入（上級者向け） |
 | `mini_csms_status` | `GET /api/csms` | 内蔵 [Mini CSMS](mini-csms.md) の状態 |
+| `mini_csms_actions` | `GET /api/csms/actions` | Mini CSMS が送信できる CSMS → 充電器のアクション |
 | `mini_csms_call` | `POST /api/csms/chargers/{id}/call` | Mini CSMS から CSMS → 充電器の CALL を送信 |
 
-読み取り専用のツールには `readOnlyHint`、`set_impairments`・`send_frame`・`mini_csms_call` には `destructiveHint`
+読み取り専用のツールには `readOnlyHint`、`disconnect_charger`・`drop_connection`・`set_impairments`・`send_frame`・`mini_csms_call` には `destructiveHint`
 が付いているので、クライアントは呼び出し前に確認を求められます。
 
 ## ヘルスチェック
