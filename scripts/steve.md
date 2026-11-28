@@ -87,7 +87,9 @@ MTLS_CERT_DIR=... OCPPSIM_SCRIPTS=... docker compose -f docker-compose.yml -f <r
 ```
 
 nginx answers a missing or untrusted client certificate with HTTP 400 after the TLS handshake (its internal 496 /
-495 codes), not with a TLS alert, so the simulator shows `last_error` kind `bad_request` for both. A trusted
+495 codes), not with a TLS alert. Since v0.2.2 the simulator recognises the nginx error page and shows
+`last_error` kind `client_cert_required` (no certificate configured) or `client_cert_rejected` (untrusted
+certificate), with `status` 400; the run record below predates that and shows `bad_request`. A trusted
 certificate whose CN is not the chargeBoxId in the URL gets HTTP 403.
 
 Run record 2026-11-28 (SteVe 3.15.0, nginx stable-alpine3.24-slim, main @ da8b62d):

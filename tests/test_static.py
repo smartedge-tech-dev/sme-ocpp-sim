@@ -64,7 +64,8 @@ def test_literal_and_enumerated_keys_defined():
     used -= {k for k in used if k.endswith(".jsonl")}     # file names (frames.jsonl)
     used |= {f"status.{s}" for s in ("Available", "Preparing", "Charging", "SuspendedEVSE", "SuspendedEV",
                                      "Finishing", "Reserved", "Unavailable", "Faulted")}
-    used |= {f"conn.{s}" for s in ("online", "pending", "rejected", "booting", "connecting", "error", "held")}
+    used |= {f"conn.{s}" for s in ("online", "pending", "rejected", "booting", "connecting", "error", "held",
+                                   "gave_up")}
     used |= {f"frames.dir.{d}" for d in ("tx", "rx")}
     # csms.js: t(`csms.boot.${boot_status || "none"}`) and t(`csms.plan.${status}`)
     used |= {f"csms.boot.{s}" for s in ("Accepted", "Pending", "Rejected", "none")}

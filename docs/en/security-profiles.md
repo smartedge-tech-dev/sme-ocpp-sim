@@ -37,7 +37,10 @@ the CSMS raise it with ChangeConfiguration (A05), but the simulator cannot switc
 
 Profile 3 (since v0.2): the charger presents `client_cert_file` (PEM, a chain is allowed) with
 `client_key_file` (PEM, not encrypted) in the TLS handshake and sends no `Authorization` header. A handshake
-the CSMS refuses because of the client certificate is shown as `client_cert_rejected`. Certificates can be
+the CSMS refuses because of the client certificate is shown as `client_cert_rejected`; a TLS connection refused
+the same way while no client certificate is configured (the CSMS probably requires profile 3) is shown as
+`client_cert_required`. Both are also recognised behind a TLS proxy that answers HTTP 400 with an "SSL
+certificate" page (nginx `ssl_verify_client on`). Certificates can be
 renewed by the CSMS (SignCertificate / CertificateSigned, both OCPP versions); the new certificate is used from
 the next connection and lives in memory only (the YAML keeps the configured files). See
 [OCPP messages](messages.md) for the certificate and SecurityEventNotification messages.

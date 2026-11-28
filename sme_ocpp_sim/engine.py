@@ -70,6 +70,7 @@ from .config import PASSWORD_MASK, ChargerConfig, MiniCsmsConfig, SimConfig, sav
 from .csms import MiniCsms
 from .framelog import FrameLog
 from .runtime.charger import ChargerRuntime
+from .runtime.loop_noise import install_proactor_filter
 
 log = logging.getLogger(__name__)
 
@@ -299,6 +300,16 @@ class OcppEngine(BaseEngine):
         exc = task.exception()
         if exc is not None:
             self.log_event("error", f"charger {cid} task crashed: {type(exc).__name__}: {exc}")
+        elif run.runtime.gave_up is not None:
+            # A retry limit was hit: hold the charger like an operator disconnect, so it stays stopped (also
+            # across reloads and their rollback) until the operator connects it again.
+            g = run.runtime.gave_up
+            self._runs.pop(cid, None)
+            self._held.add(cid)
+            unit = "boots" if g["reason"] == "boot_max_retries" else "attempts"
+            self.log_event("warning", f"charger {cid} gave up ({g['reason']}) after {g['attempts']} {unit}; "
+                                      f"last: {g.get('last_kind')}")
+            self.wake()
         else:
             self.log_event("warning", f"charger {cid} task ended unexpectedly")
 
@@ -327,6 +338,7 @@ class OcppEngine(BaseEngine):
             return
         await super().start()
         self._started = True
+        install_proactor_filter(asyncio.get_running_loop())
         await self._sync_csms(self.config.mini_csms)
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
         for cid, e in self.state.items():
@@ -498,6 +510,7 @@ class OcppEngine(BaseEngine):
                 raise KeyError(cid)
             self._held.add(cid)
             was = cid in self._runs
+            self.state[cid].runtime.gave_up = None  # an operator hold now, no longer a give-up
             # Halting under the lock (up to stop_grace_s) delays reloads and the push tick briefly, but a reload
             # can then never relaunch the charger between the hold and the stop.
             await self._halt([cid])

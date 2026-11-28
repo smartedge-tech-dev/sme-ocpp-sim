@@ -150,6 +150,8 @@ HINTS = {
     "subprotocol": "CSMS did not accept the OCPP subprotocol",
     "tls_verify": "TLS certificate verification failed (check ca_file / hostname)",
     "client_cert_rejected": "CSMS rejected the TLS client certificate (security profile 3)",
+    "client_cert_required": ("the CSMS closed the connection after the TLS handshake; it probably requires a TLS "
+                             "client certificate (security profile 3)"),
     "client_cert": "the TLS client certificate / key could not be loaded (check client_cert_file / client_key_file)",
     "tls_version": "the CSMS offers no TLS version >= 1.2",
     "tls": "TLS error",
@@ -161,19 +163,43 @@ HINTS = {
 
 _STATUS_KINDS = {400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found"}
 
+#: ``bad_request`` hint over wss://: a TLS proxy (nginx ``ssl_verify_client on``) answers a missing or untrusted
+#: client certificate with HTTP 400 too.
+_TLS_BAD_REQUEST_HINT = "HTTP 400; a missing subprotocol, or a TLS proxy refusing the client certificate"
+#: Text of the nginx 400 pages for a missing / refused client certificate ("No required SSL certificate was
+#: sent", "The SSL certificate error").
+_CLIENT_CERT_BODY_MARK = b"SSL certificate"
+
 
 class HandshakeError(ConnectionError):
-    def __init__(self, kind: str, detail: str = "", status: Optional[int] = None) -> None:
+    def __init__(self, kind: str, detail: str = "", status: Optional[int] = None,
+                 hint: Optional[str] = None) -> None:
         self.kind = kind
         self.status = status
         self.detail = detail
-        hint = HINTS.get(kind, kind)
+        hint = hint or HINTS.get(kind, kind)
         msg = f"{hint} [HTTP {status}]" if status and kind == "http_error" else hint
         super().__init__(f"{msg}: {detail}" if detail else msg)
 
 
 def classify_status(status: int) -> str:
     return _STATUS_KINDS.get(status, "http_error")
+
+
+def _cert_kind(cfg: TransportConfig) -> str:
+    """The kind of a refusal that points at the client certificate: refused when one is configured, otherwise
+    probably required (security profile 3) but missing."""
+    return "client_cert_rejected" if cfg.client_cert_file is not None else "client_cert_required"
+
+
+def classify_invalid_status(status: int, body: Optional[bytes], cfg: TransportConfig) -> HandshakeError:
+    """Classify an HTTP status answered to the upgrade request. Over TLS, an HTTP 400 whose body names the SSL
+    certificate is the client certificate refusal of a TLS proxy (nginx), not a subprotocol problem."""
+    if cfg.is_tls and status == 400:
+        if body and _CLIENT_CERT_BODY_MARK in body:
+            return HandshakeError(_cert_kind(cfg), f"HTTP {status}", status=status)
+        return HandshakeError("bad_request", status=status, hint=_TLS_BAD_REQUEST_HINT)
+    return HandshakeError(classify_status(status), status=status)
 
 
 #: OpenSSL alert reasons a TLS server sends when it refuses (or misses) the client certificate.
@@ -199,10 +225,20 @@ def _ssl_cause(e: BaseException) -> Optional[ssl.SSLError]:
 
 def _lost_after_tls(e: BaseException) -> bool:
     """The server closed the connection after the TLS handshake, before any HTTP upgrade response (no SSL error
-    was surfaced): with TLS 1.3 a server that refuses the client certificate may just close. A narrow heuristic,
-    applied only with a client certificate configured (Windows surfaces nothing else for a refused certificate)."""
+    was surfaced): with TLS 1.3 a server that refuses (or misses) the client certificate may just close. A narrow
+    heuristic, applied only over TLS (Windows surfaces nothing else for a refused or missing certificate); without
+    a client certificate only when no password is configured either (see :func:`_lost_after_tls_kind`)."""
     cur: Optional[BaseException] = e.__cause__ or e.__context__
     return isinstance(e, InvalidMessage) and isinstance(cur, (EOFError, ConnectionResetError))
+
+
+def _lost_after_tls_kind(cfg: TransportConfig) -> str:
+    """Kind of a connection closed right after the TLS handshake: a refused client certificate when one is
+    configured; "probably required" when the charger has neither a certificate nor a password (it can only be a
+    profile 3 CSMS refusing it); otherwise (profile 2) nothing points at a certificate: a plain handshake error."""
+    if cfg.client_cert_file is not None:
+        return "client_cert_rejected"
+    return "client_cert_required" if cfg.password is None else "handshake"
 
 
 def classify_ssl(e: ssl.SSLError, cfg: TransportConfig) -> HandshakeError:
@@ -212,7 +248,7 @@ def classify_ssl(e: ssl.SSLError, cfg: TransportConfig) -> HandshakeError:
     if reason in _TLS_VERSION_REASONS:
         return HandshakeError("tls_version", str(e))
     if reason in _CLIENT_CERT_ALERTS:
-        return HandshakeError("client_cert_rejected", str(e))
+        return HandshakeError(_cert_kind(cfg), str(e))
     return HandshakeError("tls", str(e))
 
 
@@ -239,8 +275,7 @@ async def open_connection(cfg: TransportConfig) -> ClientConnection:
     except HandshakeError:
         raise
     except InvalidStatus as e:
-        status = e.response.status_code
-        raise HandshakeError(classify_status(status), status=status) from None
+        raise classify_invalid_status(e.response.status_code, e.response.body, cfg) from None
     except NegotiationError as e:
         raise HandshakeError("subprotocol", str(e)) from None
     except InvalidURI as e:
@@ -249,8 +284,8 @@ async def open_connection(cfg: TransportConfig) -> ClientConnection:
         cause = _ssl_cause(e)
         if cause is not None:
             raise classify_ssl(cause, cfg) from None
-        if cfg.client_cert_file is not None and _lost_after_tls(e):
-            raise HandshakeError("client_cert_rejected", str(e)) from None
+        if cfg.is_tls and _lost_after_tls(e):
+            raise HandshakeError(_lost_after_tls_kind(cfg), str(e)) from None
         raise HandshakeError("handshake", str(e)) from None
     except ssl.SSLError as e:
         raise classify_ssl(e, cfg) from None

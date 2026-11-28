@@ -121,6 +121,6 @@ Run record 2026-11-28 (same CitrineOS build as above, main @ da8b62d):
 | StatusNotification, Heartbeat | answered |
 | Authorize unknown / known, TransactionEvent Started / Updated / Ended (local stop) | as on SP0, rows in the DB |
 | REST GetVariables, RequestStart / RequestStopTransaction | served, `Started` (RemoteStart) / `Ended` (RemoteStop) |
-| No client certificate | refused; simulator `last_error` kind `handshake` (the server closes after the TLS handshake; on Windows the TLS alert is not surfaced to Python) |
+| No client certificate | refused; simulator `last_error` kind `handshake` (the server closes after the TLS handshake; on Windows the TLS alert is not surfaced to Python). Since v0.2.2 reported as `client_cert_required` |
 | Client certificate from an untrusted CA | refused; `last_error` kind `client_cert_rejected` |
 | CALLERRORs | none |

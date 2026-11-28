@@ -282,3 +282,62 @@ def test_frame_push_is_throttled():
         seqs = [f["seq"] for m in frames for f in m["frames"]]
         assert seqs == list(range(1, 51))
     asyncio.run(main())
+
+
+def test_gave_up_charger_can_be_connected_again():
+    async def main():
+        peer = CsmsPeer(hb_interval=30, boot_statuses=["Rejected"] * 2, retry_interval=1)
+        await peer.start()
+        engine = OcppEngine(_config(peer.url, ["A"], A={"boot_max_retries": 0}))
+        engine.push_interval = 0.05
+        await engine.start()
+        try:
+            rt = engine.chargers["A"]
+            await _until(lambda: rt.gave_up is not None and "A" not in engine._runs)
+            assert engine.charger_detail("A")["gave_up"]["reason"] == "boot_max_retries"
+            ev = next(e for e in engine.events if "gave up" in e["message"])
+            assert ev["level"] == "warning" and "1 boots" in ev["message"]
+            assert not any("ended unexpectedly" in e["message"] for e in engine.events)
+            # Held like an operator disconnect: the UI enables Connect, and neither a reload nor the rollback
+            # of a failed reload relaunches it.
+            assert engine.charger_detail("A")["enabled"] is False
+            launch, launched = engine._launch, []
+
+            def failing(cid, rt_):
+                launched.append(cid)
+                if cid == "B":
+                    raise RuntimeError("boom")
+                launch(cid, rt_)
+            engine._launch = failing
+            with pytest.raises(RuntimeError, match="boom"):
+                await engine.reload(_config(peer.url, ["A", "B"], A={"boot_max_retries": 0}))
+            engine._launch = launch
+            assert "A" not in launched and "A" not in engine._runs and engine.chargers["A"] is rt
+            # The second boot is Rejected again and gives up again; the third run is Accepted.
+            assert await engine.connect("A")
+            await _until(lambda: rt.gave_up is not None and "A" not in engine._runs and rt.boots == 2)
+            assert await engine.connect("A")
+            await _until(lambda: rt.online)
+            assert rt.gave_up is None and "A" in engine._runs
+            assert engine.charger_detail("A")["enabled"] is True
+        finally:
+            await engine.stop()
+            await peer.stop()
+    asyncio.run(main())
+
+
+def test_disconnect_after_give_up_clears_gave_up():
+    async def main():
+        peer = CsmsPeer(hb_interval=30, boot_statuses=["Rejected"], retry_interval=1)
+        await peer.start()
+        engine = OcppEngine(_config(peer.url, ["A"], A={"boot_max_retries": 0}))
+        await engine.start()
+        try:
+            rt = engine.chargers["A"]
+            await _until(lambda: rt.gave_up is not None and "A" not in engine._runs)
+            assert not await engine.disconnect("A")
+            assert rt.gave_up is None and engine.charger_detail("A")["enabled"] is False
+        finally:
+            await engine.stop()
+            await peer.stop()
+    asyncio.run(main())

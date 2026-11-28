@@ -97,8 +97,14 @@ class ChargerRuntime:
         self.last_error: Optional[Dict[str, str]] = None
         self.connect_attempts = 0
         self.boots = 0
+        #: Set when a retry limit stopped the run (``reason`` ``max_retries`` / ``boot_max_retries``, ``attempts``,
+        #: ``last_kind``); cleared when :meth:`run` starts again (the operator's Connect).
+        self.gave_up: Optional[Dict[str, Any]] = None
+        self._failures = 0       # consecutive failed connections since the last accepted boot
+        self._boot_failures = 0  # non-Accepted BootNotifications (incl. no answer) of the current registration
         self.clock_offset_s: Optional[float] = None
         self.last_heartbeat: Optional[datetime] = None
+        self._accepted_this_session = False
         self._tasks: Set[asyncio.Task] = set()
         self._boot_kick = asyncio.Event()
         self._reset_done = asyncio.Event()
@@ -114,6 +120,7 @@ class ChargerRuntime:
             verify_tls=cfg.verify_tls, require_subprotocol=cfg.require_subprotocol,
             client_cert_file=cfg.client_cert_file, client_key_file=cfg.client_key_file)
         rc = reconnect or ReconnectConfig()
+        self._max_retries: Optional[int] = rc.max_retries
         self._backoff = backoff or Backoff(rc.min_s, BACKOFF_FACTOR, rc.max_s, rc.jitter)
         self._frame_cb = frame_log.callback(cfg.id) if frame_log is not None else None
 
@@ -136,8 +143,11 @@ class ChargerRuntime:
         """Connect, boot, serve; reconnect with back-off until ``stop`` is set.
 
         Setting ``stop`` while a connection attempt is in progress may take up to the transport's
-        ``open_timeout`` to return.
+        ``open_timeout`` to return. It also returns when a retry limit is hit (``reconnect.max_retries``,
+        ``boot_max_retries``): :attr:`gave_up` tells why; a new run starts counting from zero.
         """
+        self.gave_up = None
+        self._failures = self._boot_failures = 0
         try:
             await self._run(stop)
         finally:
@@ -155,13 +165,19 @@ class ChargerRuntime:
                     self.station.on_connect_failed(e.kind, str(e))
                 except Exception:  # noqa: BLE001 - a station bug must not stop the reconnect loop
                     log.exception("%s: on_connect_failed failed", self.cfg.id)
+                if self._count_failure(e.kind):
+                    break
                 if await wait_or_stop(stop, self._backoff.next()):
                     break
                 continue
             # The back-off is reset only after an accepted boot (see _boot): a CSMS that accepts the socket and
             # then drops it must still be backed off.
             was_reset = await self._session(ws, stop)
-            if stop.is_set():
+            if stop.is_set() or self.gave_up is not None:
+                break
+            # A session that ended before an accepted boot is a failed connection (a Reset is not).
+            if not was_reset and not self._accepted_this_session and self._count_failure(
+                    (self.last_error or {}).get("kind", "disconnected")):
                 break
             if not was_reset and await wait_or_stop(stop, self._backoff.next()):
                 break
@@ -170,7 +186,9 @@ class ChargerRuntime:
         """Serve one connection; returns True when it ended because of a Reset."""
         self._reset_done.clear()
         self._abort.clear()
+        before = self.last_error  # an error left from an earlier attempt is not this session's
         self.registration = None
+        self._accepted_this_session = False
         rpc = RpcConnection(ws, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
                             call_timeout=self.call_timeout, on_frame=self._frame_cb, name=self.cfg.id,
                             call_guard=self.station.check_call)
@@ -185,7 +203,7 @@ class ChargerRuntime:
         finally:
             rx_error = await self._close_session(rpc, rx, waits)
         # An abort that recorded no error of its own (the outbox worker lost the connection) is a disconnect.
-        aborted = self._abort.is_set() and self.last_error is not None
+        aborted = self._abort.is_set() and self.last_error is not None and self.last_error is not before
         if not self._reset_done.is_set() and not stop.is_set() and not aborted:
             self.last_error = {"kind": "disconnected", "message": self._close_text(ws, rx_error)}
         return self._reset_done.is_set()
@@ -211,6 +229,22 @@ class ChargerRuntime:
             log.warning("%s: receive loop failed: %r", self.cfg.id, e)
             return repr(e)
         return None
+
+    def _count_failure(self, kind: str) -> bool:
+        """Count one failed connection; True (and :attr:`gave_up` set) when ``reconnect.max_retries`` is exceeded."""
+        self._failures += 1
+        if self._max_retries is None or self._failures <= self._max_retries:
+            return False
+        self._give_up("max_retries", self._failures, kind)
+        return True
+
+    def _give_up(self, reason: str, attempts: int, last_kind: Optional[str]) -> None:
+        self.gave_up = {"reason": reason, "attempts": attempts, "last_kind": last_kind}
+        limit, unit = (("reconnect.max_retries", "attempts") if reason == "max_retries"
+                       else ("boot_max_retries", "boots"))
+        self.last_error = {"kind": "retries_exhausted",
+                           "message": f"gave up after {attempts} {unit} ({limit}); last: {last_kind}"}
+        log.warning("%s: gave up after %d %s (%s, last %s)", self.cfg.id, attempts, unit, reason, last_kind)
 
     @staticmethod
     def _close_text(ws: Any, rx_error: Optional[str]) -> str:
@@ -335,14 +369,16 @@ class ChargerRuntime:
             self.abort_session(repr(e))
 
     async def _online(self) -> None:
-        await self._boot()
+        if not await self._boot():
+            return  # boot_max_retries hit: the session is closing
         await self.station.on_online()
         while True:
             if not await self.station.wait_heartbeat():
                 await self._heartbeat()
 
-    async def _boot(self) -> None:
-        """BootNotification until Accepted; CSMS CALLs are served meanwhile by the RPC layer."""
+    async def _boot(self) -> bool:
+        """BootNotification until Accepted (True); CSMS CALLs are served meanwhile by the RPC layer. False when
+        ``boot_max_retries`` was exceeded."""
         while True:
             self._boot_kick.clear()
             delay: float = self.cfg.boot_retry_s
@@ -350,10 +386,20 @@ class ChargerRuntime:
             if res is not None:
                 if res.status is d.BootStatus.ACCEPTED:
                     self._backoff.reset()
+                    self._failures = self._boot_failures = 0
+                    self._accepted_this_session = True
                     self.last_error = None
-                    return
+                    return True
                 if res.interval > 0:
                     delay = res.interval
+            if self.connected:  # an answer lost with the connection is the reconnect loop's business
+                self._boot_failures += 1
+                limit = self.cfg.boot_max_retries
+                if limit is not None and self._boot_failures > limit:
+                    self._give_up("boot_max_retries", self._boot_failures,
+                                  res.status.value if res is not None else "no_reply")
+                    self._abort.set()  # close the session; _run sees gave_up and returns
+                    return False
             await wait_event(self._boot_kick, delay)
 
     async def _send_boot(self, *, triggered: bool = False) -> Optional[d.BootResult]:
@@ -486,6 +532,7 @@ class ChargerRuntime:
             "registration": self.registration,
             "last_error": dict(self.last_error) if self.last_error else None,
             "connect_attempts": self.connect_attempts,
+            "gave_up": dict(self.gave_up) if self.gave_up else None,
             "boots": self.boots,
             "clock_offset_s": self.clock_offset_s,
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,

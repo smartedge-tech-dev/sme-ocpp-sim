@@ -36,7 +36,10 @@ ReconfigurationOfSecurityParameters を記録します（パスワードは記�
 
 プロファイル 3（v0.2 から）：充電器は TLS ハンドシェイクで `client_cert_file`（PEM、チェーン可）と
 `client_key_file`（PEM、暗号化なし）を提示し、`Authorization` ヘッダーは送りません。クライアント証明書を理由に
-CSMS が拒否したハンドシェイクは `client_cert_rejected` と表示されます。証明書は CSMS から更新できます
+CSMS が拒否したハンドシェイクは `client_cert_rejected` と表示されます。クライアント証明書を設定していない
+TLS 接続が同じように拒否された場合（CSMS がプロファイル 3 を要求していると考えられる場合）は
+`client_cert_required` と表示されます。どちらも、HTTP 400 で「SSL certificate」のページを返す TLS プロキシ
+（nginx の `ssl_verify_client on`）の背後でも判別されます。証明書は CSMS から更新できます
 （SignCertificate / CertificateSigned、両バージョン）。新しい証明書は次の接続から使われ、メモリ上のみに保持されます
 （YAML は設定したファイルのまま）。証明書と SecurityEventNotification のメッセージは
 [OCPP メッセージ](messages.md) を参照してください。

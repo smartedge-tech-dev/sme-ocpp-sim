@@ -75,6 +75,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `reconnect.min_s` | `1.0` | 最初の再接続待ち時間（秒） |
 | `reconnect.max_s` | `60.0` | 再接続待ち時間の上限（≥ `min_s`）。待ち時間は指数的に増えます |
 | `reconnect.jitter` | `0.2` | 待ち時間のランダムなばらつき（0〜1） |
+| `reconnect.max_retries` | `null` | 連続した接続失敗（ハンドシェイク失敗、または Boot が Accepted になる前に切れた接続）の上限。超えると充電器は再試行を止め、UI に **再試行停止** と表示され、接続 を押すまで再開しません。`null` = 無制限、`0` = 最初の失敗で停止 |
 
 ## ev_models
 
@@ -116,6 +117,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `auth_mode` | `local_then_csms` | `local_only`（`id_tags` のみ）、`csms_only`（常に Authorize）、`local_then_csms`（まず `id_tags`、次に Authorize）、`accept_all` |
 | `id_tags` | `[]` | ローカルで受け付ける ID タグ（各最大 20 文字、重複不可） |
 | `boot_retry_s` | `60.0` | CSMS が interval 0 で Pending / Rejected を返したときの Boot 再送間隔 |
+| `boot_max_retries` | `null` | Accepted 以外の BootNotification 応答（Pending・Rejected・無応答。Accepted まで再接続をまたいで数える）の上限。超えると接続を閉じ、`reconnect.max_retries` と同様に停止します。`null` = 無制限（OCPP どおり）。TriggerMessage による BootNotification は数えません。Pending を返しては接続を切る CSMS では、両方の上限に数えられます（Boot ごと・切断ごと） |
 | `max_power_w` | `6000.0` | 各コネクターのハードウェア上の最大電力 |
 | `voltage_v` | `200.0` | 電源の公称電圧 |
 | `phases` | `1` | 電源の相数（1、2、3） |

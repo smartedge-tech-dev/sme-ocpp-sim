@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Retry limits: `csms_defaults.reconnect.max_retries` (consecutive failed connections) and the charger field
+  `boot_max_retries` (non-Accepted BootNotification answers, Pending included). Both default to `null`
+  (unlimited). At the limit the charger stops, the UI shows a **Gave up** badge (snapshot `gave_up`,
+  `last_error` kind `retries_exhausted`), and only Connect starts it again.
+- New handshake error kind `client_cert_required`: a TLS connection closed right after the handshake, or an
+  nginx HTTP 400 "SSL certificate" page, while no client certificate is configured. It raises no
+  FailedToAuthenticateAtCsms security event and triggers no certificate fallback.
+
+### Changed
+
+- An nginx HTTP 400 "SSL certificate" page with a client certificate configured is reported as
+  `client_cert_rejected` (with `status` 400) instead of `bad_request`; other HTTP 400 answers over wss:// get a
+  hint that also names a TLS proxy refusing the client certificate.
+
+### Fixed
+
+- Windows: the asyncio proactor's "Exception in callback ..._call_connection_lost" `ConnectionResetError`
+  traceback after a peer reset is no longer printed (logged at debug level).
+
 ## [0.2.1] - 2026-11-28
 
 ### Added
