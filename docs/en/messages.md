@@ -179,7 +179,7 @@ New CSMS to station messages:
 | SetDERControl | Store-and-ack | Stored by `controlId`, `Accepted` |
 | GetDERControl | Store-and-ack | `NotFound`, or `Accepted` followed by one ReportDERControl |
 | ClearDERControl | Store-and-ack | `Accepted` / `NotFound` |
-| UpdateDynamicSchedule, UsePriorityCharging | Not supported | CALLERROR `NotImplemented` (planned for a later v0.3.x) |
+| UpdateDynamicSchedule, UsePriorityCharging | Supported | See [Smart charging and V2X](#ocpp-21-smart-charging) |
 | GetPeriodicEventStream, AdjustPeriodicEventStream | Not supported | CALLERROR `NotImplemented` (planned for v0.4) |
 | RequestBatterySwap, NotifyWebPaymentStarted | Not supported | CALLERROR `NotImplemented` |
 
@@ -189,12 +189,41 @@ calculation, no DER behaviour).
 The 12 new station to CSMS messages (BatterySwap, ClosePeriodicEventStream, GetCertificateChainStatus, NotifyDERAlarm,
 NotifyDERStartStop, NotifyPeriodicEventStream (SEND), NotifyPriorityCharging, NotifySettlement,
 OpenPeriodicEventStream, PullDynamicScheduleUpdate, ReportDERControl, VatNumberValidation) are not sent by the station
-on its own (ReportDERControl only as the answer to GetDERControl). The Mini CSMS answers them minimally.
+on its own, except ReportDERControl (the answer to GetDERControl), PullDynamicScheduleUpdate and
+NotifyPriorityCharging (see below). The Mini CSMS answers them minimally.
+
+### Smart charging and V2X (2.1-M2) { #ocpp-21-smart-charging }
+
+The basic subset of OCPP 2.1 smart charging (K) and bidirectional power transfer (Q) is simulated. Rules that the
+specification leaves to the implementation, and options that are not modelled, are listed here.
+
+| Feature | Behaviour |
+|---|---|
+| Purposes PriorityCharging, LocalGeneration | Accepted (SmartChargingCtrlr.SupportedAdditionalPurposes). PriorityCharging replaces TxProfile / TxDefaultProfile while priority charging is active for the transaction; a LocalGeneration limit is added on top of the composite limit |
+| Kind Dynamic (K28) | One schedule with one period starting at 0, else `Rejected` `InvalidSchedule`. `dynUpdateTime` is set on receipt; with `duration` the profile is valid for `duration` seconds after the last update, then the next lower profile applies |
+| operationMode | Checked per purpose (K01.FR.111 - FR.116, reasonCode `InvalidOperationMode`). ChargingOnly charges within `limit`; CentralSetpoint, ExternalSetpoint and CentralFrequency follow `setpoint` (negative = discharge), capped to [`dischargeLimit`, `limit`]; Idle draws 0 W; ExternalLimits, LocalFrequency and LocalLoadBalancing charge within the limits (no frequency or load measurement is simulated). A ChargingStationExternalConstraints setpoint (ExternalSetpoint) takes precedence |
+| GetCompositeSchedule | Periods carry `operationMode` (omitted for ChargingOnly), `dischargeLimit` and `setpoint`; Idle periods have no values |
+| `limitAtSoC` | Caps limit and setpoint while the EV's SoC is at or above `soc` (the current SoC also for future periods) |
+| `maxOfflineDuration` | A profile is not valid after that many seconds offline; on reconnection the ones with `invalidAfterOfflineDuration` that expired are deleted, the others are valid again |
+| Operation mode change | TransactionEvent `Updated` with triggerReason `OperationModeChanged` and `transactionInfo.operationMode` |
+| Discharge physics | Power is negative while discharging, down to 10 % SoC at most at the EV's charging maximum. Energy.Active.Import.Register and Energy.Active.Export.Register both only grow; once a transaction has discharged, the Export measurands are reported next to the Import ones. The Web UI shows the signed power, the exported energy and the operation mode |
+| V2XChargingCtrlr | `Enabled` (true, read-write; false = no discharge and no bidirectional modes), `SupportedEnergyTransferModes`, `SupportedOperationModes` |
+
+| Message | Direction | Behaviour |
+|---|---|---|
+| UpdateDynamicSchedule | CSMS to station | `Accepted` for a Dynamic profile (given values replace the period's), `Rejected` `InvalidProfile` for another kind, `Rejected` `NotFound` for an unknown id |
+| PullDynamicScheduleUpdate | Station to CSMS | Sent at `dynUpdateTime + dynUpdateInterval` and then every interval while online; an `Accepted` update is applied. The Mini CSMS answers with the current values of the Dynamic profiles it sent, else `Rejected` `InvalidProfile` |
+| UsePriorityCharging | CSMS to station | `Accepted`, `NoProfile` (no PriorityCharging profile on the EVSE or EVSE 0) or `Rejected` `TxNotFound`; a change sends NotifyPriorityCharging |
+| NotifyPriorityCharging | Station to CSMS | After each switch of priority charging (remote or local); not queued while offline |
+
+Not modelled: frequency response, SmartChargingCtrlr.SetpointPriority, `setpointReactive` and the `_L2` / `_L3`
+values (accepted, not applied), `evseSleep`, randomized delay and local time (`Rejected`), ISO 15118-20
+renegotiation, the 2.1 fields of a RequestStartTransaction profile (handled with the 2.0.1 rules).
 
 ## Not supported yet
 
 | Feature | Status |
 |---|---|
-| OCPP 2.1: UpdateDynamicSchedule, UsePriorityCharging, periodic event streams, battery swap, web payment | Not supported (CALLERROR `NotImplemented`), see [OCPP 2.1](#ocpp-21) |
+| OCPP 2.1: periodic event streams, battery swap, web payment | Not supported (CALLERROR `NotImplemented`), see [OCPP 2.1](#ocpp-21) |
 | 1.6 Security Whitepaper SignedUpdateFirmware, GetLog, LogStatusNotification, SignedFirmwareStatusNotification | Not supported (CALLERROR `NotImplemented`) |
 | ISO 15118 / Plug & Charge | Not supported (paid standard) |

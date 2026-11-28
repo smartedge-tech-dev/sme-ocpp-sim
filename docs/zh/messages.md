@@ -170,7 +170,7 @@ CSMS 到充电站的新消息：
 | SetDERControl | 存储并应答 | 按 `controlId` 存储，`Accepted` |
 | GetDERControl | 存储并应答 | `NotFound`，或 `Accepted` 后跟一条 ReportDERControl |
 | ClearDERControl | 存储并应答 | `Accepted` / `NotFound` |
-| UpdateDynamicSchedule、UsePriorityCharging | 不支持 | CALLERROR `NotImplemented`（计划在后续 v0.3.x 支持） |
+| UpdateDynamicSchedule、UsePriorityCharging | 支持 | 见 [智能充电与 V2X](#ocpp-21-smart-charging) |
 | GetPeriodicEventStream、AdjustPeriodicEventStream | 不支持 | CALLERROR `NotImplemented`（计划在 v0.4 支持） |
 | RequestBatterySwap、NotifyWebPaymentStarted | 不支持 | CALLERROR `NotImplemented` |
 
@@ -179,12 +179,39 @@ CSMS 到充电站的新消息：
 12 条新的充电站到 CSMS 消息（BatterySwap、ClosePeriodicEventStream、GetCertificateChainStatus、NotifyDERAlarm、
 NotifyDERStartStop、NotifyPeriodicEventStream（SEND）、NotifyPriorityCharging、NotifySettlement、
 OpenPeriodicEventStream、PullDynamicScheduleUpdate、ReportDERControl、VatNumberValidation）充电站不会主动发送
-（ReportDERControl 仅作为 GetDERControl 的应答发送）。Mini CSMS 对它们做最简应答。
+（例外：ReportDERControl 作为 GetDERControl 的应答，以及 PullDynamicScheduleUpdate 和 NotifyPriorityCharging，见下文）。Mini CSMS 对它们做最简应答。
+
+### 智能充电与 V2X（2.1-M2） { #ocpp-21-smart-charging }
+
+模拟 OCPP 2.1 智能充电（K）与双向电能传输（Q）的基础部分。规范留给实现决定的规则以及未建模的选项如下。
+
+| 功能 | 行为 |
+|---|---|
+| 用途 PriorityCharging、LocalGeneration | 接受（SmartChargingCtrlr.SupportedAdditionalPurposes）。交易启用优先充电期间，PriorityCharging 取代 TxProfile / TxDefaultProfile；LocalGeneration 的限值叠加到合成限值上 |
+| 类型 Dynamic（K28） | 只允许 1 个日程、1 个从 0 开始的时段，否则 `Rejected` `InvalidSchedule`。`dynUpdateTime` 在收到时设置；有 `duration` 时自最后一次更新起有效 `duration` 秒，之后改用更低一级的 profile |
+| operationMode | 按用途检查（K01.FR.111 - FR.116，reasonCode `InvalidOperationMode`）。ChargingOnly 在 `limit` 内充电；CentralSetpoint、ExternalSetpoint、CentralFrequency 跟随 `setpoint`（负值 = 放电），限制在 [`dischargeLimit`, `limit`]；Idle 为 0 W；ExternalLimits、LocalFrequency、LocalLoadBalancing 在限值内充电（不模拟频率与负荷测量）。ChargingStationExternalConstraints 的 setpoint（ExternalSetpoint）优先 |
+| GetCompositeSchedule | 时段包含 `operationMode`（ChargingOnly 时省略）、`dischargeLimit`、`setpoint`；Idle 时段不含数值 |
+| `limitAtSoC` | EV 的 SoC 不低于 `soc` 时，限值和 setpoint 以该上限封顶（未来时段也用当前 SoC） |
+| `maxOfflineDuration` | 离线超过该秒数后 profile 失效；重连时，已过期且 `invalidAfterOfflineDuration` 为 true 的被删除，其余恢复有效 |
+| 运行模式变化 | 发送 TransactionEvent `Updated`，triggerReason `OperationModeChanged`，带 `transactionInfo.operationMode` |
+| 放电物理模型 | 放电时功率为负，最多放到 SoC 10 %，上限与 EV 的充电上限相同。Energy.Active.Import.Register 与 Energy.Active.Export.Register 都只增不减；交易放过电后，Export 测量值与 Import 测量值一起上报。Web UI 显示带符号的功率、放电电量和运行模式 |
+| V2XChargingCtrlr | `Enabled`（true，可读写；false = 不放电、不允许双向模式）、`SupportedEnergyTransferModes`、`SupportedOperationModes` |
+
+| 消息 | 方向 | 行为 |
+|---|---|---|
+| UpdateDynamicSchedule | CSMS → 充电站 | Dynamic profile 回 `Accepted`（给出的值替换时段的值），其他类型回 `Rejected` `InvalidProfile`，未知 id 回 `Rejected` `NotFound` |
+| PullDynamicScheduleUpdate | 充电站 → CSMS | 在线时于 `dynUpdateTime + dynUpdateInterval` 发送，之后每个间隔发送；应用 `Accepted` 的更新。Mini CSMS 回它自己下发的 Dynamic profile 的当前值，否则 `Rejected` `InvalidProfile` |
+| UsePriorityCharging | CSMS → 充电站 | `Accepted`、`NoProfile`（EVSE 和 EVSE 0 都没有 PriorityCharging profile）或 `Rejected` `TxNotFound`；状态切换时发送 NotifyPriorityCharging |
+| NotifyPriorityCharging | 充电站 → CSMS | 每次切换优先充电（远程或本地）后发送；离线时不排队 |
+
+未建模：频率响应、SmartChargingCtrlr.SetpointPriority、`setpointReactive` 与 `_L2` / `_L3` 值（接受但不应用）、
+`evseSleep`、随机延迟与本地时间（`Rejected`）、ISO 15118-20 重新协商、RequestStartTransaction profile 中的 2.1 字段
+（按 2.0.1 规则处理）。
 
 ## 尚不支持
 
 | 功能 | 状态 |
 |---|---|
-| OCPP 2.1：UpdateDynamicSchedule、UsePriorityCharging、周期事件流、换电、Web 支付 | 不支持（CALLERROR `NotImplemented`），见 [OCPP 2.1](#ocpp-21) |
+| OCPP 2.1：周期事件流、换电、Web 支付 | 不支持（CALLERROR `NotImplemented`），见 [OCPP 2.1](#ocpp-21) |
 | 1.6 Security Whitepaper 的 SignedUpdateFirmware、GetLog、LogStatusNotification、SignedFirmwareStatusNotification | 不支持（CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 不支持（付费标准） |
