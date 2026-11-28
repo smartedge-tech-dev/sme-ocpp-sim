@@ -505,6 +505,7 @@ def test_builtin_scenarios(tmp_path):
             builtin.path(bad)
     engine = OcppEngine(SimConfig.model_validate({"csms_defaults": {"url": "ws://127.0.0.1:9/ocpp"},
                                                   "chargers": [{"id": "DEMO-16"}, {"id": "DEMO-201"}]}))
+    engine.trace_dir = lambda: tmp_path   # web-started scenarios record a trace there
     with TestClient(create_app(engine)) as c:
         assert [e["name"] for e in c.get("/api/scenarios/builtin").json()["scenarios"]] == names
         assert "plug-charge-unplug" in c.get("/api/scenarios/builtin/plug-charge-unplug").text
