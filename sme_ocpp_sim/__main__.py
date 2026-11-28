@@ -262,10 +262,10 @@ def main(argv=None) -> int:
                                       ("port", args.csms_port)) if v is not None}
         if override:
             cfg = SimConfig.model_validate({**cfg.model_dump(), "mini_csms": {**cfg.mini_csms.model_dump(), **override}})
-        if args.trace:
-            cfg.trace.path = args.trace
         text = Path(path).read_text(encoding="utf-8") if path else None
         engine = OcppEngine(cfg, config_text=text, config_path=path)
+        if args.trace:   # not cfg.trace.path: the config is written back to its file
+            engine.trace_start_path = args.trace
         if path:
             engine.log_event("config", f"config file: {path}")  # also in the web UI event log
     except Exception as e:  # noqa: BLE001

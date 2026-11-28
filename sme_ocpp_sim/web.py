@@ -744,6 +744,8 @@ def _router(engine: OcppEngine) -> APIRouter:
         path = trace_file(name)
         if engine.trace is not None and engine.trace.recording:
             raise bad(409, f"a trace is already recording to {engine.trace.path}")
+        if path.exists():   # never overwrite a recording through the API
+            raise bad(409, f"trace file {name!r} already exists; choose another file name")
         try:
             rec = await engine.start_trace(path)
         except OSError as e:

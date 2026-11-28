@@ -33,6 +33,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Set, Union
 
+from ..trace.format import url_path
 from ..charging import power
 from ..charging.ev import PRESETS, EvModel, Vehicle
 from ..charging.power import AcSupply, PowerState
@@ -370,7 +371,7 @@ class ChargerRuntime:
         self.adapter.bind(rpc.call)
         self.connected = True
         self._session_no += 1
-        self._lifecycle("connected", {"session": self._session_no})
+        self._lifecycle("connected", {"session": self._session_no, "path": url_path(self.transport.url)})
         self._session_down.clear()
         self._session_up.set()
         rx = asyncio.create_task(rpc.run())

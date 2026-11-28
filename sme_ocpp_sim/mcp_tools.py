@@ -104,7 +104,7 @@ def build_registry(app: Any) -> McpRegistry:
     add("get_trace", "Status of the trace recording (recording, path, frames, events, dropped) and the trace "
         "directory.", "GET", "/api/trace", no_args)
     add("start_trace", "Start recording every charger's frames and events into a trace file (ocppsim-trace/1) "
-        "in the trace directory; file = a file name ending in .jsonl (default trace-<time>.jsonl).", "POST",
+        "in the trace directory; file = a file name ending in .jsonl (default trace-<time>.jsonl; an existing file is refused with 409).", "POST",
         "/api/trace/start", _obj({"file": {"type": "string", "description": "File name, e.g. run1.jsonl"}},
                                   cid=False), destructive=False)
     add("stop_trace", "Stop the trace recording (writes its footer).", "POST", "/api/trace/stop", no_args,

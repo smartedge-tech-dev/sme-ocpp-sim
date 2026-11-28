@@ -5,7 +5,10 @@ Clients poll with ``since(seq)`` and de-duplicate by ``seq``; ``to_jsonl()`` exp
 
 Secrets (#54): :func:`mask_payload` / :func:`mask_frame` replace the secret values a CSMS sends to a station with
 :data:`SECRET_MASK` - 1.6 ChangeConfiguration ``AuthorizationKey`` (``value``), 2.0.1 SetVariables
-``BasicAuthPassword`` (``attributeValue``) and 2.0.1 SetNetworkProfile's VPN / APN credentials. :meth:`FrameLog.add`
+``BasicAuthPassword`` (``attributeValue``), SetNetworkProfile's VPN / APN credentials, and where such a value can
+come back: the 2.0.1 / 2.1 NotifyReport request (``variableAttribute[].value``) and the answers to GetVariables
+(``attributeValue``) and the 1.6 GetConfiguration (``AuthorizationKey`` ``value``; :data:`RESULT_SECRET_ACTIONS`:
+a CALLRESULT carries the action of its CALL, see ``rpc.FrameInfo``). :meth:`FrameLog.add`
 masks the text it stores, so both the charger simulator's frame log and the Mini CSMS's are covered; the frame on
 the wire is never changed (``FrameInfo.raw`` is only read). A certificate (CertificateSigned, InstallCertificate) is
 not a secret and is kept.
@@ -26,7 +29,9 @@ MESSAGE_TYPE_NAMES = {2: "CALL", 3: "CALLRESULT", 4: "CALLERROR"}
 #: What a masked secret value is replaced with (the same text as ``config.PASSWORD_MASK``).
 SECRET_MASK = "********"
 #: CALL actions whose request payload can carry a secret.
-SECRET_ACTIONS = frozenset({"ChangeConfiguration", "SetVariables", "SetNetworkProfile"})
+SECRET_ACTIONS = frozenset({"ChangeConfiguration", "SetVariables", "SetNetworkProfile", "NotifyReport"})
+#: CALL actions whose CALLRESULT can carry a secret.
+RESULT_SECRET_ACTIONS = frozenset({"GetVariables", "GetConfiguration"})
 _SECRET_KEYS_16 = frozenset({"AuthorizationKey"})
 _SECRET_VARIABLES_201 = frozenset({"BasicAuthPassword"})
 _SECRET_PROFILE_FIELDS = {"vpn": ("password", "key"), "apn": ("apnPassword", "simPin")}
@@ -43,6 +48,12 @@ def _mask_in_place(action: str, p: dict) -> bool:
             if (isinstance(d, dict) and isinstance(d.get("variable"), dict)
                     and d["variable"].get("name") in _SECRET_VARIABLES_201 and "attributeValue" in d):
                 d["attributeValue"], hit = SECRET_MASK, True
+    elif action == "NotifyReport":
+        for d in p.get("reportData") or []:
+            if isinstance(d, dict) and isinstance(d.get("variable"), dict)                     and d["variable"].get("name") in _SECRET_VARIABLES_201:
+                for a in d.get("variableAttribute") or []:
+                    if isinstance(a, dict) and "value" in a:
+                        a["value"], hit = SECRET_MASK, True
     elif action == "SetNetworkProfile":
         data = p.get("connectionData")
         for part, fields in _SECRET_PROFILE_FIELDS.items():
@@ -50,6 +61,21 @@ def _mask_in_place(action: str, p: dict) -> bool:
             for f in fields if isinstance(sub, dict) else ():
                 if f in sub:
                     sub[f], hit = SECRET_MASK, True
+    return hit
+
+
+def _mask_result_in_place(action: str, p: dict) -> bool:
+    """Mask the secrets of one CALLRESULT payload ``p`` of a CALL ``action`` (mutated)."""
+    hit = False
+    if action == "GetVariables":
+        for d in p.get("getVariableResult") or []:
+            if (isinstance(d, dict) and isinstance(d.get("variable"), dict)
+                    and d["variable"].get("name") in _SECRET_VARIABLES_201 and "attributeValue" in d):
+                d["attributeValue"], hit = SECRET_MASK, True
+    elif action == "GetConfiguration":
+        for d in p.get("configurationKey") or []:
+            if isinstance(d, dict) and d.get("key") in _SECRET_KEYS_16 and "value" in d:
+                d["value"], hit = SECRET_MASK, True
     return hit
 
 
@@ -66,14 +92,21 @@ def mask_frame(raw: str, action: Optional[str] = None) -> str:
     """The OCPP-J frame text ``raw`` with the secrets of its CALL payload masked (re-serialised compactly only when
     something was masked; anything unparseable is returned as is). ``action`` (when known) skips the parse for
     every other action."""
-    if action is not None and action not in SECRET_ACTIONS:
+    if action is not None and action not in SECRET_ACTIONS and action not in RESULT_SECRET_ACTIONS:
         return raw
     try:
         frame = json.loads(raw)
     except (ValueError, TypeError):
         return raw
-    if (not isinstance(frame, list) or len(frame) != 4 or frame[0] != 2 or frame[2] not in SECRET_ACTIONS
-            or not isinstance(frame[3], dict) or not _mask_in_place(frame[2], frame[3])):
+    if not isinstance(frame, list) or not frame:
+        return raw
+    if frame[0] == 2 and len(frame) == 4 and frame[2] in SECRET_ACTIONS and isinstance(frame[3], dict):
+        hit = _mask_in_place(frame[2], frame[3])
+    elif frame[0] == 3 and len(frame) == 3 and action in RESULT_SECRET_ACTIONS and isinstance(frame[2], dict):
+        hit = _mask_result_in_place(action, frame[2])   # the action comes from the CALL this answers
+    else:
+        hit = False
+    if not hit:
         return raw
     return json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
 
@@ -127,7 +160,8 @@ class FrameLog:
             seq=self._seq, ts=self._clock(), charger=charger, direction=info.direction,
             message_type=MESSAGE_TYPE_NAMES.get(mtype) if mtype is not None else None,
             uid=getattr(info, "uid", None), action=action,
-            raw=mask_frame(info.raw, action) if mtype in (2, None) else info.raw, note=getattr(info, "note", ""),
+            raw=(mask_frame(info.raw, action) if mtype in (2, None) or (mtype == 3 and action in RESULT_SECRET_ACTIONS)
+                 else info.raw), note=getattr(info, "note", ""),
         )
         self._buf.append(entry)
         return entry

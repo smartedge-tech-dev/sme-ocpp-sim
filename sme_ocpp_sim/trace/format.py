@@ -5,8 +5,11 @@ A trace is a JSON Lines file. Version 1 (written by :class:`.recorder.TraceRecor
 * ``{"type": "header", "format": "ocppsim-trace", "version": 1, ...}`` - always the first line: ``tool_version``,
   ``created`` (ISO wall time), ``time_scale``, ``sim_start`` (ISO sim time when the recording started), ``masked``
   (always true: secrets are masked as in the frame log), ``part`` (0, 1, ... for a rotated recording; ``previous``
-  names the part before) and ``chargers`` (``id``, ``ocpp_version``, ``connectors``, ``csms_url`` without
-  credentials).
+  names the part before) and ``chargers``: ``id``, ``ocpp_version``, ``connectors``, ``csms_url`` (no credentials,
+  no query), and what a replay needs to rebuild the charger - ``vendor``, ``model``, ``serial``,
+  ``security_profile``, ``subprotocol``, ``path`` (the WebSocket path incl. the charger identity), ``ev_model``,
+  ``seed`` (``traffic.seed``, the vehicle streams) and ``impairments`` (the charger's impairments at the start).
+  All of them are additive: readers ignore what they do not know, the version stays 1.
 * ``{"type": "frame", <FrameEntry fields>, "sim_t": s}`` - one OCPP-J frame; ``seq`` / ``ts`` / ``direction`` mean
   what they mean in the frame log (``direction`` seen from the charger). ``sim_t`` = sim seconds since the
   recording started (``null`` when unknown, e.g. a frame log export).
@@ -15,8 +18,10 @@ A trace is a JSON Lines file. Version 1 (written by :class:`.recorder.TraceRecor
   the :mod:`.scenario.ops` function names), ``clock`` (time_scale / running changed) and ``chargers`` (the charger
   list changed by a reload).
 * ``{"type": "footer", "ended", "frames", "events", "dropped", "next"}`` - the last line of a part that was closed
-  properly; ``dropped`` = lines lost because the write queue was full, ``next`` = the file name of the following
-  part (rotation) or ``null``.
+  properly. ``frames`` / ``events`` / ``dropped`` are CUMULATIVE totals of the whole recording up to this footer
+  (not per part; a reader takes the last footer). ``dropped`` = lines lost because the write queue was full,
+  ``next`` = the file name of the following part (rotation) or ``null``; ``error`` (optional) = why the recording
+  ended early (a part could not be opened, a disk error).
 
 A file without a header (the frame log's ``frames.jsonl``: one FrameEntry object per line) is version 0; it is read
 the same way (every line a frame). Unknown line types and unknown fields are ignored, so v1 readers accept
@@ -42,17 +47,30 @@ class TraceError(ValueError):
     """A file that is not a readable trace."""
 
 
+INVALID_URL = "<invalid url>"
+
+
 def strip_credentials(url: Optional[str]) -> Optional[str]:
-    """``url`` without ``user:password@`` (a trace never carries the Basic Auth secret)."""
+    """``url`` without ``user:password@``, query string and fragment (a trace never carries a secret a URL can
+    hold); an unparseable url is replaced by :data:`INVALID_URL`, never echoed."""
     if not url:
         return url
     try:
         parts = urlsplit(url)
+        _ = parts.port   # raises ValueError for a bad port
+        return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1], query="", fragment=""))
     except ValueError:
-        return url
-    if "@" not in parts.netloc:
-        return url
-    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
+        return INVALID_URL
+
+
+def url_path(url: Optional[str]) -> Optional[str]:
+    """The path of ``url`` (no host, credentials, query or fragment); ``None`` when it cannot be parsed."""
+    if not url:
+        return None
+    try:
+        return urlsplit(url).path or "/"
+    except ValueError:
+        return None
 
 
 def dumps(obj: Dict[str, Any]) -> str:
@@ -80,9 +98,14 @@ def event_line(ts: float, sim_t: Optional[float], charger: Optional[str], event:
     return {"type": "event", "ts": ts, "sim_t": sim_t, "charger": charger, "event": event, "detail": detail or {}}
 
 
-def footer(*, ended: str, frames: int, events: int, dropped: int, next_part: Optional[str] = None) -> Dict[str, Any]:
-    return {"type": "footer", "ended": ended, "frames": frames, "events": events, "dropped": dropped,
-            "next": next_part}
+def footer(*, ended: str, frames: int, events: int, dropped: int, next_part: Optional[str] = None,
+           error: Optional[str] = None) -> Dict[str, Any]:
+    """Totals are cumulative for the whole recording (see the module docstring)."""
+    out: Dict[str, Any] = {"type": "footer", "ended": ended, "frames": frames, "events": events,
+                           "dropped": dropped, "next": next_part}
+    if error is not None:
+        out["error"] = error
+    return out
 
 
 @dataclass
@@ -94,7 +117,8 @@ class Trace:
     frames: List[Dict[str, Any]] = field(default_factory=list)
     events: List[Dict[str, Any]] = field(default_factory=list)
     footer: Optional[Dict[str, Any]] = None        # the last part's footer (None = not closed properly)
-    dropped: int = 0                               # sum over every part's footer
+    dropped: int = 0                               # the LAST footer's dropped (footers are cumulative)
+    incomplete: bool = False                       # a part named by a footer is missing, or the footer has an error
     bad_lines: List[int] = field(default_factory=list)   # 1-based line numbers that were not JSON objects
     parts: List[str] = field(default_factory=list)
 
@@ -144,8 +168,10 @@ def parse_lines(lines: Iterable[str], trace: Optional[Trace] = None, *, first_pa
         elif kind == "event":
             out.events.append(obj)
         elif kind == "footer":
-            out.footer = obj
-            out.dropped += int(obj.get("dropped") or 0)
+            out.footer = obj      # footers are cumulative: the last one holds the totals
+            out.dropped = int(obj.get("dropped") or 0)
+            if obj.get("error"):
+                out.incomplete = True
     return out if out is not None else Trace(version=0)
 
 
@@ -164,6 +190,7 @@ def load(path: Union[str, Path], *, follow: bool = True) -> Trace:
             break
         q = p.with_name(Path(str(nxt)).name)  # a bare file name beside this part, never another directory
         if q.resolve() in seen or not q.exists():
+            trace.incomplete = True    # the chain continues in a file we do not have
             break
         trace.footer = None
         p = q

@@ -9,7 +9,9 @@ recorded unmasked. Credentials a replay needs are passed to the replay as argume
 
 Rotation: with ``rotate_mb`` a part that reaches the size is closed with a footer whose ``next`` names the next
 part (``run.jsonl`` -> ``run.1.jsonl`` -> ``run.2.jsonl`` ...); every part starts with its own header (``part``,
-``previous``). :func:`.format.load` follows the chain.
+``previous``). :func:`.format.load` follows the chain. Footer counts (``frames`` / ``events`` / ``dropped``) are
+cumulative for the whole recording, not per part. Part N+1 is opened BEFORE the footer that points at it is
+written; if the open fails the footer says ``next: null`` plus an ``error`` and the recording ends.
 
 ``chargers`` (optional) limits the recording to those charger ids (a scenario records only its own chargers).
 """
@@ -31,6 +33,8 @@ log = logging.getLogger(__name__)
 #: Lines the write queue holds at most (a slow disk loses lines beyond it, counted in ``dropped``).
 QUEUE_SIZE = 50_000
 _STOP = object()
+#: The writer flushes whenever its queue runs empty, and at least this often (seconds) under load.
+FLUSH_S = 1.0
 
 
 def _iso_now() -> str:
@@ -67,6 +71,7 @@ class TraceRecorder:
         self.parts: List[str] = []
         self.error: Optional[str] = None
         self._bytes = 0
+        self._written: Dict[str, int] = {}
         self._thread: Optional[threading.Thread] = None
         self._closed = False
 
@@ -113,7 +118,7 @@ class TraceRecorder:
         if self._closed:
             return False
         try:
-            self._q.put_nowait(fmt.dumps(line))
+            self._q.put_nowait((line.get("type"), fmt.dumps(line)))
             return True
         except queue.Full:
             self.dropped += 1
@@ -151,34 +156,60 @@ class TraceRecorder:
         self.parts.append(str(p))
         return fh
 
-    def _footer(self, fh, next_part: Optional[str]) -> None:
-        fh.write(fmt.dumps(fmt.footer(ended=_iso_now(), frames=self.frames, events=self.events,
-                                      dropped=self.dropped, next_part=next_part)))
+    def _drain(self) -> None:
+        while True:  # unblock a stop() waiting to put its marker
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+
+    def _footer(self, fh, next_part: Optional[str], error: Optional[str] = None) -> None:
+        # Cumulative totals of what was written so far (lines still queued are not in this part).
+        fh.write(fmt.dumps(fmt.footer(ended=_iso_now(), frames=self._written.get("frame", 0), events=self._written.get("event", 0),
+                                      dropped=self.dropped, next_part=next_part, error=error)))
 
     def _writer(self, fh) -> None:
         part = 0
+        last_flush = time.monotonic()
         try:
             while True:
-                item = self._q.get()
+                try:
+                    item = self._q.get_nowait()
+                except queue.Empty:
+                    fh.flush()                      # idle: make what was written readable
+                    last_flush = time.monotonic()
+                    item = self._q.get()
                 if item is _STOP:
                     break
-                fh.write(item)
-                self._bytes += len(item.encode("utf-8"))
+                kind, text = item
+                fh.write(text)
+                self._written[kind] = self._written.get(kind, 0) + 1
+                self._bytes += len(text.encode("utf-8"))
+                now = time.monotonic()
+                if now - last_flush >= FLUSH_S:     # a busy queue: still flush at least once a second
+                    fh.flush()
+                    last_flush = now
                 if self.rotate_bytes and self._bytes >= self.rotate_bytes:
                     part += 1
+                    try:
+                        nxt = self._open(part)      # open part N+1 first, then point the footer at it
+                    except OSError as e:
+                        self.error = f"cannot open part {part}: {type(e).__name__}: {e}"
+                        log.error("trace %s: %s", self.path, self.error)
+                        self._footer(fh, None, self.error)
+                        self._closed = True
+                        self._drain()
+                        return
                     self._footer(fh, part_path(self.path, part).name)
                     fh.close()
-                    fh = self._open(part)
+                    fh = nxt
+                    last_flush = time.monotonic()
             self._footer(fh, None)
         except Exception as e:  # noqa: BLE001 - a disk error ends the recording; reported in status()
             self.error = f"{type(e).__name__}: {e}"
             log.error("trace %s: %s", self.path, self.error)
             self._closed = True
-            while True:  # unblock a stop() waiting to put its marker
-                try:
-                    self._q.get_nowait()
-                except queue.Empty:
-                    break
+            self._drain()
         finally:
             try:
                 fh.close()

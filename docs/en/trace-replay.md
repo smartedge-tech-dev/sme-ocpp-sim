@@ -22,6 +22,22 @@ Secrets are masked exactly as in the frame log (for example a ChangeConfiguratio
 A file without a header, such as a frame log export from `/api/frames.jsonl`, is read as **version 0**: every
 line is a frame. `analyze` accepts both.
 
+### Header charger entries and footers
+
+Besides `id`, `ocpp_version`, `connectors` and `csms_url`, every `chargers` entry carries what a replay needs to
+rebuild the charger: `vendor`, `model`, `serial`, `security_profile`, `subprotocol` (the WebSocket subprotocol),
+`path` (the WebSocket path including the charger identity, e.g. `/ocpp/CP001`), `ev_model`, `seed`
+(`traffic.seed`, which also seeds the vehicle streams) and `impairments` (the charger's configured impairments
+at the start). None of them is a secret: `csms_url` has no user, password, query string or fragment (an
+unparseable URL is written as `<invalid url>`), and the `connected` event's `detail.path` is the connection path
+only. These fields are additive; the format version stays 1 and readers ignore fields they do not know.
+
+**Footers are cumulative.** `frames`, `events` and `dropped` of a footer are the totals of the whole recording up
+to that footer, not of its part; a reader takes the last footer (the sum over parts would count twice). A
+footer may also carry `error` (the recording ended early, e.g. the next part could not be created; then `next` is
+`null`). `analyze` reports `complete: false` when the last footer is missing, has an `error`, or its `next` part
+file is missing.
+
 ## Recording
 
 | Way | What is recorded | File |
@@ -48,6 +64,16 @@ first part reads the whole chain.
 The recorder never slows the simulator down: lines go through a bounded queue to a background writer. If the
 disk cannot keep up, lines are dropped and counted in the footer's `dropped`.
 
+A relative `trace.path` (and a relative `--trace FILE`) is resolved against the working directory of the
+process, like the other file paths of the configuration (`ca_file`, `client_cert_file`), not against the config
+file's directory. `--trace` does not change `trace.path`, so a config written back by the web UI keeps its own
+value. The HTTP API (and the MCP `start_trace` tool) writes only into the trace directory and refuses a file name
+that already exists with 409; the CLI `--trace FILE` takes any path and overwrites it.
+
+If the next part cannot be opened during rotation, the recording ends with a footer with `next: null` and an
+`error`. The writer flushes whenever its queue is empty and at least once a second, so a running recording can
+be read.
+
 ## analyze
 
 ```
@@ -66,7 +92,9 @@ The report, per charger:
 - **Transactions**: start, end, duration, Δ meter (Wh), stop reason. OCPP 2.0.1 / 2.1: `seqNo` gaps and
   duplicates per transaction.
 - **Protocol anomalies**: unparseable frames, responses without a CALL, message ids used twice, a CALL sent
-  while an earlier CALL of the same side was still open.
+  while an earlier CALL of the same side was still open (a CALL open for more than 60 s, or open when the
+  charger disconnected, counts as unanswered instead). Frames and events are processed in time order; frame lines
+  without `seq`, `ts` or `direction` are skipped and counted as bad lines.
 - **Smart Charging**: the SetChargingProfile / ClearChargingProfile / UpdateDynamicSchedule calls of the CSMS
   with their answer status.
 
@@ -78,7 +106,7 @@ as well. There are no charts; build them from the JSON.
 | Method | Path | Meaning |
 |---|---|---|
 | GET | `/api/trace` | Recording status (`recording`, `path`, `frames`, `events`, `dropped`) and the trace directory |
-| POST | `/api/trace/start` | Body `{"file": "run1.jsonl"}` (optional; default `trace-<time>.jsonl`). 409 while a recording runs |
+| POST | `/api/trace/start` | Body `{"file": "run1.jsonl"}` (optional; default `trace-<time>.jsonl`). 409 while a recording runs, or when the file already exists |
 | POST | `/api/trace/stop` | Stop and write the footer. 409 when nothing is recording |
 | GET | `/api/trace/files` | Trace files in the trace directory, newest first |
 | GET | `/api/trace/files/{file}` | Download one trace file |

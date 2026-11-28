@@ -15,6 +15,10 @@ Report sections (per charger):
   TransactionEvent with ``seqNo`` gaps and duplicates.
 * ``anomalies``: unparseable frames, responses without a CALL (``unpaired``), CALL uids used twice
   (``duplicate_uid``), a CALL sent while an earlier one of the same side was still open (``concurrent_call``).
+  Frames and events are processed in ``ts`` order. A ``disconnected`` event closes the open CALLs of that charger
+  (they count as ``unanswered``), and a CALL that has been open for more than :data:`STALE_CALL_S` seconds is
+  counted as ``unanswered`` and dropped instead of being flagged as the other CALL's ``concurrent_call``.
+  Frame lines without a usable ``seq`` / ``ts`` / ``direction`` are skipped and counted in ``trace.bad_frames``.
 * ``smart_charging``: timeline of the profile CALLs the CSMS sent (Set / Clear ChargingProfile,
   UpdateDynamicSchedule) with their answer status.
 
@@ -36,6 +40,8 @@ FORMAT = "ocppsim-analysis/1"
 SMART_CHARGING_ACTIONS = frozenset({"SetChargingProfile", "ClearChargingProfile", "UpdateDynamicSchedule"})
 _ENERGY = "Energy.Active.Import.Register"
 _UNITS = {"Wh": 1.0, "kWh": 1000.0}
+#: A CALL open longer than this (wall seconds) is not held against a later CALL of the same side.
+STALE_CALL_S = 60.0
 
 
 def percentile(values: List[float], q: float) -> Optional[float]:
@@ -98,6 +104,7 @@ class _Charger:
         self.cid = cid
         self.actions: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self.open: Dict[Tuple[str, str], Dict[str, Any]] = {}   # (call direction, uid) -> call info
+        self.dead: List[Tuple[Tuple[str, str], Dict[str, Any]]] = []   # closed without an answer: unanswered
         self.seen_uids: Dict[str, set] = {"tx": set(), "rx": set()}
         self.anomalies: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self.boots: List[Dict[str, Any]] = []
@@ -130,6 +137,9 @@ def _on_call(c: _Charger, f: Dict[str, Any], frame: list) -> None:
     if uid in c.seen_uids[d]:
         c.anomalies["duplicate_uid"].append({"seq": f["seq"], "uid": uid, "action": action})
     c.seen_uids[d].add(uid)
+    for k, v in list(c.open.items()):   # a stale CALL is unanswered, not concurrent with this one
+        if k[0] == d and f["ts"] - v["ts"] > STALE_CALL_S:
+            c.dead.append((k, c.open.pop(k)))
     if any(k[0] == d for k in c.open):
         c.anomalies["concurrent_call"].append({"seq": f["seq"], "uid": uid, "action": action,
                                                "open": [v["action"] for k, v in c.open.items() if k[0] == d]})
@@ -165,6 +175,12 @@ def _on_call(c: _Charger, f: Dict[str, Any], frame: list) -> None:
                            "status": None, "_uid": uid})
 
 
+def _close_open(c: _Charger) -> None:
+    """The connection ended: every CALL still open stays unanswered."""
+    c.dead.extend(c.open.items())
+    c.open.clear()
+
+
 def _on_tx_event(c: _Charger, f: Dict[str, Any], p: Dict[str, Any]) -> None:
     info = p.get("transactionInfo") or {}
     tid = info.get("transactionId")
@@ -181,6 +197,8 @@ def _on_tx_event(c: _Charger, f: Dict[str, Any], p: Dict[str, Any]) -> None:
     tx["_energy"].extend(_energy(p.get("meterValue")))
     t = _ts(p.get("timestamp")) or f["ts"]
     kind = p.get("eventType")
+    if kind == "Started":
+        tx["_has_started"] = True
     if kind == "Started" or tx["started"] is None:
         tx["started"], tx["_t0"] = tx["started"] or p.get("timestamp"), tx.get("_t0", t)
         if tx.get("id_tag") is None and isinstance(p.get("idToken"), dict):
@@ -238,7 +256,9 @@ def _finish_tx(tx: Dict[str, Any], version: str) -> Dict[str, Any]:
                 dups.append(s)
             seen.add(s)
         top = max(seen) if seen else -1
-        out["seq_no"] = {"count": len(seqs), "gaps": [n for n in range(0, top + 1) if n not in seen],
+        # Without a Started event the trace may begin mid-transaction: count gaps from the first seqNo seen.
+        base = 0 if tx.get("_has_started") or not seen else min(seen)
+        out["seq_no"] = {"count": len(seqs), "gaps": [n for n in range(base, top + 1) if n not in seen],
                          "duplicates": sorted(set(dups))}
     if out.get("meter_start_wh") is not None and out.get("meter_stop_wh") is not None:
         out["delta_wh"] = round(float(out["meter_stop_wh"]) - float(out["meter_start_wh"]), 3)
@@ -266,9 +286,33 @@ def _events(c: _Charger, events: Iterable[Dict[str, Any]], end_ts: Optional[floa
 def analyze(trace: Trace, charger: Optional[str] = None) -> Dict[str, Any]:
     """The ``ocppsim-analysis/1`` report of ``trace`` (only ``charger`` when given)."""
     per: Dict[str, _Charger] = {}
-    frames = [f for f in trace.frames if charger is None or f.get("charger") == charger]
+    frames: List[Dict[str, Any]] = []
+    bad_frames = 0
+    for f in trace.frames:
+        if charger is not None and f.get("charger") != charger:
+            continue
+        if (isinstance(f.get("ts"), (int, float)) and not isinstance(f.get("ts"), bool)
+                and isinstance(f.get("seq"), int) and f.get("direction") in ("tx", "rx")):
+            frames.append(f)
+        else:
+            bad_frames += 1
+    events = [e for e in trace.events if (charger is None or e.get("charger") == charger)
+              and isinstance(e.get("ts"), (int, float)) and not isinstance(e.get("ts"), bool)]
     unparseable: Dict[str, List[int]] = defaultdict(list)
-    for f in frames:
+    by_charger: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    # Frames then events, stably sorted by ts: a disconnect closes what was sent before it.
+    for ts, is_event, item in sorted([(f["ts"], 0, f) for f in frames] + [(e["ts"], 1, e) for e in events],
+                                     key=lambda x: x[0]):
+        if is_event:
+            if item.get("charger") is None:
+                continue
+            cid = str(item["charger"])
+            c = per.get(cid) or per.setdefault(cid, _Charger(cid))
+            by_charger[cid].append(item)
+            if item.get("event") == "disconnected":
+                _close_open(c)
+            continue
+        f = item
         cid = str(f.get("charger"))
         c = per.get(cid) or per.setdefault(cid, _Charger(cid))
         frame = _parse(f.get("raw"))
@@ -281,12 +325,6 @@ def analyze(trace: Trace, charger: Optional[str] = None) -> Dict[str, Any]:
             _on_response(c, f, frame)
         else:
             unparseable[cid].append(f.get("seq"))
-    events = [e for e in trace.events if charger is None or e.get("charger") == charger]
-    by_charger: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for e in events:
-        if e.get("charger") is not None:
-            by_charger[str(e["charger"])].append(e)
-            per.setdefault(str(e["charger"]), _Charger(str(e["charger"])))
     end_ts = max([f["ts"] for f in frames] + [e["ts"] for e in events], default=None)
     start_ts = min([f["ts"] for f in frames] + [e["ts"] for e in events], default=None)
 
@@ -298,7 +336,7 @@ def analyze(trace: Trace, charger: Optional[str] = None) -> Dict[str, Any]:
         version = trace.ocpp_version(cid) or ("2.0.1" if has201 else "1.6" if c.actions else None)
         actions: Dict[str, Dict[str, Any]] = {"tx": {}, "rx": {}}
         for (d, a), st in sorted(c.actions.items()):
-            unanswered = sum(1 for k, v in c.open.items() if k[0] == d and v["action"] == a)
+            unanswered = sum(1 for k, v in [*c.dead, *c.open.items()] if k[0] == d and v["action"] == a)
             lat = _dist(st["latency_ms"])
             actions[d][a] = {"calls": st["calls"], "results": st["results"], "errors": dict(sorted(st["errors"].items())),
                              "unanswered": unanswered, "latency_ms": {k: lat[k] for k in ("p50", "p95", "max")}}
@@ -309,7 +347,7 @@ def analyze(trace: Trace, charger: Optional[str] = None) -> Dict[str, Any]:
         anomalies = {"unparseable": unparseable.get(cid, []), "unpaired": c.anomalies["unpaired"],
                      "duplicate_uid": c.anomalies["duplicate_uid"], "concurrent_call": c.anomalies["concurrent_call"],
                      "unanswered": [{"seq": v["seq"], "uid": k[1], "action": v["action"], "direction": k[0]}
-                                    for k, v in sorted(c.open.items(), key=lambda kv: kv[1]["seq"])]}
+                                    for k, v in sorted([*c.dead, *c.open.items()], key=lambda kv: kv[1]["seq"])]}
         chargers[cid] = {
             "ocpp_version": version,
             "frames": sum(1 for f in frames if str(f.get("charger")) == cid),
@@ -325,8 +363,9 @@ def analyze(trace: Trace, charger: Optional[str] = None) -> Dict[str, Any]:
     return {"format": FORMAT, "trace": {"version": trace.version, "tool_version": hdr.get("tool_version"),
                                         "created": hdr.get("created"), "parts": trace.parts,
                                         "frames": len(frames), "events": len(events), "dropped": trace.dropped,
-                                        "complete": trace.version == 0 or trace.footer is not None,
-                                        "bad_lines": trace.bad_lines,
+                                        "complete": trace.version == 0 or (trace.footer is not None
+                                                                           and not trace.incomplete),
+                                        "bad_lines": trace.bad_lines, "bad_frames": bad_frames,
                                         "start_ts": start_ts, "end_ts": end_ts,
                                         "span_s": round(end_ts - start_ts, 3) if start_ts is not None else None},
             "chargers": chargers}
@@ -342,8 +381,9 @@ def to_text(report: Dict[str, Any]) -> str:
     t = report["trace"]
     lines = [f"trace v{t['version']}: {t['frames']} frame(s), {t['events']} event(s), span {_fmt(t['span_s'])} s"
              + (f", {t['dropped']} dropped" if t["dropped"] else "")
-             + ("" if t["complete"] else ", no footer (recording not closed)")
-             + (f", {len(t['bad_lines'])} bad line(s)" if t["bad_lines"] else "")]
+             + ("" if t["complete"] else ", no footer or a part is missing (recording not closed)")
+             + (f", {len(t['bad_lines']) + t.get('bad_frames', 0)} bad line(s)"
+                if t["bad_lines"] or t.get("bad_frames") else "")]
     for cid, c in report["chargers"].items():
         lines.append("")
         lines.append(f"== {cid} (OCPP {c['ocpp_version'] or '?'}, {c['frames']} frame(s))")

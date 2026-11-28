@@ -21,6 +21,20 @@ JSON Lines（1 行 1 オブジェクト）で、各行に `type` があります
 ヘッダーのないファイル（`/api/frames.jsonl` のフレームログ出力など）は **バージョン 0** として読み、
 全行をフレームとして扱います。`analyze` はどちらも受け付けます。
 
+### ヘッダーの充電器エントリとフッター
+
+`chargers` の各エントリには、`id`、`ocpp_version`、`connectors`、`csms_url` のほか、リプレイが充電器を再構築するための
+`vendor`、`model`、`serial`、`security_profile`、`subprotocol`（WebSocket サブプロトコル）、`path`（充電器 ID を含む
+WebSocket パス。例 `/ocpp/CP001`）、`ev_model`、`seed`（`traffic.seed`。車両の乱数列も決める）、`impairments`（開始時の
+充電器の障害注入設定）を記録します。秘密情報は含みません。`csms_url` からはユーザー・パスワード・クエリ・フラグメントを
+除去し（解析できない URL は `<invalid url>`）、`connected` イベントの `detail.path` は接続パスのみです。これらは追加項目で、
+フォーマットのバージョンは 1 のまま、リーダーは未知の項目を無視します。
+
+**フッターは累積値です。** フッターの `frames`、`events`、`dropped` はそのパートではなく、そのフッターまでの記録全体の
+合計です。リーダーは最後のフッターを採用します（パートごとに足すと二重計上になります）。フッターには `error`
+（次のパートを作れなかったなど、記録が途中で終了した理由。このとき `next` は `null`）が付くことがあります。
+`analyze` は、最後のフッターがない・`error` がある・`next` のパートファイルがない場合に `complete: false` を報告します。
+
 ## 記録
 
 | 方法 | 記録対象 | ファイル |
@@ -47,6 +61,15 @@ trace:
 記録がシミュレーターを遅くすることはありません。行は上限付きキューを経てバックグラウンドで書き込まれ、
 ディスクが追いつかない場合は破棄してフッターの `dropped` に数えます。
 
+相対パスの `trace.path`（と相対パスの `--trace FILE`）は、設定ファイルの他のファイルパス（`ca_file`、
+`client_cert_file`）と同じく、設定ファイルのディレクトリではなくプロセスの作業ディレクトリ基準で解決されます。
+`--trace` は `trace.path` を書き換えないので、Web UI が書き戻す設定ファイルの値は変わりません。HTTP API（と MCP の
+`start_trace`）はトレースディレクトリにのみ書き込み、既存のファイル名は 409 で拒否します。CLI の `--trace FILE` は
+任意のパスを受け付け、上書きします。
+
+ローテーション中に次のパートを開けなかった場合、`next: null` と `error` 付きのフッターで記録を終了します。
+書き込みスレッドはキューが空になるたびに、また最低でも 1 秒ごとにフラッシュするため、記録中のファイルも読めます。
+
 ## analyze
 
 ```
@@ -64,7 +87,7 @@ sme-ocpp-sim analyze frames.jsonl --charger CP001 --ocpp-version 2.0.1
 - **トランザクション**：開始・終了、時間、Δ電力量（Wh）、終了理由。OCPP 2.0.1 / 2.1 は取引ごとの `seqNo`
   の欠番・重複。
 - **プロトコル異常**：解析できないフレーム、CALL のない応答、重複したメッセージ ID、同じ側の CALL が未応答の
-  まま送られた CALL。
+  まま送られた CALL（60 秒を超えて未応答の CALL、切断時に未応答だった CALL は代わりに「未応答」と数えます）。フレームとイベントは時刻順に処理し、`seq`・`ts`・`direction` のないフレーム行は読み飛ばして不正行に数えます。
 - **Smart Charging**：CSMS からの SetChargingProfile / ClearChargingProfile / UpdateDynamicSchedule と
   その応答ステータスの時系列。
 
@@ -76,7 +99,7 @@ sme-ocpp-sim analyze frames.jsonl --charger CP001 --ocpp-version 2.0.1
 | メソッド | パス | 意味 |
 |---|---|---|
 | GET | `/api/trace` | 記録状態（`recording`、`path`、`frames`、`events`、`dropped`）とトレースディレクトリ |
-| POST | `/api/trace/start` | ボディ `{"file": "run1.jsonl"}`（省略可。既定 `trace-<時刻>.jsonl`）。記録中は 409 |
+| POST | `/api/trace/start` | ボディ `{"file": "run1.jsonl"}`（省略可。既定 `trace-<時刻>.jsonl`）。記録中、またはファイルが既に存在する場合は 409 |
 | POST | `/api/trace/stop` | 停止してフッターを書く。記録していなければ 409 |
 | GET | `/api/trace/files` | トレースディレクトリのファイル一覧（新しい順） |
 | GET | `/api/trace/files/{file}` | トレースファイルのダウンロード |

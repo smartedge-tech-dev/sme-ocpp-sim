@@ -38,6 +38,7 @@ import logging
 import random
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+from .. import framelog
 from ..charging.ev import PRESETS, Vehicle
 from ..config import ChargerConfig, ImpairmentConfig, SimConfig
 from ..csms.handlers import SPECS
@@ -146,6 +147,11 @@ def _trace(engine: OcppEngine, name: str, sig: inspect.Signature, args: tuple, k
                 detail[k] = v
             elif hasattr(v, "model_dump"):
                 detail[k] = v.model_dump(mode="json")
+        if name == "send":   # a payload may carry a secret: mask it exactly as the frame log does
+            if "payload" in detail:
+                detail["payload"] = framelog.mask_payload(detail.get("action"), detail["payload"])
+            if isinstance(detail.get("raw"), str):
+                detail["raw"] = framelog.mask_frame(detail["raw"])
         engine.trace_event(cid, name, detail)
     except Exception:  # noqa: BLE001 - recording must never fail an action
         logging.getLogger(__name__).exception("trace event %s failed", name)

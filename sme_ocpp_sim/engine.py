@@ -181,6 +181,9 @@ class OcppEngine(BaseEngine):
         #: The engine's own recording (config ``trace.path``, ``--trace``, ``POST /api/trace/start``); kept after
         #: it stopped, for its status.
         self.trace: Optional[Any] = None
+        #: ``--trace FILE``: where the engine's own recording starts, instead of ``config.trace.path``. Kept apart
+        #: from the config, which is written back to the config file.
+        self.trace_start_path: Optional[str] = None
         #: The scenario runner of the current / last scenario (``scenario.runner``; one at a time).
         self.scenario: Optional[Any] = None
         #: The standing traffic (:class:`.scenario.traffic.StandingTraffic`, config ``traffic:``).
@@ -400,11 +403,12 @@ class OcppEngine(BaseEngine):
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
         self._sync_clock(self.time_scale, self.running)
         self.clock.reset()  # sim time starts with the engine (anchor = now), not when it was constructed
-        if self.config.trace.path and not (self.trace is not None and self.trace.recording):
+        start_path = self.trace_start_path or self.config.trace.path
+        if start_path and not (self.trace is not None and self.trace.recording):
             try:
-                await self.start_trace(self.config.trace.path)
+                await self.start_trace(start_path)
             except (OSError, OperationNotPossible) as e:  # a bad path does not stop the simulator
-                self.log_event("error", f"trace: cannot record to {self.config.trace.path}: {e}")
+                self.log_event("error", f"trace: cannot record to {start_path}: {e}")
         for cid, e in self.state.items():
             if cid not in self._held:
                 self._launch(cid, e.runtime)
@@ -432,8 +436,14 @@ class OcppEngine(BaseEngine):
     # ------------------------------------------------------------ trace (v0.3 M5)
 
     def trace_chargers(self, ids: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
-        """Header ``chargers`` of a trace: id, OCPP version, connector count, CSMS URL without credentials."""
-        from .trace.format import strip_credentials
+        """Header ``chargers`` of a trace: id, OCPP version, connector count, CSMS URL without credentials, plus
+        what a replay needs (all credential-free): vendor / model / serial, security profile, WebSocket
+        subprotocol, the connection ``path`` (identity included), ``ev_model``, the traffic / vehicle ``seed`` and
+        the charger's configured ``impairments``."""
+        from urllib.parse import quote
+
+        from .rpc.transport import derived_security_profile
+        from .trace.format import strip_credentials, url_path
 
         want = set(ids) if ids is not None else None
         out = []
@@ -442,9 +452,16 @@ class OcppEngine(BaseEngine):
                 continue
             url, version = self.config.resolve_csms(c)
             e = self.state.get(c.id)
+            sub = e.runtime.adapter.subprotocol if e is not None else None
             out.append({"id": c.id, "ocpp_version": version,
                         "connectors": e.runtime.connector_count if e is not None else c.connectors,
-                        "csms_url": strip_credentials(url)})
+                        "csms_url": strip_credentials(url),
+                        "vendor": c.vendor, "model": c.model, "serial": c.serial,
+                        "security_profile": derived_security_profile(c.password, url, bool(c.client_cert_file)),
+                        "subprotocol": sub,
+                        "path": url_path(f"{url.rstrip('/')}/{quote(c.id, safe='')}"),
+                        "ev_model": c.session.ev_model, "seed": self.config.traffic.seed,
+                        "impairments": c.impairments.model_dump(mode="json")})
         return out
 
     def trace_event(self, charger: Optional[str], event: str, detail: Optional[Dict[str, Any]] = None) -> None:
@@ -458,8 +475,8 @@ class OcppEngine(BaseEngine):
         directory's ``traces/``)."""
         import sys
 
-        if self.config.trace.path:
-            return Path(self.config.trace.path).expanduser().resolve().parent
+        if self.trace_start_path or self.config.trace.path:
+            return Path(self.trace_start_path or self.config.trace.path).expanduser().resolve().parent
         if getattr(sys, "frozen", False):
             from .templates_builtin import user_data_dir
             return user_data_dir() / "traces"

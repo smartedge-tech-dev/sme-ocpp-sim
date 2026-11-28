@@ -204,8 +204,13 @@ def test_engine_events_and_header(tmp_path):
         assert eng.recorders == []
     asyncio.run(go())
     t = fmt.load(tmp_path / "t.jsonl")
-    assert t.header["chargers"] == [{"id": "CP1", "ocpp_version": "1.6", "connectors": 1,
-                                     "csms_url": "ws://127.0.0.1:9/ocpp"}]
+    [ch] = t.header["chargers"]
+    assert {k: ch[k] for k in ("id", "ocpp_version", "connectors", "csms_url", "vendor", "model", "serial",
+                               "security_profile", "subprotocol", "path", "ev_model", "seed")} == {
+        "id": "CP1", "ocpp_version": "1.6", "connectors": 1, "csms_url": "ws://127.0.0.1:9/ocpp",
+        "vendor": "SmartEdge", "model": "SIM-AC6", "serial": None, "security_profile": 0,
+        "subprotocol": "ocpp1.6", "path": "/ocpp/CP1", "ev_model": "compact-40kwh", "seed": 0}
+    assert ch["impairments"]["latency_ms"] == 0 and "pw" not in json.dumps(t.header)
     assert [(e["event"], e["detail"]) for e in t.events] == [
         ("clock", {"time_scale": 30, "running": True}), ("plug", {"connector": 1})]
 
@@ -236,6 +241,7 @@ def test_config_trace_path_records_from_start(tmp_path):
     assert [e["event"] for e in t.events if e["charger"] == "CP1"][:1] == ["connected"]
     assert any(e["event"] == "disconnected" and e["detail"]["reason"] == "stopped" for e in t.events)
     assert any(f["action"] == "BootNotification" for f in t.frames)
+    assert next(e for e in t.events if e["event"] == "connected")["detail"]["path"] == "/ocpp/CP1"
     assert analyze(t)["chargers"]["CP1"]["connection"]["connected"] == 1
 
 
@@ -286,3 +292,202 @@ def test_web_scenario_records_a_trace(tmp_path):
     assert Path(v["trace"]).parent == tmp_path and Path(v["trace"]).name.startswith("scenario-t_r-")
     t = fmt.load(v["trace"])
     assert t.version == 1 and t.footer is not None and [c["id"] for c in t.header["chargers"]] == ["CP1"]
+
+
+# ------------------------------------------------------------------ review fixes (M5)
+
+def _call(seq, ts, uid, action="Heartbeat", d="tx", charger="CP1"):
+    return {"type": "frame", "seq": seq, "ts": ts, "charger": charger, "direction": d, "message_type": "CALL",
+            "uid": uid, "action": action, "raw": json.dumps([2, uid, action, {}]), "note": "", "sim_t": None}
+
+
+def _result(seq, ts, uid, d="rx", charger="CP1"):
+    return {"type": "frame", "seq": seq, "ts": ts, "charger": charger, "direction": d, "message_type": "CALLRESULT",
+            "uid": uid, "action": None, "raw": json.dumps([3, uid, {}]), "note": "", "sim_t": None}
+
+
+def test_rotation_footers_are_cumulative_and_dropped_is_not_summed(tmp_path):
+    p = tmp_path / "run.jsonl"
+    rec = _rec(p, rotate_mb=2000 / (1024 * 1024), queue_size=40)
+    for i in range(1, 100):    # writer not started: 40 queued, the rest dropped
+        rec.frame(_entry(i))
+    assert rec.dropped == 59
+    rec.start()
+    rec.stop()
+    assert len(rec.parts) >= 2
+    footers = [json.loads(Path(x).read_text("utf-8").splitlines()[-1]) for x in rec.parts]
+    assert all(f["dropped"] == 59 for f in footers) and footers[-1]["frames"] == 40
+    assert [f["frames"] for f in footers] == sorted(f["frames"] for f in footers)
+    t = fmt.load(p)
+    assert t.dropped == 59 and len(t.frames) == 40 and analyze(t)["trace"]["dropped"] == 59
+
+
+def test_rotation_open_failure_ends_with_error_footer(tmp_path, monkeypatch):
+    p = tmp_path / "run.jsonl"
+    rec = _rec(p, rotate_mb=2000 / (1024 * 1024))
+    orig = rec._open
+
+    def failing(part):
+        if part >= 1:
+            raise OSError("disk full")
+        return orig(part)
+    monkeypatch.setattr(rec, "_open", failing)
+    rec.start()
+    for i in range(1, 40):
+        rec.frame(_entry(i))
+    for _ in range(100):
+        if not rec.recording:
+            break
+        time.sleep(0.02)
+    rec.stop()
+    last = json.loads(p.read_text("utf-8").splitlines()[-1])
+    assert last["type"] == "footer" and last["next"] is None and "disk full" in last["error"]
+    assert rec.error and not (tmp_path / "run.1.jsonl").exists()
+    t = fmt.load(p)
+    assert t.incomplete and analyze(t)["trace"]["complete"] is False
+
+
+def test_missing_next_part_is_incomplete(tmp_path):
+    p = tmp_path / "run.jsonl"
+    rec = _rec(p, rotate_mb=2000 / (1024 * 1024)).start()
+    for i in range(1, 40):
+        rec.frame(_entry(i))
+    rec.stop()
+    assert fmt.load(p).incomplete is False and analyze(fmt.load(p))["trace"]["complete"] is True
+    (tmp_path / "run.1.jsonl").unlink()
+    t = fmt.load(p)
+    assert t.incomplete and analyze(t)["trace"]["complete"] is False
+    assert "part is missing" in to_text(analyze(t))
+
+
+def test_writer_flushes_when_idle(tmp_path):
+    p = tmp_path / "t.jsonl"
+    rec = _rec(p).start()
+    rec.frame(_entry(1))
+    for _ in range(100):
+        if '"seq":1' in p.read_text("utf-8"):
+            break
+        time.sleep(0.02)
+    assert '"seq":1' in p.read_text("utf-8")    # readable while still recording
+    rec.stop()
+
+
+def test_strip_credentials_query_fragment_and_invalid():
+    assert fmt.strip_credentials("wss://u:p@h:9000/ocpp/CP1?token=abc&x=1#frag") == "wss://h:9000/ocpp/CP1"
+    assert fmt.strip_credentials("ws://h/ocpp?key=secret") == "ws://h/ocpp"
+    assert fmt.strip_credentials("ws://u:topsecret@h:notaport/x") == fmt.INVALID_URL
+    assert "topsecret" not in fmt.strip_credentials("ws://u:topsecret@[bad/x")
+    assert fmt.url_path("wss://u:p@h/ocpp/CP1?t=1") == "/ocpp/CP1"
+
+
+def test_analyze_orders_by_ts_and_closes_calls_on_disconnect():
+    tr = fmt.Trace(version=1, header={"chargers": []})
+    # frames deliberately out of ts order; the disconnect leaves a unanswered; b is stale (>60 s) when c comes
+    tr.frames = [_call(2, 12.0, "b"), _call(1, 10.0, "a"), _call(3, 100.0, "c"), _result(4, 100.5, "c")]
+    tr.events = [{"type": "event", "ts": 11.0, "sim_t": None, "charger": "CP1", "event": "disconnected",
+                  "detail": {}}]
+    c = analyze(tr)["chargers"]["CP1"]
+    assert c["anomalies"]["concurrent_call"] == []
+    assert [u["uid"] for u in c["anomalies"]["unanswered"]] == ["a", "b"]
+    assert c["actions"]["tx"]["Heartbeat"]["unanswered"] == 2
+
+
+def test_analyze_flags_concurrent_but_not_stale_calls():
+    tr = fmt.Trace(version=1)
+    tr.frames = [_call(1, 10.0, "a"), _call(2, 12.0, "b")]
+    assert len(analyze(tr)["chargers"]["CP1"]["anomalies"]["concurrent_call"]) == 1
+    tr.frames = [_call(1, 10.0, "a"), _call(2, 100.0, "b"), _result(3, 100.1, "b", d="rx")]
+    c = analyze(tr)["chargers"]["CP1"]
+    assert c["anomalies"]["concurrent_call"] == []
+    assert [u["uid"] for u in c["anomalies"]["unanswered"]] == ["a"]
+
+
+def test_analyze_survives_frame_lines_missing_fields():
+    tr = fmt.Trace(version=1)
+    tr.frames = [_call(1, 10.0, "a"), {"type": "frame", "raw": '[2,"x","Heartbeat",{}]'},
+                 {**_call(3, 11.0, "c"), "ts": None}, {k: v for k, v in _call(4, 12.0, "d").items() if k != "seq"},
+                 {k: v for k, v in _call(5, 13.0, "e").items() if k != "direction"}]
+    tr.events = [{"type": "event", "event": "disconnected", "charger": "CP1"}]
+    r = analyze(tr)
+    assert r["trace"]["bad_frames"] == 4 and r["trace"]["frames"] == 1
+    assert "4 bad line(s)" in to_text(r)
+
+
+def test_seqno_gaps_without_started_count_from_first_seen():
+    def ev(seq_no, kind="Updated"):
+        p = {"eventType": kind, "seqNo": seq_no, "timestamp": "2026-01-01T00:00:00Z",
+             "transactionInfo": {"transactionId": "T9"}, "evse": {"id": 1}}
+        return {"type": "frame", "seq": seq_no, "ts": 10.0 + seq_no, "charger": "CP2", "direction": "tx",
+                "message_type": "CALL", "uid": f"u{seq_no}", "action": "TransactionEvent",
+                "raw": json.dumps([2, f"u{seq_no}", "TransactionEvent", p]), "note": "", "sim_t": None}
+    tr = fmt.Trace(version=1)
+    tr.frames = [ev(5), ev(6), ev(8)]
+    [tx] = analyze(tr)["chargers"]["CP2"]["transactions"]
+    assert tx["seq_no"]["gaps"] == [7]
+    tr.frames = [ev(0, "Started"), ev(2)]       # a Started event: counted from 0
+    [tx] = analyze(tr)["chargers"]["CP2"]["transactions"]
+    assert tx["seq_no"]["gaps"] == [1]
+
+
+def test_masking_of_results_and_notify_report():
+    from sme_ocpp_sim.framelog import SECRET_MASK, FrameLog, mask_frame
+    gv = json.dumps([3, "u1", {"getVariableResult": [
+        {"attributeStatus": "Accepted", "attributeValue": "hunter2", "variable": {"name": "BasicAuthPassword"}},
+        {"attributeValue": "x", "variable": {"name": "Other"}}]}])
+    out = json.loads(mask_frame(gv, "GetVariables"))
+    assert out[2]["getVariableResult"][0]["attributeValue"] == SECRET_MASK
+    assert out[2]["getVariableResult"][1]["attributeValue"] == "x"
+    assert mask_frame(gv, "Heartbeat") == gv
+    gc = json.dumps([3, "u2", {"configurationKey": [{"key": "AuthorizationKey", "readonly": False, "value": "s3cret"}]}])
+    assert json.loads(mask_frame(gc, "GetConfiguration"))[2]["configurationKey"][0]["value"] == SECRET_MASK
+    nr = json.dumps([2, "u3", "NotifyReport", {"reportData": [
+        {"variable": {"name": "BasicAuthPassword"}, "variableAttribute": [{"value": "pw"}]}]}])
+    assert "pw" not in mask_frame(nr, "NotifyReport") and SECRET_MASK in mask_frame(nr)
+
+    class Info:
+        direction, message_type, uid, action, note = "tx", 3, "u1", "GetVariables", ""
+        raw = gv
+    assert "hunter2" not in FrameLog().add("CP1", Info).raw
+
+
+def test_ops_send_event_detail_is_masked():
+    import inspect
+
+    from sme_ocpp_sim.scenario import ops
+    eng = _engine()
+    seen = []
+
+    class Rec:
+        def event(self, charger, event, detail=None):
+            seen.append((event, detail))
+    eng.recorders.append(Rec())
+    sig = inspect.signature(ops.send.__wrapped__)
+    ops._trace(eng, "send", sig, ("CP1",), {"action": "ChangeConfiguration",
+                                            "payload": {"key": "AuthorizationKey", "value": "topsecret"}}, 0)
+    raw = json.dumps([2, "u", "ChangeConfiguration", {"key": "AuthorizationKey", "value": "topsecret"}])
+    ops._trace(eng, "send", sig, ("CP1",), {"raw": raw}, 0)
+    assert "topsecret" not in json.dumps(seen) and "********" in json.dumps(seen)
+
+
+def test_web_trace_start_refuses_existing_file(tmp_path):
+    eng = _engine()
+    eng.stop_grace_s = 0.2
+    eng.trace_dir = lambda: tmp_path   # type: ignore[method-assign]
+    (tmp_path / "old.jsonl").write_text("keep me\n", "utf-8")
+    with TestClient(create_app(eng), base_url="http://127.0.0.1") as c:
+        r = c.post("/api/trace/start", json={"file": "old.jsonl"})
+        assert r.status_code == 409 and "already exists" in r.text
+    assert (tmp_path / "old.jsonl").read_text("utf-8") == "keep me\n"
+
+
+def test_cli_trace_path_is_kept_out_of_the_config(tmp_path):
+    eng = _engine()
+    eng.stop_grace_s = 0.2
+    eng.trace_start_path = str(tmp_path / "cli.jsonl")
+
+    async def go():
+        await eng.start()
+        assert eng.trace is not None and eng.trace.recording and eng.trace_dir() == tmp_path
+        await eng.stop()
+    asyncio.run(go())
+    assert eng.config.trace.path is None and (tmp_path / "cli.jsonl").exists()
