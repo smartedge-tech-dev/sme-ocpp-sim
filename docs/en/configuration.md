@@ -78,6 +78,7 @@ mask keeps the stored password.
 | `reconnect.min_s` | `1.0` | First reconnect delay in seconds |
 | `reconnect.max_s` | `60.0` | Maximum reconnect delay (≥ `min_s`); the delay grows exponentially |
 | `reconnect.jitter` | `0.2` | Random spread of the delay (0–1) |
+| `reconnect.max_retries` | `null` | Consecutive failed connections (a failed handshake, or a connection that closes before an accepted boot) after which the charger gives up: it stops, the UI shows **Gave up**, and only Connect starts it again. `null` = retry forever; `0` = give up on the first failure |
 
 ## ev_models
 
@@ -119,6 +120,7 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `auth_mode` | `local_then_csms` | `local_only` (only `id_tags`), `csms_only` (always Authorize), `local_then_csms` (`id_tags` first, then Authorize), `accept_all` |
 | `id_tags` | `[]` | Locally accepted id tags (max. 20 characters each, no duplicates) |
 | `boot_retry_s` | `60.0` | Boot retry delay when the CSMS answers Pending / Rejected with interval 0 |
+| `boot_max_retries` | `null` | Non-Accepted BootNotification answers (Pending, Rejected or no answer, counted across reconnects until Accepted) after which the charger closes the connection and gives up like `reconnect.max_retries`. `null` = no limit (the OCPP behaviour); a triggered BootNotification is not counted |
 | `max_power_w` | `6000.0` | Hardware maximum power of each connector |
 | `voltage_v` | `200.0` | Nominal supply voltage |
 | `phases` | `1` | Supply phases (1, 2 or 3) |

@@ -545,3 +545,69 @@ def test_queue_bound_drops_oldest_meter_values_only(monkeypatch):
         assert list(rt.station._outq) == [msgs[0], msgs[2], msgs[3], msgs[4]]
         assert rt.snapshot()["tx_queue"] == 4
     asyncio.run(main())
+
+
+# ---------------------------------------------------------------------- retry limits (reconnect / boot)
+
+async def _refused(_cfg):
+    # Like a closed port, without the seconds Windows spends retrying the SYN.
+    from sme_ocpp_sim.rpc import HandshakeError
+    raise HandshakeError("network", "connection refused")
+
+
+@VERSIONS
+def test_reconnect_max_retries_gives_up(version):
+    async def main():
+        rt = ChargerRuntime(_cfg(), "ws://unused/ocpp", version, connect=_refused,
+                            reconnect=ReconnectConfig(min_s=0.05, max_s=0.1, jitter=0, max_retries=2))
+        await asyncio.wait_for(rt.run(asyncio.Event()), 5)  # returns by itself
+        assert rt.connect_attempts == 3
+        assert rt.gave_up == {"reason": "max_retries", "attempts": 3, "last_kind": "network"}
+        assert rt.last_error["kind"] == "retries_exhausted" and rt.snapshot()["gave_up"]["attempts"] == 3
+        # A new run (the operator's Connect) counts from zero again.
+        await asyncio.wait_for(rt.run(asyncio.Event()), 5)
+        assert rt.connect_attempts == 6 and rt.gave_up["attempts"] == 3
+    asyncio.run(main())
+
+
+@VERSIONS
+def test_reconnect_max_retries_counts_sessions_closed_before_accepted(version):
+    from rpc_fakes import FakeWs
+
+    async def connect(_cfg):
+        ws = FakeWs()
+        await ws.close()
+        return ws
+
+    async def main():
+        rt = ChargerRuntime(_cfg(), "ws://unused/ocpp", version, connect=connect,
+                            reconnect=ReconnectConfig(min_s=0.05, max_s=0.1, jitter=0, max_retries=1))
+        await asyncio.wait_for(rt.run(asyncio.Event()), 5)
+        assert rt.gave_up["reason"] == "max_retries" and rt.gave_up["last_kind"] == "disconnected"
+        assert rt.connect_attempts == 2
+    asyncio.run(main())
+
+
+@VERSIONS
+def test_boot_max_retries_gives_up_and_closes_the_session(version):
+    async def main():
+        peer = PEERS[version](hb_interval=30, boot_statuses=["Rejected"] * 5, retry_interval=1)
+        await peer.start()
+        try:
+            rt = ChargerRuntime(_cfg(boot_max_retries=1), peer.url, version, reconnect=FAST, call_timeout=5)
+            await asyncio.wait_for(rt.run(asyncio.Event()), 8)
+            assert rt.gave_up == {"reason": "boot_max_retries", "attempts": 2, "last_kind": "Rejected"}
+            assert rt.boots == 2 and not rt.connected and not rt.online
+            assert rt.last_error["kind"] == "retries_exhausted" and rt.connect_attempts == 1
+            assert peer.sessions[CP].boot_statuses == ["Rejected", "Rejected"]
+        finally:
+            await peer.stop()
+    asyncio.run(main())
+
+
+def test_boot_max_retries_counts_pending_and_resets_on_accepted():
+    async def body(peer, rt):
+        await _until(lambda: rt.online)
+        assert rt.gave_up is None and rt._boot_failures == 0
+    # One Pending is within boot_max_retries=1; the second boot is Accepted.
+    _scenario(body, {"boot_statuses": ["Pending"], "retry_interval": 1}, {"boot_max_retries": 1})

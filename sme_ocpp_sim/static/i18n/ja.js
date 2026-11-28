@@ -26,6 +26,8 @@ Shell.addStrings("ja", {
   "conn.connecting": "接続中",
   "conn.error": "エラー",
   "conn.held": "切断中",
+  "conn.gave_up": "再試行停止",
+  "conn.gave_up.title": "{attempts} 回試行して停止しました（最後: {kind}）。接続 を押すと再開します",
   "status.Available": "利用可能",
   "status.Preparing": "準備中",
   "status.Charging": "充電中",

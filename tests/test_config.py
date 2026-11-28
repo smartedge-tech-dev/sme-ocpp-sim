@@ -142,3 +142,14 @@ chargers:
         parse_text('ev_models: [{ id: "e", capacity_kwh: 1, max_ac_kw: 1, curve: [[50, 1], [10, 1]] }]')
     with pytest.raises(ValidationError):
         ChargerConfig(id="A", power_w=6000)  # M3 placeholder removed
+
+
+def test_retry_limits_default_unlimited_and_non_negative():
+    from sme_ocpp_sim.config import ReconnectConfig
+    assert ReconnectConfig().max_retries is None and ChargerConfig(id="A").boot_max_retries is None
+    assert ReconnectConfig(max_retries=0).max_retries == 0
+    assert ChargerConfig(id="A", boot_max_retries=3).boot_max_retries == 3
+    with pytest.raises(ValidationError):
+        ReconnectConfig(max_retries=-1)
+    with pytest.raises(ValidationError):
+        ChargerConfig(id="A", boot_max_retries=-1)

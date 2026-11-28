@@ -33,7 +33,9 @@ ReconfigurationOfSecurityParameters（不记录密码）；新密码只保存在
 
 Profile 3（v0.2 起）：充电桩在 TLS 握手中出示 `client_cert_file`（PEM，可为证书链）和
 `client_key_file`（PEM，不加密），不发送 `Authorization` 头。CSMS 因客户端证书拒绝的握手显示为
-`client_cert_rejected`。证书可由 CSMS 更新（SignCertificate / CertificateSigned，两个版本均支持）；新证书从下一次
+`client_cert_rejected`；未配置客户端证书的 TLS 连接被同样拒绝时（CSMS 很可能要求 profile 3）显示为
+`client_cert_required`。在以 HTTP 400 返回 “SSL certificate” 页面的 TLS 代理（nginx `ssl_verify_client on`）
+之后也能识别这两种情况。证书可由 CSMS 更新（SignCertificate / CertificateSigned，两个版本均支持）；新证书从下一次
 连接起使用，只保存在内存中（YAML 仍是配置的文件）。证书和 SecurityEventNotification 消息见
 [OCPP 消息](messages.md)。
 

@@ -127,6 +127,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function connState(c) {
   if (c.enabled === false) return ["held", "b-off"];
+  if (!c.connected && c.gave_up) return ["gave_up", "b-bad"];
   if (!c.connected) return c.last_error ? ["error", "b-bad"] : ["connecting", "b-off"];
   const reg = String(c.registration || "").toLowerCase();
   if (reg === "accepted") return ["online", "b-ok"];
@@ -142,7 +143,9 @@ function setBadge(el, c) {
   const [key, cls] = connState(c);
   el.className = `badge ${cls}`;
   el.textContent = tk("conn", key);
-  el.title = errText(c.last_error);
+  el.title = key === "gave_up"
+    ? t("conn.gave_up.title", { attempts: c.gave_up.attempts, kind: c.gave_up.last_kind || "?" })
+    : errText(c.last_error);
 }
 
 function makeRow(id) {

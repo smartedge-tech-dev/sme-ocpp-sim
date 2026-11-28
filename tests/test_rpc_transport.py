@@ -174,8 +174,9 @@ def test_profile_3_no_client_certificate_is_rejected(tmp_path):
     pki, server = _p3(tmp_path)
     with pytest.raises(HandshakeError) as ei:
         asyncio.run(_try({"ca_file": str(pki.ca_file), "open_timeout": 5}, **server))
-    # Without a configured client certificate the charger did not try profile 3: a plain TLS / handshake error.
-    assert ei.value.kind in ("tls", "handshake", "network")
+    # Without a configured client certificate the CSMS refusal is reported as "certificate probably required"
+    # (how the refusal surfaces depends on the platform: an alert, a close after the handshake, a reset).
+    assert ei.value.kind in ("client_cert_required", "tls", "handshake", "network")
 
 
 def test_profile_3_client_certificate_of_another_ca_is_rejected(tmp_path):
@@ -229,3 +230,122 @@ def test_only_certificate_alerts_mean_client_cert_rejected():
     assert classify_ssl(err("TLSV13_ALERT_CERTIFICATE_REQUIRED"), cfg).kind == "client_cert_rejected"
     assert classify_ssl(err("TLSV1_ALERT_INTERNAL_ERROR"), cfg).kind == "tls"
     assert classify_ssl(err("SSLV3_ALERT_HANDSHAKE_FAILURE"), cfg).kind == "tls"
+
+
+def test_cert_alert_without_client_certificate_is_client_cert_required():
+    import ssl
+    from sme_ocpp_sim.rpc.transport import classify_ssl
+    e = ssl.SSLError(1, "TLSV13_ALERT_CERTIFICATE_REQUIRED")
+    e.reason = "TLSV13_ALERT_CERTIFICATE_REQUIRED"
+    assert classify_ssl(e, TransportConfig("wss://h/o", "A")).kind == "client_cert_required"
+
+
+def _lost_after_tls_error():
+    from websockets.exceptions import InvalidMessage
+    try:
+        try:
+            raise EOFError("connection closed while reading HTTP status line")
+        except EOFError as cause:
+            raise InvalidMessage("did not receive a valid HTTP response") from cause
+    except InvalidMessage as e:
+        return e
+
+
+@pytest.mark.parametrize("cert, kind", [(None, "client_cert_required"), ("c.pem", "client_cert_rejected")])
+def test_connection_lost_after_tls_handshake(monkeypatch, cert, kind):
+    import sme_ocpp_sim.rpc.transport as tr
+
+    async def fake_connect(*_a, **_kw):
+        raise _lost_after_tls_error()
+    monkeypatch.setattr(tr, "connect", fake_connect)
+    monkeypatch.setattr(tr, "make_ssl_context", lambda cfg: None)
+    cfg = TransportConfig("wss://h/o", "A", client_cert_file=cert, client_key_file=cert and "c.key")
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(open_connection(cfg))
+    assert ei.value.kind == kind and "TLS" in str(ei.value)
+    # Over ws:// the same close is a plain handshake failure.
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(open_connection(TransportConfig("ws://h/o", "A")))
+    assert ei.value.kind == "handshake"
+
+
+NGINX_400 = (b"<html><head><title>400 No required SSL certificate was sent</title></head>"
+             b"<body><center><h1>400 Bad Request</h1></center></body></html>")
+
+
+@pytest.mark.parametrize("cert, body, kind", [
+    (None, NGINX_400, "client_cert_required"),
+    ("c.pem", b"<title>400 The SSL certificate error</title>", "client_cert_rejected"),
+    (None, b"bad subprotocol", "bad_request"),
+])
+def test_tls_http_400_from_nginx_names_the_client_certificate(cert, body, kind):
+    from sme_ocpp_sim.rpc.transport import classify_invalid_status
+    cfg = TransportConfig("wss://h/o", "A", client_cert_file=cert, client_key_file=cert and "c.key")
+    err = classify_invalid_status(400, body, cfg)
+    assert (err.kind, err.status) == (kind, 400)
+    if kind == "bad_request":
+        assert "TLS proxy refusing the client certificate" in str(err)
+
+
+def test_plain_ws_http_400_keeps_the_subprotocol_hint():
+    from sme_ocpp_sim.rpc.transport import classify_invalid_status
+    err = classify_invalid_status(400, NGINX_400, TransportConfig("ws://h/o", "A"))
+    assert err.kind == "bad_request" and "subprotocol" in str(err) and "TLS proxy" not in str(err)
+
+
+def test_tls_http_400_end_to_end(tmp_path):
+    pki = make_pki(tmp_path)
+
+    def nginx(connection, request):
+        return connection.respond(HTTPStatus.BAD_REQUEST, NGINX_400.decode())
+    server = {"subprotocols": ["ocpp1.6"], "ssl": pki.server_context(), "process_request": nginx}
+    with pytest.raises(HandshakeError) as ei:
+        asyncio.run(_try({"ca_file": str(pki.ca_file)}, **server))
+    assert (ei.value.kind, ei.value.status) == ("client_cert_required", 400)
+
+
+# ---------------------------------------------------------------------- Windows proactor noise filter
+
+class _Loop:
+    def __init__(self):
+        self.handler, self.default_calls = None, []
+
+    def get_exception_handler(self):
+        return self.handler
+
+    def set_exception_handler(self, h):
+        self.handler = h
+
+    def default_exception_handler(self, context):
+        self.default_calls.append(context)
+
+
+class _Handle:
+    def __repr__(self):
+        return "<Handle _ProactorBasePipeTransport._call_connection_lost(None)>"
+
+
+def test_proactor_filter_swallows_only_connection_lost_resets():
+    from sme_ocpp_sim.runtime.loop_noise import install_proactor_filter
+    loop = _Loop()
+    assert not install_proactor_filter(loop, platform="linux") and loop.handler is None
+    assert install_proactor_filter(loop, platform="win32")
+    assert not install_proactor_filter(loop, platform="win32")  # idempotent
+    loop.handler(loop, {"message": "Exception in callback", "exception": ConnectionResetError(), "handle": _Handle()})
+    loop.handler(loop, {"message": "x", "exception": ConnectionAbortedError(), "handle": _Handle()})
+    assert loop.default_calls == []
+    other = [{"message": "x", "exception": ValueError(), "handle": _Handle()},
+             {"message": "x", "exception": ConnectionResetError(), "handle": "<Handle something_else()>"}]
+    for ctx in other:
+        loop.handler(loop, ctx)
+    assert loop.default_calls == other
+
+
+def test_proactor_filter_chains_to_a_previous_handler():
+    from sme_ocpp_sim.runtime.loop_noise import install_proactor_filter
+    loop, seen = _Loop(), []
+    loop.handler = lambda lp, ctx: seen.append(ctx)
+    install_proactor_filter(loop, platform="win32")
+    loop.handler(loop, {"message": "m", "exception": ConnectionResetError(), "handle": _Handle()})
+    loop.handler(loop, {"message": "m", "exception": RuntimeError()})
+    assert len(seen) == 1 and loop.default_calls == []

@@ -132,6 +132,9 @@ class ReconnectConfig(StrictModel):
     min_s: float = Field(1.0, gt=0)
     max_s: float = Field(60.0, gt=0)
     jitter: float = Field(0.2, ge=0, le=1)
+    #: Consecutive failed connections (a failed handshake, or a session that ended before an accepted boot)
+    #: after which the charger stops reconnecting until the operator connects it again; ``None`` = no limit.
+    max_retries: Optional[int] = Field(None, ge=0)
 
     @model_validator(mode="after")
     def _order(self) -> "ReconnectConfig":
@@ -256,6 +259,10 @@ class ChargerConfig(StrictModel):
     id_tags: List[Annotated[QuotedStr, Field(min_length=1, max_length=20)]] = Field(default_factory=list)
     #: Boot retry delay when the CSMS answers Pending / Rejected with ``interval`` 0.
     boot_retry_s: float = Field(60.0, gt=0)
+    #: Non-Accepted BootNotifications (Pending, Rejected or no answer; counted across reconnects until Accepted)
+    #: after which the charger closes the connection and stops until the operator connects it again;
+    #: ``None`` = no limit (the OCPP behaviour). A triggered BootNotification is not counted.
+    boot_max_retries: Optional[int] = Field(None, ge=0)
     # Supply and hardware limit of each connector (design §3.2 / §7). ``voltage_v`` is the nominal supply
     # voltage; ``line_to_line`` marks a 3-phase voltage given line-to-line (Japanese 3-phase 200 V delta).
     max_power_w: float = Field(6000.0, gt=0)

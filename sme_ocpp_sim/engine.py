@@ -70,6 +70,7 @@ from .config import PASSWORD_MASK, ChargerConfig, MiniCsmsConfig, SimConfig, sav
 from .csms import MiniCsms
 from .framelog import FrameLog
 from .runtime.charger import ChargerRuntime
+from .runtime.loop_noise import install_proactor_filter
 
 log = logging.getLogger(__name__)
 
@@ -299,6 +300,14 @@ class OcppEngine(BaseEngine):
         exc = task.exception()
         if exc is not None:
             self.log_event("error", f"charger {cid} task crashed: {type(exc).__name__}: {exc}")
+        elif run.runtime.gave_up is not None:
+            # A retry limit was hit: the loop stays stopped until the operator connects again (connect() needs
+            # the run gone from the registry).
+            g = run.runtime.gave_up
+            self._runs.pop(cid, None)
+            self.log_event("warning", f"charger {cid} gave up ({g['reason']}) after {g['attempts']} attempts; "
+                                      f"last: {g.get('last_kind')}")
+            self.wake()
         else:
             self.log_event("warning", f"charger {cid} task ended unexpectedly")
 
@@ -327,6 +336,7 @@ class OcppEngine(BaseEngine):
             return
         await super().start()
         self._started = True
+        install_proactor_filter(asyncio.get_running_loop())
         await self._sync_csms(self.config.mini_csms)
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
         for cid, e in self.state.items():
