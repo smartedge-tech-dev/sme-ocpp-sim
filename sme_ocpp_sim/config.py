@@ -468,6 +468,9 @@ class ChargerConfig(StrictModel):
     meter: MeterOptions = Field(default_factory=MeterOptions)
     #: Simulator-only connection fault injection (v0.2.2 A); applied live, never restarts the charger.
     impairments: ImpairmentConfig = Field(default_factory=ImpairmentConfig)
+    #: OCPP 2.1 only (G01): how a connector status change is reported - StatusNotification, NotifyEvent
+    #: (Connector.AvailabilityState) or both. Ignored by 1.6 / 2.0.1 chargers.
+    availability_report: Literal["status", "event", "both"] = "both"
     #: Charger template (:mod:`.templates_builtin`): the template fields this charger does not set come from it.
     template: Optional[Annotated[QuotedStr, Field(min_length=1)]] = None
     #: Template parameters (``{param}`` placeholders of a user template), overriding the template's defaults.
@@ -574,6 +577,15 @@ class MiniCsmsPlanItem(StrictModel):
     ocpp_version: Optional[Literal["1.6", "2.0.1", "2.1"]] = None
 
 
+class MiniCsmsTxLimit(StrictModel):
+    """TransactionLimitType of the Mini CSMS (2.1); ``None`` fields are not sent."""
+
+    max_energy_wh: Optional[float] = None
+    max_time_s: Optional[int] = Field(None, ge=0)
+    max_cost: Optional[float] = None
+    max_soc: Optional[int] = Field(None, ge=0, le=100)
+
+
 class MiniCsmsConfig(StrictModel):
     """Built-in simple CSMS (``mini_csms:``, plan M9): a WebSocket server in the same process, Security Profile 0 / 1.
     ``host`` / ``port`` / ``enabled`` changes restart it (stations reconnect); the other fields apply at once."""
@@ -592,6 +604,8 @@ class MiniCsmsConfig(StrictModel):
     call_timeout_s: float = Field(30.0, gt=0)
     frame_log_size: int = Field(5000, ge=100)
     plan: List[MiniCsmsPlanItem] = Field(default_factory=list)
+    #: OCPP 2.1 only (E16.FR.02 / F07.FR.02): limits sent in the TransactionEventResponse to every Started event.
+    transaction_limit: Optional["MiniCsmsTxLimit"] = None
 
     @model_validator(mode="after")
     def _check_plan(self) -> "MiniCsmsConfig":

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any, Sequence
 
 from ...rpc.errors import OCPP21_ERRORS
-from ..v201.adapter import REMOTE_ACTIONS, Adapter201
+from .. import base as d
+from ..v201.adapter import REMOTE_ACTIONS, Adapter201, id_token, id_token_info
 from . import codec as codec21
 from . import models as m
 
@@ -21,6 +23,27 @@ class Adapter21(Adapter201):
     models: Any = m
     codec: Any = codec21.CODEC
     remote_actions: Sequence[str] = REMOTE_ACTIONS_21
+    #: Driver-specific tariffs kept per idToken from an Accepted AuthorizeResponse (I08); bounded, oldest first.
+    MAX_DRIVER_TARIFFS = 64
+
+    def __init__(self, *, strict: bool = False) -> None:
+        super().__init__(strict=strict)
+        self.driver_tariffs: "OrderedDict[str, m.TariffType]" = OrderedDict()
+
+    async def send_authorize(self, ev: d.AuthorizeRequest) -> d.IdTokenInfo:
+        """As 2.0.1; the ``tariff`` of an Accepted answer is kept for the idToken (I08.FR.04), see the station."""
+        res: m.AuthorizeResponse = await self._send(
+            "Authorize", self.models.AuthorizeRequest(id_token=id_token(ev.id_token, models=self.models)))
+        if res.tariff is not None and res.id_token_info.status.value == "Accepted":
+            self.driver_tariffs.pop(ev.id_token, None)
+            self.driver_tariffs[ev.id_token] = res.tariff
+            while len(self.driver_tariffs) > self.MAX_DRIVER_TARIFFS:
+                self.driver_tariffs.popitem(last=False)
+        return id_token_info(res.id_token_info)
+
+    async def send_notify_event(self, req: m.NotifyEventRequest) -> Any:
+        """CS -> CSMS NotifyEvent (G01 connector AvailabilityState)."""
+        return await self._send("NotifyEvent", req)
 
     async def send_report_der_control(self, report: m.ReportDERControlRequest) -> Any:
         """CS -> CSMS ReportDERControl (R04); returns the parsed response."""

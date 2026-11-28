@@ -3,7 +3,7 @@
 All 2.0.1 behaviour is inherited unchanged (2.1 = 2.0.1 + optional fields + new messages, Part 0 Ch.1). On top:
 
 - Reset ``ImmediateAndResume`` (B13) is accepted and handled as ``Immediate``; resuming the transactions after the
-  reboot is not simulated yet (2.1-M3 / B13).
+  reboot is not simulated (E17).
 - TriggerMessage ``CustomTrigger`` answers ``NotImplemented`` (no custom triggers are declared).
 - Store-and-ack 2.1 messages (tier (c) of the 2.1 delta): the request is kept in memory and answered schema-valid.
   Nothing acts on it yet (no local cost calculation, no DER behaviour, no frequency response):
@@ -11,13 +11,40 @@ All 2.0.1 behaviour is inherited unchanged (2.1 = 2.0.1 + optional fields + new 
   - AFRRSignal -> ``Accepted`` (the last signal is kept).
   - NotifyAllowedEnergyTransfer -> ``Accepted`` for an ongoing transaction, else ``Rejected`` (kept per
     transaction).
-  - SetDefaultTariff -> ``Accepted`` / ``DuplicateTariffId`` (same tariffId on another EVSE); evseId 0 = every EVSE.
-    GetTariffs reads them back (``DefaultTariff`` assignments, or the transaction tariffs as ``DriverTariff``),
-    ClearTariffs removes them (``NoTariff`` when nothing matches), ChangeTransactionTariff -> ``Accepted`` for an
-    ongoing transaction, else ``TxNotFound``.
   - SetDERControl -> ``Accepted`` (kept by controlId; same controlId replaces); ClearDERControl -> ``Accepted`` /
     ``NotFound``; GetDERControl -> ``NotFound`` or ``Accepted`` followed by one ReportDERControl with the matching
     controls (R04). ``isSuperseded`` is always false: priorities are not evaluated.
+
+Transaction limits, tariffs and cost, availability (2.1-M3; calculation in :mod:`.tariff`):
+
+- Tariffs (I07 - I11). With TariffCostCtrlr.Enabled[Tariff] false every tariff message is CALLERROR
+  ``NotSupported`` (I07.FR.01 / I11.FR.01). SetDefaultTariff: ``Rejected`` ``UnknownEVSE``, ``TooManyElements``
+  (more prices than TariffCostCtrlr.MaxElements), ``ConditionNotSupported`` (conditions; ConditionsSupported is
+  false), ``DuplicateTariffId`` (the tariffId is installed on an EVSE not addressed), else ``Accepted``; evseId 0 =
+  every EVSE (I07.FR.12). An EVSE keeps one tariff without validFrom plus the ones with validFrom; the one in force
+  is the latest validFrom already reached, else the one without (I07.FR.19 / FR.20). GetTariffs (``DefaultTariff``
+  per EVSE, ``DriverTariff`` for the transactions), ClearTariffs (``NoTariff`` when nothing matches).
+  ChangeTransactionTariff: ``TxNotFound``, ``TooManyElements``, ``ConditionNotSupported``, ``NoCurrencyChange``
+  (I11.FR.05), else ``Accepted`` and a TransactionEvent ``Updated`` ``TariffChanged`` with ``tariffId`` (I11.FR.07).
+- Driver tariff (I08): the ``tariff`` of an Accepted AuthorizeResponse applies to the next transaction of that
+  idToken (implicitly accepted, I08.FR.22); one that cannot be processed is ignored (HandleFailedTariff
+  ``UseDefault`` behaviour, TariffCostCtrlr.Problem is not modelled). A transaction otherwise uses the default
+  tariff of its EVSE in force when it starts; its ``tariffId`` is sent in the Started event.
+- Cost (I12, plan Q19): with Enabled[Tariff] and Enabled[Cost] true the Ended event of a transaction with a tariff
+  carries ``costDetails`` (rough local calculation, see :mod:`.tariff`). Running cost updates are not sent
+  (Enabled[RunningCost] false).
+- Transaction limits (E16 / F07): a ``transactionLimit`` in a TransactionEventResponse sets the limits named in
+  TxCtrlr.SupportedLimits (all four by default); they are confirmed once by an ``Updated`` ``LimitSet`` event with
+  the supported values in ``transactionInfo.transactionLimit`` (E16.FR.03 / FR.13, F07.FR.03; not for the answer to
+  an ``offline`` event, E16.FR.18). :meth:`Station21.set_transaction_limit` is the local (driver) limit (E16.FR.01;
+  never above a CSMS limit, E16.FR.04). Checked every tick: a reached limit suspends the energy transfer with an
+  ``Updated`` event (``SuspendedEVSE``, triggerReason ``CostLimitReached`` / ``EnergyLimitReached`` /
+  ``TimeLimitReached`` / ``SoCLimitReached``, E16.FR.05), or ends the transaction when TxStopPoint contains
+  ``EnergyTransfer`` (E16.FR.06). A raised limit resumes it (E16.FR.14). The cost limit uses the local cost with a
+  tariff (E16.FR.16), else the last ``totalCost`` of a TransactionEventResponse (E16.FR.15).
+- Availability (G01): ``availability_report`` (``both`` by default) reports a connector status change as
+  StatusNotification, NotifyEvent (Connector.AvailabilityState, trigger ``Delta``) or both. TriggerMessage
+  StatusNotification still sends StatusNotification.
 
 Smart charging 2.1 and V2X basics (2.1-M2; rules in :mod:`.profiles` / :mod:`.composite`):
 
@@ -47,8 +74,8 @@ Smart charging 2.1 and V2X basics (2.1-M2; rules in :mod:`.profiles` / :mod:`.co
 
 Not modelled: frequency response (CentralFrequency follows its setpoint, LocalFrequency and LocalLoadBalancing
 charge within the limits), SetpointPriority, setpointReactive and the _L2 / _L3 values (accepted, not applied),
-evseSleep, ISO 15118-20 renegotiation after NotifyAllowedEnergyTransfer, the profile of a RequestStartTransaction
-with 2.1 fields (converted with the 2.0.1 rules).
+evseSleep, ISO 15118-20 renegotiation after NotifyAllowedEnergyTransfer. A RequestStartTransaction profile is
+converted and checked with the 2.1 rules (as SetChargingProfile), then with the 2.0.1 RequestStart rules.
 """
 
 from __future__ import annotations
@@ -60,20 +87,23 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...charging import power
+from ...rpc import CallError
 from .. import base as d
 from ..station import StationHost
 from ..v201 import device_model as dm
+from ..v201.adapter import connector_status
 from ..v201.composite import convert
 from ..v201.enums import (ChargingProfileStatusEnumType, ChargingRateUnitEnumType, GenericStatusEnumType,
-                          TransactionEventEnumType)
+                          ReasonEnumType, TransactionEventEnumType, TriggerReasonEnumType)
 from ..v201.profiles import REASON_INVALID, REASON_UNSUPPORTED_RATE_UNIT
 from ..v201.station import (CURRENT, CURRENT_DECIMALS, ENERGY, LOCATION, POWER, POWER_DECIMALS,
-                            REASON_INVALID_DURATION, REASON_UNKNOWN_EVSE, Station201, _Evse)
+                            REASON_INVALID_DURATION, REASON_UNKNOWN_EVSE, Station201, _Evse, _Tx)
 from . import models as m
 from .adapter import Adapter21
 from .composite import CompositeSchedule21, Setting, composite_schedule, setting_at
 from .profiles import (DYNAMIC, MODE, PRIORITY, ProfileStore21, UpdateRejected, charging_profile21,
                        reject_reason_21)
+from .tariff import LIMIT_FIELDS, CostMeter, has_conditions, limits_of, reached, too_many_elements
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +121,21 @@ EXPORT_POWER, EXPORT_ENERGY, EXPORT_CURRENT = "Power.Active.Export", "Energy.Act
 EXPORT_MEASURANDS = (EXPORT_ENERGY, EXPORT_POWER, EXPORT_CURRENT)
 _COMPANION = {ENERGY: EXPORT_ENERGY, POWER: EXPORT_POWER, CURRENT: EXPORT_CURRENT}
 REASON_NOT_FOUND = "NotFound"
+TARIFF = "TariffCostCtrlr"
+TARIFF_ENABLED = (TARIFF, "Enabled")  # instances Tariff / Cost / RunningCost
+TARIFF_MAX_ELEMENTS = (TARIFF, "MaxElements")  # instance Tariff
+TARIFF_CURRENCY = (TARIFF, "Currency")
+TX_SUPPORTED_LIMITS = (dm.TX, "SupportedLimits")
+TX_STOP_POINT = (dm.TX, "TxStopPoint")
+SUPPORTED_LIMITS = tuple(LIMIT_FIELDS.values())
+DEFAULT_MAX_ELEMENTS = 10
+#: Reached limit -> (triggerReason, stoppedReason when the transaction ends, E16.FR.05 / FR.06).
+_LIMIT_REACHED = {
+    "max_cost": (m.TriggerReasonEnumTypeExt21.cost_limit_reached, ReasonEnumType.other),
+    "max_energy": (TriggerReasonEnumType.energy_limit_reached, ReasonEnumType.energy_limit_reached),
+    "max_time": (TriggerReasonEnumType.time_limit_reached, ReasonEnumType.time_limit_reached),
+    "max_so_c": (m.TriggerReasonEnumTypeExt21.so_c_limit_reached, ReasonEnumType.soc_limit_reached),
+}
 REASON_TX_NOT_FOUND = "TxNotFound"
 _MEASURAND_LISTS = (dm.TX_STARTED_MEASURANDS, dm.TX_UPDATED_MEASURANDS, dm.TX_ENDED_MEASURANDS,
                     dm.ALIGNED_MEASURANDS, dm.ALIGNED_TX_ENDED_MEASURANDS)
@@ -119,8 +164,16 @@ class Station21(Station201):
         #: Store-and-ack state (see the module docstring); in memory, lost on restart.
         self.afrr_signal: Optional[m.AFRRSignalRequest] = None
         self.allowed_energy_transfer: Dict[str, List[str]] = {}
-        self.default_tariffs: Dict[int, m.TariffType] = {}  # by EVSE id
-        self.tx_tariffs: Dict[str, m.TariffType] = {}  # by transactionId
+        self.default_tariffs: Dict[int, List[m.TariffType]] = {}  # by EVSE id (several with validFrom, I07.FR.20)
+        self.tx_tariffs: Dict[str, m.TariffType] = {}  # driver-specific tariffs by transactionId (I08 / I11)
+        #: Transaction limits (E16) and cost (I12) by transactionId.
+        self.tx_limits: Dict[str, Dict[str, float]] = {}
+        self._csms_limits: Dict[str, Dict[str, float]] = {}
+        self._limit_reached: Dict[str, str] = {}
+        self._costs: Dict[str, CostMeter] = {}
+        #: transactionInfo fields sent once in the next TransactionEvent of a transaction (I08.FR.22).
+        self._tx_info_once: Dict[str, Dict[str, Any]] = {}
+        self._event_id = 0  # NotifyEvent eventId
         self.der_controls: Dict[str, m.SetDERControlRequest] = {}  # by controlId
         #: Smart charging 2.1 / V2X state (2.1-M2).
         self.profiles: ProfileStore21 = ProfileStore21(self.cfg.connectors)
@@ -166,22 +219,56 @@ class Station21(Station201):
 
     # ------------------------------------------------------------------ I07 - I11 tariffs
 
+    def _tariffs_enabled(self) -> bool:
+        return self.dm.bool_value(TARIFF_ENABLED, "Tariff")
+
+    def _require_tariffs(self, action: str) -> None:
+        if not self._tariffs_enabled():  # I07.FR.01 / I11.FR.01 (GetTariffs / ClearTariffs alike)
+            raise CallError(self._adapter.error_codes.not_supported,
+                            f"{action}: TariffCostCtrlr.Enabled[Tariff] is false")
+
+    def _tariff_problem(self, tariff: m.TariffType) -> Optional[str]:
+        """The status for a tariff the station cannot process (I07.FR.02 / FR.03, I11.FR.02 / FR.03)."""
+        if too_many_elements(tariff, self.dm.int_value(TARIFF_MAX_ELEMENTS, "Tariff")):
+            return "TooManyElements"
+        if has_conditions(tariff):  # TariffCostCtrlr.ConditionsSupported is false
+            return "ConditionNotSupported"
+        return None
+
+    def default_tariff(self, evse_id: int, now: Optional[datetime] = None) -> Optional[m.TariffType]:
+        """The default tariff in force on an EVSE (I07.FR.19 / FR.20)."""
+        now = now or self.host.clock()
+        tariffs = self.default_tariffs.get(evse_id, [])
+        dated = [t for t in tariffs if t.valid_from is not None and t.valid_from <= now]
+        if dated:
+            return max(dated, key=lambda t: t.valid_from)
+        return next((t for t in tariffs if t.valid_from is None), None)
+
     def _set_default_tariff(self, req: m.SetDefaultTariffRequest) -> m.SetDefaultTariffResponse:
+        self._require_tariffs("SetDefaultTariff")
+        R = self.models.SetDefaultTariffResponse
+        if req.evse_id != 0 and req.evse_id not in self.evses:  # I07.FR.06
+            return R(status="Rejected", status_info=self._info("UnknownEVSE"))
+        problem = self._tariff_problem(req.tariff)
+        if problem is not None:
+            return R(status=problem)
         evses = list(self.evses) if req.evse_id == 0 else [req.evse_id]
-        if req.evse_id != 0 and req.evse_id not in self.evses:
-            return self.models.SetDefaultTariffResponse(status="Rejected", status_info=self._info("UnknownEvse"))
         tid = req.tariff.tariff_id
-        if any(t.tariff_id == tid for i, t in self.default_tariffs.items() if i not in evses):
-            return self.models.SetDefaultTariffResponse(status="DuplicateTariffId")
-        for i in evses:
-            self.default_tariffs[i] = req.tariff
-        return self.models.SetDefaultTariffResponse(status="Accepted")
+        if any(t.tariff_id == tid for i, ts in self.default_tariffs.items() if i not in evses for t in ts):
+            return R(status="DuplicateTariffId")  # I07.FR.04
+        for i in evses:  # the same id is replaced; one without validFrom replaces the other one without
+            kept = [t for t in self.default_tariffs.get(i, []) if t.tariff_id != tid
+                    and not (req.tariff.valid_from is None and t.valid_from is None)]
+            self.default_tariffs[i] = kept + [req.tariff]
+        return R(status="Accepted")
 
     def _get_tariffs(self, req: m.GetTariffsRequest) -> m.GetTariffsResponse:
+        self._require_tariffs("GetTariffs")
         by_id: Dict[str, Tuple[m.TariffType, List[int]]] = {}
-        for i, t in sorted(self.default_tariffs.items()):
+        for i, ts in sorted(self.default_tariffs.items()):
             if req.evse_id in (0, i):
-                by_id.setdefault(t.tariff_id, (t, []))[1].append(i)
+                for t in ts:
+                    by_id.setdefault(t.tariff_id, (t, []))[1].append(i)
         out = [self.models.TariffAssignmentType(tariff_id=tid, tariff_kind="DefaultTariff", valid_from=t.valid_from,
                                                 evse_ids=evses)
                for tid, (t, evses) in by_id.items()]
@@ -192,10 +279,12 @@ class Station21(Station201):
         return self.models.GetTariffsResponse(status="Accepted", tariff_assignments=out)
 
     def _clear_tariffs(self, req: m.ClearTariffsRequest) -> m.ClearTariffsResponse:
+        self._require_tariffs("ClearTariffs")
+
         def hit(i: int, t: m.TariffType) -> bool:
             return (req.evse_id in (None, 0, i)) and (req.tariff_ids is None or t.tariff_id in req.tariff_ids)
-        cleared = sorted({t.tariff_id for i, t in self.default_tariffs.items() if hit(i, t)})
-        self.default_tariffs = {i: t for i, t in self.default_tariffs.items() if not hit(i, t)}
+        cleared = sorted({t.tariff_id for i, ts in self.default_tariffs.items() for t in ts if hit(i, t)})
+        self.default_tariffs = {i: [t for t in ts if not hit(i, t)] for i, ts in self.default_tariffs.items()}
         R = self.models.ClearTariffsResultType
         results = [R(tariff_id=tid, status="Accepted") for tid in cleared]
         results += [R(tariff_id=tid, status="NoTariff") for tid in (req.tariff_ids or ()) if tid not in cleared]
@@ -203,10 +292,136 @@ class Station21(Station201):
 
     def _change_transaction_tariff(
             self, req: m.ChangeTransactionTariffRequest) -> m.ChangeTransactionTariffResponse:
-        if req.transaction_id not in self._tx_ids():
-            return self.models.ChangeTransactionTariffResponse(status="TxNotFound")
+        self._require_tariffs("ChangeTransactionTariff")
+        R = self.models.ChangeTransactionTariffResponse
+        e = next((x for x in self.evses.values() if x.tx is not None and x.tx.tx_id == req.transaction_id), None)
+        if e is None or e.tx is None:  # I11.FR.04
+            return R(status="TxNotFound")
+        problem = self._tariff_problem(req.tariff)
+        if problem is not None:
+            return R(status=problem)
+        cost = self._costs.get(e.tx.tx_id)
+        if cost is not None and cost.tariff is not None and cost.tariff.currency != req.tariff.currency:
+            return R(status="NoCurrencyChange")  # I11.FR.05
         self.tx_tariffs[req.transaction_id] = req.tariff
-        return self.models.ChangeTransactionTariffResponse(status="Accepted")
+        self.host.after_reply(functools.partial(self._tariff_changed, e, e.tx, req.tariff))
+        return R(status="Accepted")
+
+    def _tariff_changed(self, e: _Evse, tx: _Tx, tariff: m.TariffType) -> None:
+        """I11.FR.07 / FR.08: the new tariff applies from now on, reported with TariffChanged."""
+        if e.tx is not tx:
+            return
+        self.settle()
+        self._costs.setdefault(tx.tx_id, CostMeter(None)).switch(tariff, self._tx_energy(e))
+        self._queue_event(e, tx, TransactionEventEnumType.updated,
+                          self.models.TriggerReasonEnumTypeExt21.tariff_changed,
+                          self.models.TransactionType(transaction_id=tx.tx_id, tariff_id=tariff.tariff_id))
+
+    def _start_tariff(self, e: _Evse, tx: _Tx) -> Optional[m.TariffType]:
+        """The tariff of a new transaction: the driver tariff of its idToken (I08.FR.04 / FR.22), else the default
+        tariff of its EVSE (I07.FR.14)."""
+        if not self._tariffs_enabled():
+            return None
+        driver = self._adapter.driver_tariffs.pop(tx.id_token, None)
+        if driver is not None:
+            problem = self._tariff_problem(driver)
+            if problem is None:
+                self.tx_tariffs[tx.tx_id] = driver
+                return driver
+            log.warning("%s: driver tariff %s of %s ignored (%s), the default tariff applies", self.cfg.id,
+                        driver.tariff_id, tx.id_token, problem)
+        return self.default_tariff(e.id)
+
+    # ------------------------------------------------------------------ E16 / F07 transaction limits
+
+    @staticmethod
+    def _tx_energy(e: _Evse) -> float:
+        return max(0.0, e.meter_wh - e.tx.meter_start_wh) if e.tx is not None else 0.0
+
+    def _supported_limits(self) -> Tuple[str, ...]:
+        return self.dm.list_value(TX_SUPPORTED_LIMITS)
+
+    def _local_cost(self) -> bool:
+        return self._tariffs_enabled() and self.dm.bool_value(TARIFF_ENABLED, "Cost")
+
+    def _set_limits(self, e: _Evse, tx: _Tx, values: Dict[str, float], *, confirm: bool) -> None:
+        """Merge limits into the transaction's, confirm them with LimitSet (E16.FR.01 / FR.03), check them again."""
+        if not values:
+            return
+        self.settle()
+        limits = self.tx_limits.setdefault(tx.tx_id, {})
+        limits.update(values)
+        if confirm:
+            self._queue_event(e, tx, TransactionEventEnumType.updated,
+                              self.models.TriggerReasonEnumTypeExt21.limit_set,
+                              self.models.TransactionType(transaction_id=tx.tx_id,
+                                                          transaction_limit=self.models.TransactionLimitType(**limits)))
+        if tx.tx_id in self._limit_reached and self._reached(e) is None:  # E16.FR.14: resumes with the next tick
+            del self._limit_reached[tx.tx_id]
+        self._check_limit(e)  # E16.FR.10
+
+    def set_transaction_limit(self, connector: int, **limits: Optional[float]) -> Dict[str, float]:
+        """Local (EV driver) transaction limits of EVSE ``connector``: keywords ``max_energy`` (Wh), ``max_time``
+        (s), ``max_cost``, ``max_so_c`` (%); ``None`` and unsupported ones are ignored (E16.FR.13). A CSMS limit is
+        never exceeded (E16.FR.04). Returns the limits in force; ``ValueError`` without a transaction."""
+        e = self._evse(connector)
+        if e.tx is None:
+            raise ValueError(f"EVSE {connector} has no transaction")
+        unknown = set(limits) - set(LIMIT_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown transaction limits: {', '.join(sorted(unknown))}")
+        supported = set(self._supported_limits())
+        csms = self._csms_limits.get(e.tx.tx_id, {})
+        values = {k: min(v, csms[k]) if k in csms else v for k, v in limits.items()
+                  if v is not None and LIMIT_FIELDS[k] in supported}
+        self._set_limits(e, e.tx, values, confirm=True)
+        return dict(self.tx_limits.get(e.tx.tx_id, {}))
+
+    def _reached(self, e: _Evse) -> Optional[str]:
+        tx = e.tx
+        if tx is None or not self.tx_limits.get(tx.tx_id):
+            return None
+        cost = self._costs.get(tx.tx_id)
+        energy = self._tx_energy(e)
+        return reached(self.tx_limits[tx.tx_id], energy_wh=energy,
+                       elapsed_s=(self.host.clock() - tx.started_at).total_seconds(),
+                       soc_pct=e.pw.soc_pct if e.pw is not None else None,
+                       cost=cost.cost(energy, self._local_cost()) if cost is not None else None)
+
+    def _check_limit(self, e: _Evse) -> None:
+        """E16.FR.05 / FR.06: act on a newly reached limit."""
+        tx = e.tx
+        if tx is None or tx.tx_id in self._limit_reached:
+            return
+        which = self._reached(e)
+        if which is None:
+            return
+        trigger, reason = _LIMIT_REACHED[which]
+        log.info("%s: EVSE %d transaction %s reached %s", self.cfg.id, e.id, tx.tx_id, LIMIT_FIELDS[which])
+        if "EnergyTransfer" in self.dm.list_value(TX_STOP_POINT):
+            self._end_tx(e, trigger, reason)
+            return
+        self._advance(e)  # up to now at the old setting
+        self._limit_reached[tx.tx_id] = which
+        self._advance(e)  # zero-length step at 0 W: SuspendedEVSE
+        tx.charging_state = self._charging_state(e)
+        self._queue_event(e, tx, TransactionEventEnumType.updated, trigger,
+                          self.models.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state))
+        self._refresh(e)
+
+    def _on_tx_answer(self, item: Any, res: m.TransactionEventResponse) -> None:
+        super()._on_tx_answer(item, res)
+        e, tx, req = item.evse, item.tx, item.req
+        if e is None or tx is None or e.tx is not tx:
+            return
+        if res.total_cost is not None:  # E16.FR.15: the CSMS's running cost
+            self._costs.setdefault(tx.tx_id, CostMeter(None)).central = res.total_cost
+        values = limits_of(res.transaction_limit, self._supported_limits())
+        if values:  # E16.FR.02 / F07.FR.02; unsupported limits are dropped (E16.FR.13)
+            self._csms_limits.setdefault(tx.tx_id, {}).update(values)
+            self._set_limits(e, tx, values, confirm=not (req is not None and req.offline))  # E16.FR.18
+        elif res.total_cost is not None:
+            self._check_limit(e)
 
     # ------------------------------------------------------------------ R04 DER control
 
@@ -284,6 +499,20 @@ class Station21(Station201):
             var((dm.SMART_CHARGING, "SupportsDynamicProfiles"), dm.DT.boolean, "true", derived=True, **ro),
             var((dm.SMART_CHARGING, "SupportsLimitAtSoC"), dm.DT.boolean, "true", derived=True, **ro),
             var((dm.SMART_CHARGING, "SupportsEvseSleep"), dm.DT.boolean, "false", derived=True, **ro),
+            # E16 / I (2.1-M3)
+            var(TX_SUPPORTED_LIMITS, dm.DT.member_list, ",".join(SUPPORTED_LIMITS), values_list=SUPPORTED_LIMITS,
+                **ro),
+            var(TARIFF_ENABLED, dm.DT.boolean, "true", variable_instance="Tariff"),
+            var(TARIFF_ENABLED, dm.DT.boolean, "true", variable_instance="Cost"),
+            var(TARIFF_ENABLED, dm.DT.boolean, "false", variable_instance="RunningCost", derived=True, **ro),
+            var((TARIFF, "Available"), dm.DT.boolean, "true", variable_instance="Tariff", derived=True, **ro),
+            var((TARIFF, "Available"), dm.DT.boolean, "true", variable_instance="Cost", derived=True, **ro),
+            var(TARIFF_CURRENCY, dm.DT.string, "JPY", max_limit=3),
+            var(TARIFF_MAX_ELEMENTS, dm.DT.integer, str(DEFAULT_MAX_ELEMENTS), variable_instance="Tariff", **ro),
+            var((TARIFF, "ConditionsSupported"), dm.DT.boolean, "false", variable_instance="Tariff", derived=True,
+                **ro),
+            var((TARIFF, "TariffFallbackMessage"), dm.DT.string, "", variable_instance="en", max_limit=255),
+            var((TARIFF, "TotalCostFallbackMessage"), dm.DT.string, "", variable_instance="en", max_limit=255),
         ]
 
     def _bidirectional(self) -> bool:
@@ -295,8 +524,8 @@ class Station21(Station201):
         return {e.id: e.pw.soc_pct for e in self.evses.values() if e.pw is not None}
 
     def _setting(self, e: _Evse) -> Setting:
-        if e.tx is not None and e.tx.deauthorized:
-            return Setting(limit=0.0)
+        if e.tx is not None and (e.tx.deauthorized or e.tx.tx_id in self._limit_reached):
+            return Setting(limit=0.0)  # E05.FR.02 / E16.FR.05
         return setting_at(self.profiles, e.id, self.host.clock(), transactions=self._transactions(),
                           number_phases=self._phases(e.id), voltage=self.supply.phase_voltage_v(),
                           priority=set(self.priority), soc=self._socs())
@@ -314,6 +543,12 @@ class Station21(Station201):
             e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle)
         else:
             e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle, setpoint_w=setpoint)
+        cost = self._costs.get(e.tx.tx_id) if e.tx is not None and dt > 0 else None
+        if cost is not None:  # totalUsage.chargingTime / idleTime (I12)
+            if e.pw.power_w != 0:
+                cost.charging_s += dt
+            else:
+                cost.idle_s += dt
 
     def tick(self) -> None:
         super().tick()
@@ -326,12 +561,75 @@ class Station21(Station201):
                 self._queue_event(e, e.tx, TransactionEventEnumType.updated,
                                   self.models.TriggerReasonEnumTypeExt21.operation_mode_changed,
                                   self.models.TransactionType(transaction_id=e.tx.tx_id, operation_mode=mode))
+            self._check_limit(e)
         self._pull_dynamic(self.host.clock())
 
     def _end_tx(self, e: _Evse, *args: Any, **kw: Any) -> None:
+        tx = e.tx
         super()._end_tx(e, *args, **kw)
         self.priority.pop(e.id, None)
         self._modes.pop(e.id, None)
+        if tx is not None:
+            for store in (self.tx_tariffs, self.tx_limits, self._csms_limits, self._limit_reached, self._costs,
+                          self._tx_info_once, self.allowed_energy_transfer):
+                store.pop(tx.tx_id, None)  # type: ignore[attr-defined]
+
+    def _queue_event(self, e: _Evse, tx: _Tx, event: TransactionEventEnumType, trigger: Any, info: Any,
+                     **kw: Any) -> Any:
+        """The 2.0.1 event plus the 2.1 transaction fields: the tariff of a new transaction (Started, I08.FR.22),
+        pending once-only ``transactionInfo`` values and the final ``costDetails`` (Ended, I12.FR.01)."""
+        push = kw.pop("push", True)
+        if event is TransactionEventEnumType.started and tx.tx_id not in self._costs:
+            tariff = self._start_tariff(e, tx)
+            self._costs[tx.tx_id] = CostMeter(tariff)
+            if tariff is not None:
+                self._tx_info_once.setdefault(tx.tx_id, {})["tariff_id"] = tariff.tariff_id
+        once = self._tx_info_once.pop(tx.tx_id, None)
+        if once:
+            info = info.model_copy(update={k: v for k, v in once.items() if getattr(info, k) is None})
+        out = super()._queue_event(e, tx, event, trigger, info, push=False, **kw)
+        cost = self._costs.get(tx.tx_id)
+        if (event is TransactionEventEnumType.ended and cost is not None and cost.tariff is not None
+                and self._local_cost()):
+            out.req.cost_details = cost.details(max(0.0, e.meter_wh - tx.meter_start_wh), self.models)
+        if push:
+            self._push(out)
+        return out
+
+    def _remote_start_profile(self, req: Any) -> Tuple[Any, Any, Optional[str]]:
+        """F01 / K05 with the 2.1 profile rules: converted as SetChargingProfile (setpoint, operationMode, Dynamic),
+        checked by :func:`.profiles.reject_reason_21` first, then by the 2.0.1 RequestStart rules."""
+        wire = req.charging_profile
+        if wire is None:
+            return None, None, None
+        profile, wire = charging_profile21(wire, self.host.clock())
+        reason = reject_reason_21(profile, modes=self.dm.list_value(V2X_OPERATION_MODES),
+                                  purposes=self.dm.list_value(SC_ADDITIONAL_PURPOSES),
+                                  bidirectional=self._bidirectional())
+        if reason is None:
+            reason = self.profiles.reject_reason(req.evse_id or 1, profile, for_remote_start=True,
+                                                 limits=self._limits())
+        return profile, wire, reason
+
+    # ------------------------------------------------------------------ G01 availability
+
+    def _availability_event(self, ev: d.ConnectorStatus) -> m.NotifyEventRequest:
+        mm = self.models
+        self._event_id += 1
+        at = ev.timestamp or self.host.clock()
+        return mm.NotifyEventRequest(generated_at=at, seq_no=0, event_data=[mm.EventDataType(
+            event_id=self._event_id, timestamp=at, trigger="Delta", actual_value=connector_status(ev.status).value,
+            event_notification_type="HardWiredNotification",
+            component=mm.ComponentType(name="Connector", evse=mm.EVSEType(id=ev.evse_id, connector_id=ev.connector_id)),
+            variable=mm.VariableType(name="AvailabilityState"))])
+
+    async def _send_status(self, ev: d.ConnectorStatus) -> None:  # type: ignore[override]
+        """G01: StatusNotification and / or NotifyEvent(Connector.AvailabilityState) by ``availability_report``."""
+        mode = getattr(self.cfg, "availability_report", "both")
+        if mode in ("status", "both"):
+            await self._adapter.send_connector_status(ev)
+        if mode in ("event", "both"):
+            await self._adapter.send_notify_event(self._availability_event(ev))
 
     def _samples(self, e: _Evse, measurands: Any) -> List[d.Sample]:
         out = super()._samples(e, measurands)
@@ -540,6 +838,16 @@ class Station21(Station201):
             c["energy_export_wh"] = round(e.pw.energy_export_wh, 3) if e.pw is not None else 0.0
             c["operation_mode"] = (self._modes.get(e.id) or MODE.charging_only).value if e.tx is not None else None
             c["priority_charging"] = e.id in self.priority
+            tx = e.tx
+            cost = self._costs.get(tx.tx_id) if tx is not None else None
+            c["tx_limit"] = dict(self.tx_limits.get(tx.tx_id, {})) or None if tx is not None else None
+            c["limit_reached"] = LIMIT_FIELDS.get(self._limit_reached.get(tx.tx_id, "")) if tx is not None else None
+            c["tariff_id"] = cost.tariff.tariff_id if cost is not None and cost.tariff is not None else None
+            c["cost"] = None
+            if cost is not None and cost.tariff is not None and self._local_cost():
+                c["cost"] = {"amount": cost.total(self._tx_energy(e))[0], "currency": cost.tariff.currency}
+            elif cost is not None and cost.central is not None:
+                c["cost"] = {"amount": cost.central, "currency": self.dm.value(TARIFF_CURRENCY)}
         return snap
 
 
