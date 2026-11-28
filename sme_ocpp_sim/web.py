@@ -37,7 +37,13 @@ plug ... clear-fault, drop, impairments PUT, send - call :mod:`.scenario.ops`, s
   and sends NotifyChargingLimit / ClearedChargingLimit; a version without external limits (1.6) answers 400;
 * ``GET /api/frames?since=&until=&charger=&action=&dir=&limit=`` / ``GET /api/frames.jsonl?<same>`` - the frame
   log (the JSON Lines export is streamed; without ``limit`` it holds every matching entry in the buffer; ``until``
-  = only entries with ``seq <= until``, so ``since=n-1&until=n`` is the exact entry ``n``);
+  = only entries with ``seq <= until``, so ``since=n-1&until=n`` is the exact entry ``n``); ``?format=v1`` adds a
+  trace v1 header (``ocppsim-trace/1``, default off: Q7);
+* ``GET /api/frames/analyze?<same>&format=json|text`` - ``ocppsim-analysis/1`` of the frame log entries;
+* ``GET /api/trace`` / ``POST /api/trace/start`` (body ``{"file": "x.jsonl"}``, optional) / ``POST
+  /api/trace/stop`` / ``GET /api/trace/files`` / ``GET /api/trace/files/{name}`` (download) / ``GET
+  /api/trace/files/{name}/analyze`` - trace recording (v0.3 M5) into the trace directory
+  (``OcppEngine.trace_dir``); the API never writes outside it;
 * ``GET|PUT /api/csms-defaults`` - the ``csms_defaults`` block as JSON (PUT replaces the whole block: an omitted
   field is its model default, so a client sends back what GET returned with its changes);
 * ``GET|PATCH /api/chargers/{id}/settings`` - the connection / authorization subset of a charger's config
@@ -126,7 +132,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 from sme_sim_common.web import bad, error_response, make_base_app
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
 from . import __version__, templates_builtin, xlsx_io
@@ -184,6 +190,15 @@ class DropBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Optional[Literal["abort", "close"]] = None
     reconnect_after_s: Optional[float] = Field(None, ge=0, le=86_400)
+
+
+#: A trace file name the API accepts: no directory part, ``.jsonl``.
+TRACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,150}\.jsonl")
+
+
+class TraceStartBody(BaseModel):
+    """``POST /api/trace/start``: ``file`` = file name in the trace directory (default ``trace-<time>.jsonl``)."""
+    file: Optional[str] = Field(None, max_length=160)
 
 
 class DataTransferBody(BaseModel):
@@ -660,17 +675,121 @@ def _router(engine: OcppEngine) -> APIRouter:
     async def frames_jsonl(since: int = Query(0, ge=0), charger: Optional[str] = None,
                            action: Optional[str] = None,
                            direction: Optional[str] = Query(None, alias="dir", description="rx or tx"),
-                           limit: Optional[int] = Query(None, ge=1, description="only the newest limit entries")):
+                           limit: Optional[int] = Query(None, ge=1, description="only the newest limit entries"),
+                           format: Literal["v0", "v1"] = Query("v0", description="v1 = ocppsim-trace/1 (header "
+                                                                "and typed frame lines)")):
         """Same selection as ``/api/frames`` (without a default limit), one JSON object per line. The entries are
-        picked when the request arrives and streamed in chunks of :data:`JSONL_CHUNK`."""
+        picked when the request arrives and streamed in chunks of :data:`JSONL_CHUNK`. ``format=v1`` writes a
+        trace v1 header first and ``{"type": "frame", ..., "sim_t": null}`` lines (no events, no footer: the
+        frame log does not keep them); the default stays the plain entries (plan Q7)."""
+        from .trace import format as tfmt
+
         rows = engine.frame_log.since(since, limit=limit, **frame_filters(charger, action, direction))
+        hdr = None
+        if format == "v1":
+            ids = {e.charger for e in rows} if charger else None
+            hdr = tfmt.dumps(tfmt.header(tool_version=__version__, created=datetime.now().astimezone().isoformat(),
+                                         time_scale=engine.time_scale, sim_start=None,
+                                         chargers=engine.trace_chargers(ids)))
 
         def chunks():
+            if hdr is not None:
+                yield hdr
             for i in range(0, len(rows), JSONL_CHUNK):
-                yield engine.frame_log.to_jsonl(rows[i:i + JSONL_CHUNK])
+                part = rows[i:i + JSONL_CHUNK]
+                if hdr is None:
+                    yield engine.frame_log.to_jsonl(part)
+                else:
+                    yield "".join(tfmt.dumps(tfmt.frame_line(e, None)) for e in part)
 
         return StreamingResponse(chunks(), media_type=NDJSON,
                                  headers={"Content-Disposition": 'attachment; filename="frames.jsonl"'})
+
+    @r.get("/frames/analyze", summary="Analysis (ocppsim-analysis/1) of the frame log entries; same filters as "
+           "/api/frames.jsonl")
+    async def frames_analyze(since: int = Query(0, ge=0), charger: Optional[str] = None,
+                             action: Optional[str] = None,
+                             direction: Optional[str] = Query(None, alias="dir", description="rx or tx"),
+                             limit: Optional[int] = Query(None, ge=1, description="only the newest limit entries"),
+                             format: Literal["json", "text"] = Query("json")):
+        """The in-memory frame log has no connection events: ``connection.connected`` / ``disconnected`` stay 0
+        (record a trace for them). An ``action`` / ``dir`` filter leaves the responses out (their action is
+        ``null`` / the other direction), so they then count as unanswered."""
+        from .trace.analyze import analyze, to_text
+        from .trace.format import from_entries
+
+        rows = engine.frame_log.since(since, limit=limit, **frame_filters(charger, action, direction))
+        report = analyze(from_entries(rows))
+        if format == "text":
+            return PlainTextResponse(to_text(report))
+        return report
+
+    # ---- trace recording (v0.3 M5; trace/recorder.py)
+
+    def trace_file(name: str) -> Path:
+        if not TRACE_NAME.fullmatch(name):
+            raise bad(400, "file: a file name ending in .jsonl (letters, digits, _ . -), no directory")
+        return engine.trace_dir() / name
+
+    @r.get("/trace", summary="Status of the trace recording (the current or last one) and the trace directory")
+    def trace_status():
+        rec = engine.trace
+        base = {"recording": False, "path": None} if rec is None else rec.status()
+        return {**base, "dir": str(engine.trace_dir())}
+
+    @r.post("/trace/start", summary="Start recording every charger into a trace file (format ocppsim-trace/1) in "
+            "the trace directory; 409 while one is recording")
+    async def trace_start(body: TraceStartBody = Body(default_factory=TraceStartBody)):
+        name = body.file or f"trace-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+        path = trace_file(name)
+        if engine.trace is not None and engine.trace.recording:
+            raise bad(409, f"a trace is already recording to {engine.trace.path}")
+        try:
+            rec = await engine.start_trace(path)
+        except OSError as e:
+            raise bad(500, f"cannot write {path}: {e.strerror or e}") from None
+        return {"ok": True, **rec.status()}
+
+    @r.post("/trace/stop", summary="Stop the recording (writes the footer); 409 when none is recording")
+    async def trace_stop():
+        if engine.trace is None or not engine.trace.recording:
+            raise bad(409, "no trace is recording")
+        rec = await engine.stop_trace()
+        return {"ok": True, **rec.status()}
+
+    @r.get("/trace/files", summary="The trace files (*.jsonl) in the trace directory, newest first")
+    def trace_files():
+        d = engine.trace_dir()
+        files = []
+        if d.is_dir():
+            for p in d.iterdir():
+                if p.is_file() and TRACE_NAME.fullmatch(p.name):
+                    st = p.stat()
+                    files.append({"name": p.name, "size": st.st_size, "modified": st.st_mtime})
+        files.sort(key=lambda f: f["modified"], reverse=True)
+        return {"dir": str(d), "files": files}
+
+    @r.get("/trace/files/{name}", summary="Download one trace file of the trace directory")
+    def trace_download(name: str):
+        p = trace_file(name)
+        if not p.is_file():
+            raise bad(404, f"no trace file {name!r}")
+        return FileResponse(p, media_type=NDJSON, filename=name)
+
+    @r.get("/trace/files/{name}/analyze", summary="Analysis (ocppsim-analysis/1) of a trace file of the trace "
+           "directory (rotated parts are followed)")
+    def trace_file_analyze(name: str, charger: Optional[str] = None, format: Literal["json", "text"] = Query("json")):
+        from .trace.analyze import analyze, to_text
+        from .trace.format import TraceError, load
+
+        p = trace_file(name)
+        if not p.is_file():
+            raise bad(404, f"no trace file {name!r}")
+        try:
+            report = analyze(load(p), charger=charger or None)
+        except TraceError as e:
+            raise bad(400, e) from None
+        return PlainTextResponse(to_text(report)) if format == "text" else report
 
 
     # ---- scenarios (v0.3 M3; one at a time, see scenario/runner.py)
@@ -720,6 +839,10 @@ def _router(engine: OcppEngine) -> APIRouter:
             runner = ScenarioRunner(engine, load_text(text), source=source)
         except ScenarioError as e:
             raise bad(400, e) from None
+        # Every web-started scenario records its own trace (plan §3.6) into the trace directory.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", runner.scenario.name)[:60] or "scenario"
+        runner.trace_path = str(engine.trace_dir() / f"scenario-{safe}-{stamp}.jsonl")
         engine.scenario = runner
         runner.start()
         return {"ok": True, **runner.status()}

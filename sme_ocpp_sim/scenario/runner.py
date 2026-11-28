@@ -39,7 +39,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import IO, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import __version__
 from ..framelog import FrameEntry
@@ -131,7 +131,8 @@ class ScenarioRunner:
         self.error: Optional[str] = None
         self.prompts: Dict[str, str] = {}
         self.trace_path: Optional[str] = None
-        self._trace: Optional[IO[str]] = None
+        #: The scenario's own trace (format v1, only its chargers: :mod:`..trace.recorder`) while it runs.
+        self._trace: Optional[Any] = None
         self._bufs: Dict[str, _Buf] = {c: _Buf() for c in self._frame_chargers}
         self._payloads: Dict[int, Any] = {}
         self._events: Dict[str, asyncio.Event] = {}
@@ -210,8 +211,6 @@ class ScenarioRunner:
     def _on_frame(self, e: FrameEntry) -> None:
         if e.charger not in self.chargers:
             return
-        if self._trace is not None:
-            self._trace.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
         buf = self._bufs.get(e.charger)
         if buf is None:
             return
@@ -464,7 +463,7 @@ class ScenarioRunner:
         cancelled = False
         try:
             if self.trace_path:
-                self._trace = open(self.trace_path, "w", encoding="utf-8")
+                self._trace = await eng.open_recorder(self.trace_path, sorted(self.chargers))
             if sc.clock.time_scale is not None:
                 self._scale_before = eng.time_scale
                 eng.set_running(time_scale=sc.clock.time_scale)
@@ -521,6 +520,14 @@ class ScenarioRunner:
                     await g.close()
                 except asyncio.CancelledError:
                     cancelled = True
+            if self._trace is not None:
+                rec, self._trace = self._trace, None
+                try:
+                    await eng.close_recorder(rec)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception as e:  # noqa: BLE001 - the verdict still comes out
+                    log.warning("scenario %s: closing the trace failed: %r", sc.name, e)
             self._cleanup()
         if cancelled:
             raise asyncio.CancelledError
@@ -530,8 +537,10 @@ class ScenarioRunner:
         eng, sc = self.engine, self.scenario
         if self._on_frame in eng.frame_listeners:
             eng.frame_listeners.remove(self._on_frame)
-        if self._trace is not None:
-            self._trace.close()
+        if self._trace is not None:   # not closed by run() (normally it is): stop feeding it
+            if self._trace in eng.recorders:
+                eng.recorders.remove(self._trace)
+            self._trace.stop()
             self._trace = None
         if self._scale_before is not None and eng.time_scale == sc.clock.time_scale:
             eng.set_running(time_scale=self._scale_before)   # not when someone changed the speed meanwhile

@@ -93,6 +93,22 @@ def build_registry(app: Any) -> McpRegistry:
               "action": {"type": "string", "description": "OCPP action, e.g. BootNotification"},
               "dir": {"type": "string", "enum": ["rx", "tx"]},
               "limit": {"type": "integer", "minimum": 1, "maximum": MAX_FRAMES, "default": 500}}, cid=False))
+    add("analyze_frames", "Analysis (ocppsim-analysis/1) of the frame log: per charger and action CALL / "
+        "CALLRESULT / CALLERROR counts, unanswered CALLs and latency p50 / p95 / max, boot results, heartbeat "
+        "intervals, transactions (duration, delta Wh, stop reason, 2.0.1 seqNo gaps), protocol anomalies "
+        "(unpaired / duplicate uid, concurrent CALLs) and the charging profile timeline.", "GET",
+        "/api/frames/analyze",
+        _obj({"since": {"type": "integer", "minimum": 0, "default": 0},
+              "charger": {"type": "string", "description": "Charger id"},
+              "format": {"type": "string", "enum": ["json", "text"], "default": "json"}}, cid=False))
+    add("get_trace", "Status of the trace recording (recording, path, frames, events, dropped) and the trace "
+        "directory.", "GET", "/api/trace", no_args)
+    add("start_trace", "Start recording every charger's frames and events into a trace file (ocppsim-trace/1) "
+        "in the trace directory; file = a file name ending in .jsonl (default trace-<time>.jsonl).", "POST",
+        "/api/trace/start", _obj({"file": {"type": "string", "description": "File name, e.g. run1.jsonl"}},
+                                  cid=False), destructive=False)
+    add("stop_trace", "Stop the trace recording (writes its footer).", "POST", "/api/trace/stop", no_args,
+        destructive=False)
     add("get_impairments", "Fault injection settings of a charger: command blocking, latency / jitter, periodic "
         "drops, remote start / meter value / slow response anomalies.", "GET", "/api/chargers/{cid}/impairments", _obj({}))
 

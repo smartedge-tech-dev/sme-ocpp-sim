@@ -23,7 +23,7 @@ TOOLS = {
     "clear_fault", "set_external_limit", "set_impairments", "drop_connection", "send_frame", "mini_csms_status",
     "mini_csms_call", "data_transfer", "mini_csms_actions", "run_scenario", "get_scenario_status",
     "get_scenario_result", "abort_scenario", "list_builtin_scenarios", "expect_frame", "get_traffic", "set_traffic", "start_traffic",
-    "stop_traffic", "preview_traffic_plan",
+    "stop_traffic", "preview_traffic_plan", "analyze_frames", "get_trace", "start_trace", "stop_trace",
 }
 
 
@@ -134,6 +134,7 @@ MINIMAL = {
     "run_scenario": {"body": "format: x"}, "get_scenario_status": {}, "get_scenario_result": {},
     "abort_scenario": {}, "list_builtin_scenarios": {}, "expect_frame": {"within": 0}, "get_traffic": {}, "set_traffic": {},
     "start_traffic": {}, "stop_traffic": {}, "preview_traffic_plan": {},
+    "analyze_frames": {}, "get_trace": {}, "start_trace": {"file": "x"}, "stop_trace": {},
 }
 PYDANTIC_MISMATCH = ("Field required", "Extra inputs are not permitted", "Input should be", "unexpected argument")
 

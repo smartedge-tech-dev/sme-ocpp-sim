@@ -34,6 +34,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import logging
 import random
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
@@ -108,17 +109,46 @@ def _seq(fn):
     """Add ``last_seq`` to the action's answer: the frame-log seq captured *before* the action, so a client can
     pass it as ``since`` to ``POST /api/frames/expect`` (or ``GET /api/frames``) and see every frame the action
     caused."""
+    sig = inspect.signature(fn)
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def wrapper(engine: OcppEngine, *args: Any, **kwargs: Any) -> Dict[str, Any]:
             seq = engine.frame_log.last_seq
-            return {**await fn(engine, *args, **kwargs), "last_seq": seq}
+            out = {**await fn(engine, *args, **kwargs), "last_seq": seq}
+            _trace(engine, fn.__name__, sig, args, kwargs, seq)
+            return out
     else:
         @functools.wraps(fn)
         def wrapper(engine: OcppEngine, *args: Any, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[misc]
             seq = engine.frame_log.last_seq
-            return {**fn(engine, *args, **kwargs), "last_seq": seq}
+            out = {**fn(engine, *args, **kwargs), "last_seq": seq}
+            _trace(engine, fn.__name__, sig, args, kwargs, seq)
+            return out
     return wrapper
+
+
+def _trace(engine: OcppEngine, name: str, sig: inspect.Signature, args: tuple, kwargs: dict, seq: int) -> None:
+    """Record a successful action as a trace event (v0.3 M5): ``event`` = the function name, ``detail`` = its
+    JSON-able arguments plus ``since_seq`` (the frame seq before the action, so a reader can order it against the
+    frames it caused). Recorded after the action (a failed one is not an event); never raises."""
+    recorders = getattr(engine, "recorders", None)
+    if not recorders:
+        return
+    try:
+        bound = sig.bind(engine, *args, **kwargs)
+        bound.apply_defaults()
+        detail: Dict[str, Any] = {"since_seq": seq}
+        cid = None
+        for k, v in list(bound.arguments.items())[1:]:
+            if k == "cid":
+                cid = v
+            elif isinstance(v, (str, int, float, bool, list, dict)) or v is None:
+                detail[k] = v
+            elif hasattr(v, "model_dump"):
+                detail[k] = v.model_dump(mode="json")
+        engine.trace_event(cid, name, detail)
+    except Exception:  # noqa: BLE001 - recording must never fail an action
+        logging.getLogger(__name__).exception("trace event %s failed", name)
 
 
 # ------------------------------------------------------------------ connection
