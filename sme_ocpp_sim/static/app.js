@@ -147,6 +147,10 @@ function setBadge(el, c) {
     ? t(c.gave_up.reason === "boot_max_retries" ? "conn.gave_up.title_boot" : "conn.gave_up.title",
       { attempts: c.gave_up.attempts, kind: c.gave_up.last_kind || "?" })
     : errText(c.last_error);
+  if (c.impaired) {  // command blocking is on: mark the badge so a silent CSMS timeout is not a surprise
+    el.textContent += " !";
+    el.title = [el.title, t("imp.badge")].filter(Boolean).join(" / ");
+  }
 }
 
 function makeRow(id) {
@@ -925,6 +929,34 @@ async function selectWhenListed(id) {
   else Shell.toast(t("add.pending", { id }), "info");
 }
 
+const BLOCK_MODES = ["NotImplemented", "NotSupported", "NoReply"];
+
+async function openBlockDialog() {
+  const id = S.sel;
+  if (!id) return;
+  let detail, imp;
+  try {
+    [detail, imp] = await Promise.all([api("GET", `/api/chargers/${enc(id)}`), api("GET", chargerUrl(id, "impairments"))]);
+  } catch (e) { fail(e); return; }
+  const block = imp.block || {};
+  $("blockTitle").textContent = t("imp.title", { id });
+  $("blockErr").textContent = "";
+  $("blockRows").replaceChildren(...(detail.csms_actions || []).map((a) => h("tr", null, h("td", null, a),
+    h("td", null, h("select", { "data-action": a },
+      h("option", { value: "" }, t("imp.mode.none")),
+      ...BLOCK_MODES.map((m) => h("option", { value: m, selected: block[a] === m }, t(`imp.mode.${m}`))))))));
+  $("blockForm").dataset.id = id;
+  $("dlgBlock").showModal();
+}
+
+async function saveBlock() {
+  const id = $("blockForm").dataset.id;
+  const block = {};
+  for (const sel of $("blockRows").querySelectorAll("select")) if (sel.value) block[sel.dataset.action] = sel.value;
+  await api("PUT", chargerUrl(id, "impairments"), { block });
+  Shell.toast(t("imp.saved", { id, n: Object.keys(block).length }), "ok");
+}
+
 function openDataTransfer() {
   $("dtErr").textContent = "";
   $("dtResult").hidden = true;
@@ -1136,6 +1168,7 @@ $("dConnect").addEventListener("click", () => op(S.sel, "connect"));
 $("dDisconnect").addEventListener("click", () => op(S.sel, "disconnect"));
 $("dDataTransfer").addEventListener("click", openDataTransfer);
 $("dSettings").addEventListener("click", () => openSettingsDialog(S.sel));
+$("dBlock").addEventListener("click", openBlockDialog);
 $("scProfiles").addEventListener("click", () => openProfileDialog(S.sel));
 $("scConnector").addEventListener("change", () => { S.composite = null; drawChart(); loadSmartCharging(); });
 for (const id of ["fCharger", "fDir"]) $(id).addEventListener("change", renderFrames);
@@ -1160,6 +1193,7 @@ $("xlsxFile").addEventListener("change", (e) => {
   if (file) importXlsx(file);
 });
 bindForm("dtForm", "dtErr", sendDataTransfer, true);
+bindForm("blockForm", "blockErr", saveBlock);
 
 // Composite schedule and chart refresh for the selected charger (the "now" line moves even without pushes).
 // Paused while the tab is hidden; refreshed at once when it becomes visible again.

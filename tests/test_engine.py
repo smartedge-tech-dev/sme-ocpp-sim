@@ -341,3 +341,32 @@ def test_disconnect_after_give_up_clears_gave_up():
             await engine.stop()
             await peer.stop()
     asyncio.run(main())
+
+
+def test_impairments_only_reload_applies_live_without_restart():
+    async def body(peer, engine):
+        old = engine.chargers
+        block = {"A": {"impairments": {"block": {"Reset": "NoReply", "RemoteStartTransaction": "NotSupported"}}}}
+        await engine.reload(_config(peer.url, ["A", "B", "C"], **block))
+        assert engine.chargers == old and _connections(peer) == {"A": 1, "B": 1, "C": 1}
+        assert old["A"]._block_mode("Reset") == "NoReply" and old["A"].impaired and not old["B"].impaired
+        assert old["A"].snapshot()["impaired"] is True
+        # an action the version does not receive fails the reload; the running block stays
+        with pytest.raises(ValueError, match="NoSuchAction"):
+            await engine.reload(_config(peer.url, ["A", "B", "C"],
+                                        A={"impairments": {"block": {"NoSuchAction": "NoReply"}}}))
+        assert old["A"]._block_mode("Reset") == "NoReply"
+        # a failing apply rolls the impairments back with the rest
+        launch = engine._launch
+
+        def failing(cid, rt):
+            raise RuntimeError("boom")
+        engine._launch = failing
+        with pytest.raises(RuntimeError, match="boom"):
+            await engine.reload(_config(peer.url, ["A", "B", "C"], B={"vendor": "Other"}))
+        engine._launch = launch
+        assert old["A"]._block_mode("Reset") == "NoReply"
+        await engine.reload(_config(peer.url, ["A", "B", "C"]))
+        assert not old["A"].impaired and engine.chargers == old
+        assert _connections(peer)["A"] == 1
+    _run(body)

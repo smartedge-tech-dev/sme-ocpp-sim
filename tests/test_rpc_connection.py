@@ -242,3 +242,89 @@ def test_after_this_reply_runs_once_the_answer_was_sent():
         await rpc.close()
         await rx
     run(lambda ws: scenario(SlowWs()))
+
+
+# ------------------------------------------------------------------ command blocking / injection (v0.2.2 A)
+
+@pytest.mark.parametrize("codes,mode,wire", [
+    (None, "NotImplemented", "NotImplemented"), (None, "NotSupported", "NotSupported"),
+    (OCPP201_ERRORS, "NotImplemented", "NotImplemented"), (OCPP201_ERRORS, "NotSupported", "NotSupported"),
+])
+def test_blocked_call_is_answered_with_the_versions_code(codes, mode, wire):
+    async def scenario(ws):
+        called = []
+
+        async def handler(p):
+            called.append(p)
+            return {}
+        kw = {"error_codes": codes} if codes is not None else {}
+        rpc, frames = _rpc(ws, {"Reset": handler, "Heartbeat": handler},
+                           block={"Reset": mode}.get, call_guard=lambda a: called.append("guard"), **kw)
+        rx = asyncio.create_task(rpc.run())
+        ws.feed([2, "r1", "Reset", {"type": "Hard"}])
+        ws.feed([2, "h1", "Heartbeat", {}])
+        await _until(lambda: len(ws.sent) == 2)
+        await rpc.close()
+        await rx
+        by_uid = {f[1]: f for f in ws.sent_frames()}
+        assert by_uid["r1"][:3] == [4, "r1", wire]
+        assert by_uid["h1"] == [3, "h1", {}]          # an unblocked action is untouched
+        assert called == ["guard", {}]                  # blocking wins over the guard and skips the handler
+        rx_reset = next(f for f in frames if f.direction == "rx" and f.uid == "r1")
+        assert rx_reset.note == f"blocked: {wire}"
+        return True
+    assert run(scenario)
+
+
+def test_blocked_no_reply_sends_nothing():
+    async def scenario(ws):
+        rpc, frames = _rpc(ws, {"Reset": lambda p: asyncio.sleep(0, {})}, block={"Reset": "NoReply"}.get)
+        rx = asyncio.create_task(rpc.run())
+        ws.feed([2, "r1", "Reset", {"type": "Hard"}])
+        await _until(lambda: any(f.uid == "r1" for f in frames))
+        await asyncio.sleep(0.05)
+        await rpc.close()
+        await rx
+        assert ws.sent == []
+        assert [f.note for f in frames] == ["blocked: no reply"]
+        return True
+    assert run(scenario)
+
+
+def test_broken_block_hook_does_not_block():
+    async def scenario(ws):
+        def hook(action):
+            raise RuntimeError("boom")
+
+        async def handler(p):
+            return {"ok": 1}
+        rpc, _ = _rpc(ws, {"Reset": handler}, block=hook)
+        rx = asyncio.create_task(rpc.run())
+        ws.feed([2, "r1", "Reset", {}])
+        await _until(lambda: ws.sent)
+        await rpc.close()
+        await rx
+        assert ws.sent_frames() == [[3, "r1", {"ok": 1}]]
+        return True
+    assert run(scenario)
+
+
+def test_send_raw_and_injected_call_are_logged():
+    async def scenario(ws):
+        rpc, frames = _rpc(ws)
+        rx = asyncio.create_task(rpc.run())
+        await rpc.send_raw('[2,"x1","Foo",{}]')
+        await rpc.send_raw("not json")
+        ws.on_send = lambda raw: ws.feed([3, json.loads(raw)[1], {}])
+        assert await rpc.call("Heartbeat", {}, note="injected") == {}
+        await rpc.close()
+        await rx
+        assert ws.sent[:2] == ['[2,"x1","Foo",{}]', "not json"]
+        tx = [f for f in frames if f.direction == "tx"]
+        assert (tx[0].message_type, tx[0].uid, tx[0].action, tx[0].note) == (2, "x1", "Foo", "injected (raw)")
+        assert (tx[1].message_type, tx[1].note) == (None, "injected (raw)")
+        assert tx[2].note == "injected"
+        with pytest.raises(ConnectionError):
+            await rpc.send_raw("[]")
+        return True
+    assert run(scenario)

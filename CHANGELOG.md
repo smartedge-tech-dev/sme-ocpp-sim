@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - OCPP 2.0.1: `SampledDataCtrlr.TxEndedInterval` is ReadWrite; new `AlignedDataCtrlr.TxEndedInterval` and
   `AlignedDataCtrlr.TxEndedMeasurands`. `Ended.meterValue` holds the start and end readings plus the sampled
   and clock-aligned readings of these intervals.
+- Command blocking: charger block `impairments.block` maps CSMS → charger actions to `NotImplemented` /
+  `NotSupported` (answered with that CALLERROR) or `NoReply` (no answer). Applied live without a reconnect,
+  switchable through `GET` / `PUT /api/chargers/{id}/impairments` and the **Block commands** dialog; the frame log
+  marks blocked CALLs and the snapshot has `impaired`. `GET /api/chargers/{id}` adds `csms_actions`.
+- Frame injection (expert use): `POST /api/chargers/{id}/send` sends an arbitrary CALL (schema check optional,
+  `validate: false`) and returns the CSMS answer, or writes a `raw` frame verbatim. The station state does not
+  change; injected frames are marked in the frame log.
 
 ### Changed
 

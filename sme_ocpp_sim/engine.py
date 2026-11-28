@@ -181,7 +181,8 @@ class OcppEngine(BaseEngine):
     @staticmethod
     def _spec(config: SimConfig, c: ChargerConfig) -> Tuple[Any, ...]:
         url, version = config.resolve_csms(c)
-        return (c.model_dump(), url, version, config.resolve_ev(c),
+        # ``impairments`` is applied to the running charger instead (_apply_impairments): no restart for it.
+        return (c.model_dump(exclude={"impairments"}), url, version, config.resolve_ev(c),
                 config.csms_defaults.reconnect.model_dump(), config.simulation.tick_seconds)
 
     def _build(self, config: SimConfig) -> Dict[str, _Entry]:
@@ -192,6 +193,7 @@ class OcppEngine(BaseEngine):
             spec = self._spec(config, c)
             prev = old.get(c.id)
             if prev is not None and prev.spec == spec:  # unchanged: _apply_diff keeps the running runtime anyway
+                prev.runtime.validate_impairments(c.impairments)  # applied in _apply_diff; a bad one fails here
                 out[c.id] = prev
                 continue
             url, version = config.resolve_csms(c)
@@ -213,6 +215,15 @@ class OcppEngine(BaseEngine):
             rt.set_time_scale(time_scale)
             rt.set_paused(not running)
 
+    @staticmethod
+    def _apply_impairments(state: Dict[str, _Entry], config: SimConfig) -> None:
+        """Hand each charger of ``config`` its ``impairments`` (a kept runtime still has the old ones; a new one
+        got them from its config already)."""
+        for c in config.chargers:
+            e = state.get(c.id)
+            if e is not None:
+                e.runtime.set_impairments(c.impairments)
+
     async def _apply_diff(self, old_config: SimConfig, new_config: SimConfig, new_state: Dict[str, _Entry]) -> None:
         old = self.state
         keep = {cid for cid, e in new_state.items() if cid in old and old[cid].spec == e.spec}
@@ -230,8 +241,9 @@ class OcppEngine(BaseEngine):
                             launched.append(cid)
             sim = new_config.simulation
             self._apply_clock((e.runtime for e in merged.values()), sim.time_scale, sim.running)
+            self._apply_impairments(merged, new_config)
         except BaseException:  # incl. cancellation, which BaseEngine.reload does not roll back
-            await _shielded(self._undo(old, launched))
+            await _shielded(self._undo(old, launched, old_config))
             raise
         self.frame_log.resize(new_config.frame_log.size)  # last: a rollback never loses frames
         self._install(merged)
@@ -271,7 +283,7 @@ class OcppEngine(BaseEngine):
             log.warning(msg)
             self.log_event("warning", msg)
 
-    async def _undo(self, old_state: Dict[str, _Entry], launched: List[str]) -> None:
+    async def _undo(self, old_state: Dict[str, _Entry], launched: List[str], old_config: SimConfig) -> None:
         """Undo a partly applied diff: stop the runtimes it launched, restart the old ones it stopped and restore
         the engine clock on every old runtime. ``self.state`` has not been replaced yet. BaseEngine's own
         ``_rollback`` (reinstall the old state) then only repeats what is already true."""
@@ -282,6 +294,7 @@ class OcppEngine(BaseEngine):
                     if cid not in self._runs and cid not in self._held:
                         self._launch(cid, e.runtime)
             self._apply_clock((e.runtime for e in old_state.values()), self.time_scale, self.running)
+            self._apply_impairments(old_state, old_config)
         except Exception as e:  # noqa: BLE001 - surface it; the caller re-raises the original error
             self.log_event("error", f"reload rollback failed: {type(e).__name__}: {e}")
 
@@ -475,9 +488,11 @@ class OcppEngine(BaseEngine):
     # ------------------------------------------------------------ operator (Web API, M6)
 
     def charger_detail(self, cid: str) -> Dict[str, Any]:
-        """The snapshot of charger ``cid`` plus ``fault_codes`` (its version's); ``KeyError`` when there is none."""
+        """The snapshot of charger ``cid`` plus ``fault_codes`` and ``csms_actions`` (the CSMS -> CP actions its
+        version handles, which ``impairments.block`` may name); ``KeyError`` when there is none."""
         rt = self.charger(cid)
-        return {**self._charger_snapshot(cid, rt), "fault_codes": list(rt.fault_codes)}
+        return {**self._charger_snapshot(cid, rt), "fault_codes": list(rt.fault_codes),
+                "csms_actions": list(rt.csms_actions)}
 
     def charger(self, cid: str) -> ChargerRuntime:
         """The runtime of charger ``cid``; ``KeyError`` when there is none."""

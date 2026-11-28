@@ -56,6 +56,7 @@
           <button class="btn small" id="dDisconnect" type="button" data-i18n="op.disconnect">Disconnect</button>
           <button class="btn small" id="dDataTransfer" type="button" data-i18n="op.datatransfer">DataTransfer</button>
           <button class="btn small" id="dSettings" type="button" data-i18n="settings.open">Settings</button>
+          <button class="btn small" id="dBlock" type="button" data-i18n="imp.open">Block commands</button>
         </div>
         <p id="dError" class="err"></p>
         <div id="connectors" class="cards"></div>
@@ -228,6 +229,21 @@
   </form>
 </dialog>
 <input type="file" id="xlsxFile" accept=".xlsx" hidden>
+
+<!-- Command blocking (impairments.block): CSMS -> CP actions answered with a CALLERROR or not at all. -->
+<dialog id="dlgBlock" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform" id="blockForm">
+    <h3 id="blockTitle"></h3>
+    <p class="muted" data-i18n="imp.hint">Blocked commands are answered with the chosen CALLERROR, or not at all. Applied at once, without a reconnect.</p>
+    <table class="tbl"><thead><tr><th data-i18n="imp.action">Action</th><th data-i18n="imp.mode">Answer</th></tr></thead>
+      <tbody id="blockRows"></tbody></table>
+    <div class="err" id="blockErr"></div>
+    <div class="dlgbtns">
+      <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
+      <button class="btn primary" value="default" data-i18n="imp.save">Apply</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="dlgDataTransfer" class="dialog sh-dialog">
   <form method="dialog" class="dlgform" id="dtForm">

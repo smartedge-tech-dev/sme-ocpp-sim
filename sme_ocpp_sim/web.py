@@ -12,6 +12,14 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
   ``ChargePointErrorCode``), default ``OtherError``; a fault ends a running transaction with reason ``Other``
   and reports ``Faulted``, clear-fault returns the connector to Available / Preparing);
 * ``POST /api/chargers/{id}/datatransfer`` - body ``{"vendor_id", "message_id", "data"}``, CP -> CSMS;
+* ``GET|PUT /api/chargers/{id}/impairments`` - the charger's ``impairments`` block (command blocking:
+  ``{"block": {"RemoteStartTransaction": "NotSupported", ...}}``); PUT replaces it through a reload, but the block
+  is not part of the charger's restart key, so the running charger keeps its connection;
+* ``POST /api/chargers/{id}/send`` - frame injection (expert use): ``{"action", "payload", "validate": true,
+  "timeout"?}`` sends a CALL past the station (no station state changes) and returns ``{"ok": true, "result"}`` /
+  ``{"ok": false, "error"}`` (CALLERROR), 504 on timeout; ``validate: false`` skips the schema checks;
+  ``{"raw": "<text>"}`` writes the text verbatim and awaits nothing (an answer is logged as unsolicited). 409 while
+  the charger is not connected;
 * ``GET /api/chargers/{id}/profiles?connector=`` - installed charging profiles;
 * ``GET /api/chargers/{id}/composite?connector=&duration=&unit=`` - the GetCompositeSchedule answer computed
   locally. In OCPP 1.6 the plan's ``evse`` is a connectorId, so the parameter is ``connector`` (``evse`` is
@@ -113,7 +121,8 @@ from starlette.responses import JSONResponse, PlainTextResponse, StreamingRespon
 from starlette.routing import Route
 
 from . import __version__, templates_builtin, xlsx_io
-from .config import PASSWORD_MASK, CsmsDefaults, SimConfig
+from .config import PASSWORD_MASK, CsmsDefaults, ImpairmentConfig, SimConfig
+from .csms.handlers import SPECS
 from .engine import OcppEngine, OperationNotPossible
 from .protocol.base import DataTransferStatus
 from .protocol.registry import get_station_class, list_versions
@@ -507,6 +516,57 @@ def _router(engine: OcppEngine) -> APIRouter:
             raise bad(502, f"DataTransfer failed: {type(e).__name__}: {e}") from None
         return {"ok": res.status is DataTransferStatus.ACCEPTED, "status": res.status.value, "data": res.data}
 
+    @r.get("/chargers/{cid}/impairments", summary="Connection fault injection of a charger (command blocking)")
+    async def impairments_get(cid: str):
+        return charger_cfg(cid)[1].impairments.model_dump(mode="json")
+
+    @r.put("/chargers/{cid}/impairments", summary="Replace the impairments block (applied live, no restart)")
+    async def impairments_put(cid: str, body: ImpairmentConfig):
+        i, c = charger_cfg(cid)
+        data = engine.config.model_dump()
+        data["chargers"][i] = {**c.model_dump(), "impairments": body.model_dump()}
+        await apply(data)  # impairments is not part of the restart key: the running charger keeps its connection
+        return {"ok": True, **charger_cfg(cid)[1].impairments.model_dump(mode="json")}
+
+    @r.post("/chargers/{cid}/send", summary="Inject a CALL or a raw frame (expert use; no station state change)")
+    async def send(cid: str, body: SendBody):
+        rt = runtime(cid)
+        if body.raw is not None:
+            if body.action is not None or "payload" in body.model_fields_set:
+                raise bad(400, "give either raw or action / payload, not both")
+            try:
+                await rt.inject_raw(body.raw)
+            except ConnectionError as e:
+                raise bad(409, e) from None
+            return {"ok": True, "raw": True}
+        if body.action is None:
+            raise bad(400, "action (or raw): required")
+        spec = SPECS.get(rt.adapter.version)
+        if body.validate_:
+            if spec is None:
+                raise bad(400, f"no schema check for OCPP {rt.adapter.version}; send with validate: false")
+            if body.action not in spec.cp_actions:
+                raise bad(400, f"{body.action!r} is not a CP -> CSMS action of OCPP {spec.version}")
+            try:
+                spec.codec.parse(body.action, body.payload, "request", strict=True)
+            except CallError as e:
+                raise bad(400, f"{e.code}: {e.description}") from None
+        try:
+            result = await rt.inject_call(body.action, body.payload, timeout=body.timeout)
+        except ConnectionError as e:
+            raise bad(409, e) from None
+        except TimeoutError:
+            raise bad(504, f"{body.action}: the CSMS did not answer in time") from None
+        except CallError as e:
+            return {"ok": False, "error": {"code": e.code, "description": e.description, "details": e.details}}
+        out: Dict[str, Any] = {"ok": True, "result": result}
+        if body.validate_ and spec is not None:
+            try:
+                spec.codec.parse(body.action, result, "response", strict=False)
+            except CallError as e:
+                out["warning"] = f"the answer does not match the response schema: {e.code}: {e.description}"
+        return out
+
     @r.get("/chargers/{cid}/profiles", summary="Installed charging profiles")
     async def profiles(cid: str, connector: Optional[int] = Query(None, ge=0)):
         rt = runtime(cid)
@@ -681,6 +741,19 @@ def _router(engine: OcppEngine) -> APIRouter:
                                  headers={"Content-Disposition": 'attachment; filename="frames.jsonl"'})
 
     return r
+
+
+class SendBody(BaseModel):
+    """``POST /api/chargers/{id}/send``: either ``action`` (+ ``payload``) or ``raw``, not both."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Optional[str] = Field(None, min_length=1)
+    payload: Any = Field(default_factory=dict)
+    #: Check that ``action`` is a CP -> CSMS action of the charger's version and ``payload`` matches its request
+    #: schema (strict) before sending, and the answer against the response schema (a mismatch is a ``warning``).
+    validate_: bool = Field(True, alias="validate")
+    raw: Optional[str] = Field(None, min_length=1)
+    timeout: Optional[float] = Field(None, gt=0, le=300)
 
 
 class CsmsCallBody(BaseModel):

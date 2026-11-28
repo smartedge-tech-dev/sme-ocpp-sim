@@ -78,6 +78,21 @@ OCPP201_ERRORS = ErrorCodes(
 )
 OCPP21_ERRORS = ErrorCodes(rpc_framework_error="RpcFrameworkError")
 
+#: Command blocking (simulator-only, v0.2.2 A): what a blocked inbound CALL gets. ``NotImplemented`` /
+#: ``NotSupported`` are answered with the version's ``not_implemented`` / ``not_supported`` code (the wire names are
+#: the same in OCPP-J 1.6 §4.2.3 and 2.0.1 Part 4 Table 8); :data:`NO_REPLY` sends no answer at all.
+NO_REPLY = "NoReply"
+BLOCK_MODES = ("NotImplemented", "NotSupported", NO_REPLY)
+
+
+def block_error_code(codes: ErrorCodes, mode: str) -> str:
+    """The CALLERROR code a blocked CALL is answered with (``mode`` not :data:`NO_REPLY`)."""
+    if mode == "NotImplemented":
+        return codes.not_implemented
+    if mode == "NotSupported":
+        return codes.not_supported
+    raise ValueError(f"unknown block mode {mode!r}")
+
 
 class CallError(Exception):
     """A CALLERROR.
