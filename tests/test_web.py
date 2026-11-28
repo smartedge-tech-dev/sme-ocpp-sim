@@ -670,6 +670,43 @@ def test_send_needs_connection_and_valid_input(setup):
     assert client.post("/api/chargers/CP001/send", json=big).status_code == 413
 
 
+def test_send_payload_null_timeout_and_callerror(setup):
+    """Route level, the CSMS side stubbed: an explicit ``payload: null`` counts as given (raw + payload is a
+    400; with an action it is sent as ``None``), a CSMS that does not answer is a 504, a CALLERROR a result."""
+    client, engine, _ = setup
+    rt, sent = engine.charger("CP001"), []
+
+    async def inject_raw(raw):
+        sent.append(("raw", raw))
+
+    async def inject_call(action, payload, timeout=None):
+        sent.append((action, payload))
+        return {}
+
+    rt.inject_raw, rt.inject_call = inject_raw, inject_call
+    assert client.post("/api/chargers/CP001/send", json={"raw": "[2]", "payload": None}).status_code == 400
+    assert client.post("/api/chargers/CP001/send", json={"raw": "[2]"}).json() == {"ok": True, "raw": True}
+    r = client.post("/api/chargers/CP001/send", json={"action": "DataTransfer", "payload": None, "validate": False})
+    assert r.status_code == 200 and r.json() == {"ok": True, "result": {}}
+    r = client.post("/api/chargers/CP001/send", json={"action": "Heartbeat", "validate": False})
+    assert r.status_code == 200
+    assert sent == [("raw", "[2]"), ("DataTransfer", None), ("Heartbeat", {})]
+
+    async def no_answer(action, payload, timeout=None):
+        raise TimeoutError
+
+    rt.inject_call = no_answer
+    r = client.post("/api/chargers/CP001/send", json={"action": "Heartbeat"})
+    assert r.status_code == 504 and "did not answer" in r.json()["error"]
+
+    async def call_error(action, payload, timeout=None):
+        raise CallError("InternalError", "x")
+
+    rt.inject_call = call_error
+    r = client.post("/api/chargers/CP001/send", json={"action": "Heartbeat"})
+    assert r.status_code == 200 and r.json()["ok"] is False and r.json()["error"]["code"] == "InternalError"
+
+
 @pytest.mark.parametrize("version", ["1.6", "2.0.1"])
 def test_block_and_inject_against_mini_csms(version):
     import socket

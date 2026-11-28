@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
@@ -70,7 +71,7 @@ def test_default_anchor_is_aware_local_now():
     assert SimClock(anchor=naive).anchor.replace(tzinfo=None) == naive
 
 
-@pytest.mark.parametrize("bad", [0, -1, float("inf"), float("nan")])
+@pytest.mark.parametrize("bad", [0, -1, float("inf"), float("nan"), True, "2", 3601])
 def test_time_scale_must_be_positive(bad):
     with pytest.raises(ValueError):
         SimClock(time_scale=bad)
@@ -78,30 +79,69 @@ def test_time_scale_must_be_positive(bad):
         SimClock().set(time_scale=bad)
 
 
-def test_sleep_sim_follows_scale_and_pause():
+async def _settle() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+def test_sleep_sim_follows_scale_pause_and_reset():
+    """Deterministic: the fake monotonic clock moves, a ``set`` / ``reset`` wakes the sleeper to re-check (the
+    real wait_for timeouts are far longer than the test)."""
+    async def main():
+        mono = FakeMono()
+        clock = SimClock(time_scale=1, monotonic=mono)
+        await clock.sleep_sim(0)
+        await clock.sleep_sim(-5)                 # nothing to wait for
+
+        task = asyncio.create_task(clock.sleep_sim(100))
+        await _settle()
+        mono.t += 50                              # 50 sim s at x1
+        clock.set(time_scale=2)                   # wake: 50 left, now 25 wall s
+        await _settle()
+        assert not task.done()
+        clock.set(running=False)
+        mono.t += 10_000                          # paused: no sim time passes
+        clock.set(time_scale=3)
+        await _settle()
+        assert not task.done()
+        clock.set(running=True)
+        mono.t += 10                              # 30 sim s at x3: 20 left
+        clock.reset()                             # restart: elapsed 0, the sleeper keeps its 20 s
+        await _settle()
+        assert not task.done() and clock.elapsed_sim() == 0
+        mono.t += 7                               # 21 sim s
+        clock.set(time_scale=4)
+        await asyncio.wait_for(task, 1.0)
+        assert clock.elapsed_sim() == 21
+
+    asyncio.run(main())
+
+
+def test_sleep_sim_real_timer():
     async def main():
         clock = SimClock(time_scale=1000)
         loop = asyncio.get_running_loop()
         t0 = loop.time()
-        await clock.sleep_sim(50)                 # 50 ms wall
-        assert 0.04 <= loop.time() - t0 < 1.0
-        await clock.sleep_sim(0)
-        await clock.sleep_sim(-5)                 # nothing to wait for
-
-        clock.set(running=False)
-        task = asyncio.create_task(clock.sleep_sim(10))
-        await asyncio.sleep(0.05)
-        assert not task.done()                    # paused: no sim time passes
-        clock.set(running=True)                   # wakes the waiter, 10 ms wall left
-        await asyncio.wait_for(task, 1.0)
-
-        clock.set(time_scale=1)
-        task = asyncio.create_task(clock.sleep_sim(3600))  # one hour at x1 ...
-        await asyncio.sleep(0.01)
-        clock.set(time_scale=3600 * 100)          # ... then a speed-up applies at once
-        await asyncio.wait_for(task, 1.0)
+        await clock.sleep_sim(50)                 # 50 ms wall, ended by the wait_for timeout
+        assert loop.time() - t0 >= 0.04
 
     asyncio.run(main())
+
+
+def test_tz_follows_dst():
+    try:
+        berlin = ZoneInfo("Europe/Berlin")        # CET -> CEST on 2026-03-29 02:00
+    except ZoneInfoNotFoundError:                 # no tz database (Windows without the tzdata package)
+        pytest.skip("no IANA time zone database")
+    mono = FakeMono()
+    clock = SimClock(time_scale=3600, anchor=datetime(2026, 3, 29, 1, 30), tz=berlin, monotonic=mono)
+    assert clock.now_sim().utcoffset() == timedelta(hours=1)
+    mono.t += 1                                   # one sim hour
+    now = clock.now_sim()
+    assert now.utcoffset() == timedelta(hours=2) and (now.hour, now.minute) == (3, 30)
+    fixed = SimClock(anchor=datetime(2026, 3, 29, 1, 30, tzinfo=timezone(timedelta(hours=1))), monotonic=mono)
+    mono.t += 3600                                # default: the anchor's fixed offset is kept
+    assert fixed.now_sim().utcoffset() == timedelta(hours=1) and fixed.now_sim().hour == 2
 
 
 def test_engine_keeps_its_clock_in_step():
@@ -131,5 +171,21 @@ def test_engine_keeps_its_clock_in_step():
             del engine._sync_clock
         assert calls == [7, 5]  # the rollback put the old clock back
         assert engine.clock.time_scale == 5 and engine.time_scale == 5
+
+    asyncio.run(main())
+
+
+def test_engine_start_restarts_the_clock():
+    mono = FakeMono()
+    engine = OcppEngine(SimConfig())
+    engine.clock = SimClock(time_scale=60, monotonic=mono)
+    mono.t += 100                                 # constructed long before it starts
+
+    async def main():
+        await engine.start()
+        try:
+            assert engine.clock.elapsed_sim() == 0
+        finally:
+            await engine.stop()
 
     asyncio.run(main())

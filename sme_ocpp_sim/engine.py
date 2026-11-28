@@ -365,6 +365,7 @@ class OcppEngine(BaseEngine):
         await self._sync_csms(self.config.mini_csms)
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
         self._sync_clock(self.time_scale, self.running)
+        self.clock.reset()  # sim time starts with the engine (anchor = now), not when it was constructed
         for cid, e in self.state.items():
             if cid not in self._held:
                 self._launch(cid, e.runtime)
