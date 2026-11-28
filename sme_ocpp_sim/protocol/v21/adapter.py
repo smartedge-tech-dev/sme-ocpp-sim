@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Sequence
+from typing import Any, Sequence, Tuple
 
 from ...rpc.errors import OCPP21_ERRORS
 from .. import base as d
 from ..v201.adapter import REMOTE_ACTIONS, Adapter201, id_token, id_token_info
 from . import codec as codec21
 from . import models as m
+from .tariff import tariff_key, with_utc
 
 #: CSMS -> CS actions the 2.1 station answers: the 2.0.1 ones plus the store-and-ack 2.1 ones.
 REMOTE_ACTIONS_21 = tuple(REMOTE_ACTIONS) + tuple(a for a in codec21.NEW_ACTIONS if a not in codec21.CS_ACTIONS)
@@ -28,15 +29,16 @@ class Adapter21(Adapter201):
 
     def __init__(self, *, strict: bool = False) -> None:
         super().__init__(strict=strict)
-        self.driver_tariffs: "OrderedDict[str, m.TariffType]" = OrderedDict()
+        self.driver_tariffs: "OrderedDict[Tuple[str, str], m.TariffType]" = OrderedDict()
 
     async def send_authorize(self, ev: d.AuthorizeRequest) -> d.IdTokenInfo:
         """As 2.0.1; the ``tariff`` of an Accepted answer is kept for the idToken (I08.FR.04), see the station."""
-        res: m.AuthorizeResponse = await self._send(
-            "Authorize", self.models.AuthorizeRequest(id_token=id_token(ev.id_token, models=self.models)))
+        token = id_token(ev.id_token, models=self.models)
+        res: m.AuthorizeResponse = await self._send("Authorize", self.models.AuthorizeRequest(id_token=token))
+        key = tariff_key(ev.id_token, token.type)
+        self.driver_tariffs.pop(key, None)  # every answer replaces the cached tariff, also one without a tariff
         if res.tariff is not None and res.id_token_info.status.value == "Accepted":
-            self.driver_tariffs.pop(ev.id_token, None)
-            self.driver_tariffs[ev.id_token] = res.tariff
+            self.driver_tariffs[key] = with_utc(res.tariff)
             while len(self.driver_tariffs) > self.MAX_DRIVER_TARIFFS:
                 self.driver_tariffs.popitem(last=False)
         return id_token_info(res.id_token_info)

@@ -194,7 +194,7 @@ YAML ファイルの読み込み時に警告をログに出します。そのセ
 | `impairments.meter.end_after_stop` | `false` | 最後のメーター値を StopTransaction / Ended event の後に送る（SAP `outOfOrderEndMeterValues`）。1.6 は `Transaction.End` の MeterValues（`meter.begin_end_messages`）か停止時点の `Sample.Periodic` を StopTransaction の後に、2.0.1 は `Updated` event（`seqNo` は Ended の次）を送る |
 | `impairments.meter.voltage_noise_v` | `0` | 報告する Voltage すべてに一様分布 ± のノイズ（V）を加える |
 | `impairments.response_delay_ms` | `{}` | CSMS → 充電器のアクション名 → ms：その CALL への応答（CALLRESULT / CALLERROR）だけをその時間保留する（他のフレームは遅らせない）。CSMS のタイムアウトより長ければ「遅い充電器」。未知のアクションは `block` と同じく `400` |
-| `availability_report` | `both` | OCPP 2.1 のみ: コネクタ状態の変化の報告方法。`status`（StatusNotification）、`event`（NotifyEvent `Connector.AvailabilityState`）、`both`（G01） |
+| `availability_report` | `status` | OCPP 2.1 のみ（1.6 / 2.0.1 で `status` 以外はエラー）: コネクタ状態の変化の報告方法。`status`（StatusNotification）、`event`（NotifyEvent `Connector.AvailabilityState`）、`both`（G01） |
 | `template` | なし | 充電器テンプレート（組み込みまたはユーザー。[Excel とテンプレート](excel-templates.md) 参照）。この充電器が設定していないテンプレート項目はテンプレートの値 |
 | `params` | `{}` | `{param}` プレースホルダを持つユーザーテンプレートのパラメータ |
 | `meter_sample_interval_s` | キーの既定値 | `config_keys` で指定していない場合の `MeterValueSampleInterval` の既定値。2.0.1 では `SampledDataCtrlr.TxUpdatedInterval` の初期値 |

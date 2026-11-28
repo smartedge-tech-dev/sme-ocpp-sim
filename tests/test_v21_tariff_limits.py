@@ -290,3 +290,70 @@ def test_remote_start_with_a_2_1_setpoint_profile_discharges():
             await _with_charger(url, "2.1", body, **METERED)
         await _with_csms(_cfg(), with_csms)
     asyncio.run(main())
+
+
+# ---------------------------------------------------------------------- review fixes
+
+
+def test_max_time_counts_simulated_seconds():
+    """E16.FR.09: with time_scale 200 a 60 s limit is reached after ~0.3 s of wall time, not after 60 s."""
+    v = _validator()
+
+    async def main():
+        async def with_csms(csms, url):
+            async def body(rt):
+                tx = await _charging(rt, csms)
+                rt.set_time_scale(200)
+                rt.station.set_transaction_limit(1, max_time=60)
+                await _until(lambda: any(p["triggerReason"] == "TimeLimitReached"
+                                         for p in _payloads(csms, v, "TransactionEvent")))
+                assert _conn(rt)["status"] == "SuspendedEVSE" and tx
+            await _with_charger(url, "2.1", body, **METERED)
+        await _with_csms(_cfg(), with_csms)
+    asyncio.run(main())
+
+
+def test_driver_tariff_cache_is_replaced_by_every_authorize_answer():
+    from sme_ocpp_sim.protocol import base as d
+    from sme_ocpp_sim.protocol.v21.adapter import Adapter21
+    from sme_ocpp_sim.protocol.v21.tariff import tariff_key
+
+    answers = [{"idTokenInfo": {"status": "Accepted"}, "tariff": TARIFF},
+               {"idTokenInfo": {"status": "Accepted"}},
+               {"idTokenInfo": {"status": "Accepted"}, "tariff": TARIFF},
+               {"idTokenInfo": {"status": "Blocked"}, "tariff": TARIFF}]
+    ad = Adapter21()
+
+    async def fake_send(action, req):
+        return m.AuthorizeResponse.model_validate(answers.pop(0))
+    ad._send = fake_send
+    key = tariff_key("TAG", "ISO14443")
+
+    async def authorize():
+        await ad.send_authorize(d.AuthorizeRequest("TAG"))
+        return key in ad.driver_tariffs
+    assert [asyncio.run(authorize()) for _ in range(4)] == [True, False, True, False]  # a stale tariff never stays
+
+
+def test_local_and_csms_limits_stay_apart_and_the_lower_one_applies():
+    from sme_ocpp_sim.protocol.v201.station import _Tx
+    rt, st = _station()
+    tx = _Tx(tx_id="X", id_token="T", meter_start_wh=0, started_at=datetime.now(timezone.utc))
+    e = st.evses[1]
+    e.tx = tx
+    st._set_limits(e, tx, local={"max_energy": 1000.0}, confirm=False)
+    st._set_limits(e, tx, csms={"max_energy": 5000.0, "max_time": 60.0}, confirm=False)  # E16.FR.04
+    assert st.tx_limits["X"] == {"max_energy": 1000.0, "max_time": 60.0}
+    st._set_limits(e, tx, csms={"max_energy": 500.0}, confirm=False)
+    assert st.tx_limits["X"]["max_energy"] == 500.0
+    assert "X" not in st._costs
+    st._set_limits(e, tx, csms={"max_cost": 3.0}, confirm=False)  # a cost limit creates the CostMeter lazily
+    assert st._costs["X"].tariff is None
+
+
+def test_valid_from_without_a_timezone_is_read_as_utc():
+    rt, st = _station()
+    naive = {**TARIFF, "tariffId": "TN", "validFrom": "2000-01-01T00:00:00"}
+    assert _call(st, "SetDefaultTariff", {"evseId": 1, "tariff": naive}) == {"status": "Accepted"}
+    assert st.default_tariff(1).tariff_id == "TN"
+    assert st.default_tariff(1).valid_from.tzinfo is not None

@@ -79,6 +79,7 @@ CHARGERS = Sheet("chargers", [
     ("phases", "1, 2 or 3"),
     ("line_to_line", "TRUE = voltage_v is line-to-line (3-phase 200 V delta)"),
     ("auth_mode", "local_only / csms_only / local_then_csms / accept_all"),
+    ("availability_report", "OCPP 2.1 only: status (default) / event / both"),
     ("id_tags", "Local id tags, comma separated"),
     ("ev_model", "EV plugged in (preset or ev_models id)"),
     ("initial_soc", "SoC at transaction start (%)"),

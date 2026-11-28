@@ -22,6 +22,7 @@ a limit already exceeded when it is set is reached at once (E16.FR.10).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timezone
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from . import models as m
@@ -33,6 +34,19 @@ LIMIT_FIELDS: Dict[str, str] = {"max_cost": "maxCost", "max_energy": "maxEnergy"
 LIMIT_ORDER = ("max_cost", "max_energy", "max_time", "max_so_c")
 
 _PRICED = ("energy", "charging_time", "idle_time", "fixed_fee", "reservation_time", "reservation_fixed")
+
+
+def with_utc(tariff: m.TariffType) -> m.TariffType:
+    """``tariff`` with a timezone-less ``validFrom`` read as UTC (it is compared with the aware station clock)."""
+    vf = tariff.valid_from
+    if vf is not None and vf.tzinfo is None:
+        return tariff.model_copy(update={"valid_from": vf.replace(tzinfo=timezone.utc)})
+    return tariff
+
+
+def tariff_key(id_token: str, token_type: Any) -> Tuple[str, str]:
+    """Key of the driver tariff cache: the idToken and its type (the same value may exist under several types)."""
+    return id_token, str(getattr(token_type, "value", token_type))
 
 
 def limits_of(limit: Optional[m.TransactionLimitType], supported: Iterable[str]) -> Dict[str, float]:

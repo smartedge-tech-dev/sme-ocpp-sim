@@ -468,9 +468,9 @@ class ChargerConfig(StrictModel):
     meter: MeterOptions = Field(default_factory=MeterOptions)
     #: Simulator-only connection fault injection (v0.2.2 A); applied live, never restarts the charger.
     impairments: ImpairmentConfig = Field(default_factory=ImpairmentConfig)
-    #: OCPP 2.1 only (G01): how a connector status change is reported - StatusNotification, NotifyEvent
-    #: (Connector.AvailabilityState) or both. Ignored by 1.6 / 2.0.1 chargers.
-    availability_report: Literal["status", "event", "both"] = "both"
+    #: OCPP 2.1 only (G01): how a connector status change is reported - StatusNotification (default, as 0.3.1),
+    #: NotifyEvent (Connector.AvailabilityState) or both. Rejected for 1.6 / 2.0.1 chargers unless ``status``.
+    availability_report: Literal["status", "event", "both"] = "status"
     #: Charger template (:mod:`.templates_builtin`): the template fields this charger does not set come from it.
     template: Optional[Annotated[QuotedStr, Field(min_length=1)]] = None
     #: Template parameters (``{param}`` placeholders of a user template), overriding the template's defaults.
@@ -715,6 +715,7 @@ class SimConfig(StrictModel):
                 raise ValueError(f"charger {c.id!r}: no csms_url and no csms_defaults.url")
             self._check_profile(c)
             self._check_variables(c)
+            self._check_availability_report(c)
             if c.session.ev_model == POOL:
                 try:
                     self.vehicle_pool(c)
@@ -724,6 +725,12 @@ class SimConfig(StrictModel):
                 raise ValueError(f"charger {c.id!r}: unknown session.ev_model {c.session.ev_model!r} "
                                  f"(not in ev_models nor presets {sorted(PRESETS)}, nor {POOL!r})")
         return self
+
+    def _check_availability_report(self, c: ChargerConfig) -> None:
+        version = c.ocpp_version or self.csms_defaults.ocpp_version
+        if c.availability_report != "status" and version != "2.1":
+            raise ValueError(f"charger {c.id!r}: availability_report {c.availability_report!r} is for OCPP 2.1 "
+                             f"chargers (this one is {version}; 1.6 / 2.0.1 report StatusNotification only)")
 
     def _check_variables(self, c: ChargerConfig) -> None:
         if not c.variables:

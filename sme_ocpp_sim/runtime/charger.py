@@ -657,6 +657,10 @@ class ChargerRuntime:
         self._time_scale = time_scale
 
     @property
+    def time_scale(self) -> float:
+        return self._time_scale
+
+    @property
     def paused(self) -> bool:
         return self._paused
 

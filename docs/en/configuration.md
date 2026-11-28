@@ -198,7 +198,7 @@ charger's `session.target_soc`):
 | `impairments.meter.end_after_stop` | `false` | The last meter reading arrives after the StopTransaction / Ended event (SAP `outOfOrderEndMeterValues`): 1.6 sends the `Transaction.End` MeterValues (`meter.begin_end_messages`) or a `Sample.Periodic` one taken at the stop after the StopTransaction; 2.0.1 sends an `Updated` event (`seqNo` after the Ended one) |
 | `impairments.meter.voltage_noise_v` | `0` | Uniform ± noise (V) on every reported Voltage |
 | `impairments.response_delay_ms` | `{}` | CSMS → charger action → ms: the answer (CALLRESULT or CALLERROR) to that CALL is held that long; other frames are not delayed. Longer than the CSMS's timeout = a slow charger. Unknown actions → `400` like `block` |
-| `availability_report` | `both` | OCPP 2.1 only: how a connector status change is reported: `status` (StatusNotification), `event` (NotifyEvent `Connector.AvailabilityState`) or `both` (G01) |
+| `availability_report` | `status` | OCPP 2.1 only (rejected for 1.6 / 2.0.1 unless `status`): how a connector status change is reported: `status` (StatusNotification), `event` (NotifyEvent `Connector.AvailabilityState`) or `both` (G01) |
 | `template` | none | Charger template (built-in or user, see [Excel and templates](excel-templates.md)); the template fields this charger does not set come from it |
 | `params` | `{}` | Parameters of a user template with `{param}` placeholders |
 | `meter_sample_interval_s` | key default | Default `MeterValueSampleInterval` when `config_keys` does not set it; for 2.0.1 the initial `SampledDataCtrlr.TxUpdatedInterval` |

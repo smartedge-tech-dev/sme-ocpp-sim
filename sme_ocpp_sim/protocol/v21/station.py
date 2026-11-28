@@ -15,6 +15,32 @@ All 2.0.1 behaviour is inherited unchanged (2.1 = 2.0.1 + optional fields + new 
     ``NotFound``; GetDERControl -> ``NotFound`` or ``Accepted`` followed by one ReportDERControl with the matching
     controls (R04). ``isSuperseded`` is always false: priorities are not evaluated.
 
+Smart charging 2.1 and V2X basics (2.1-M2; rules in :mod:`.profiles` / :mod:`.composite`):
+
+- SetChargingProfile: the 2.1 checks (:func:`.profiles.reject_reason_21`) run before the 2.0.1 ones. The power
+  model follows :func:`.composite.setting_at`: the limit as in 2.0.1, plus the signed setpoint (negative =
+  discharge, ``charging.power``) in a setpoint mode, setpoint 0 in Idle. While V2XChargingCtrlr.Enabled is false a
+  negative setpoint is applied as 0 (no discharge). GetCompositeSchedule reports ``operationMode``,
+  ``dischargeLimit`` and ``setpoint`` per period, capped at +/- the hardware maximum like the limit.
+- operationMode change of a transaction (K01.FR.110): TransactionEvent ``Updated`` ``OperationModeChanged`` with
+  ``transactionInfo.operationMode`` (checked every tick; a transaction starts as ChargingOnly).
+- UpdateDynamicSchedule (K28): ``Accepted`` for a Dynamic profile (the values present replace those of its period,
+  ``dynUpdateTime`` = now), ``Rejected`` ``InvalidProfile`` for another kind (K28.FR.11), ``Rejected`` ``NotFound``
+  for an unknown id. PullDynamicScheduleUpdate: sent for a Dynamic profile with ``dynUpdateInterval`` > 0 at
+  ``dynUpdateTime + dynUpdateInterval`` (then every interval until an update arrives), only while online; an
+  ``Accepted`` answer with a ``scheduleUpdate`` is applied the same way.
+- UsePriorityCharging (K21): ``Rejected`` ``TxNotFound`` (no such transaction), ``NoProfile`` ``NotFound`` (no
+  PriorityCharging profile on its EVSE or evseId 0), else ``Accepted``; a change sends NotifyPriorityCharging
+  after the answer. :meth:`Station21.set_priority_charging` is the local request (K22). Priority charging ends with
+  the transaction. NotifyPriorityCharging is not queued while offline.
+- maxOfflineDuration (Q11 / Q12): offline = from the end of a session to the next ``on_online``.
+- Meter values: Power.Active.Export, Energy.Active.Export.Register and Current.Export are served when configured;
+  once a transaction has discharged they are also added next to their Import counterparts in every reading, so
+  the import and export registers are always reported together. Import values stay >= 0 while discharging.
+- Device Model: V2XChargingCtrlr.Enabled (ReadWrite, true), SupportedEnergyTransferModes, SupportedOperationModes
+  (ReadOnly; the YAML may narrow them), SmartChargingCtrlr.SupportedAdditionalPurposes / SupportsDynamicProfiles /
+  SupportsLimitAtSoC (true) / SupportsEvseSleep (false).
+
 Transaction limits, tariffs and cost, availability (2.1-M3; calculation in :mod:`.tariff`):
 
 - Tariffs (I07 - I11). With TariffCostCtrlr.Enabled[Tariff] false every tariff message is CALLERROR
@@ -42,35 +68,9 @@ Transaction limits, tariffs and cost, availability (2.1-M3; calculation in :mod:
   ``TimeLimitReached`` / ``SoCLimitReached``, E16.FR.05), or ends the transaction when TxStopPoint contains
   ``EnergyTransfer`` (E16.FR.06). A raised limit resumes it (E16.FR.14). The cost limit uses the local cost with a
   tariff (E16.FR.16), else the last ``totalCost`` of a TransactionEventResponse (E16.FR.15).
-- Availability (G01): ``availability_report`` (``both`` by default) reports a connector status change as
+- Availability (G01): ``availability_report`` (``status`` by default) reports a connector status change as
   StatusNotification, NotifyEvent (Connector.AvailabilityState, trigger ``Delta``) or both. TriggerMessage
   StatusNotification still sends StatusNotification.
-
-Smart charging 2.1 and V2X basics (2.1-M2; rules in :mod:`.profiles` / :mod:`.composite`):
-
-- SetChargingProfile: the 2.1 checks (:func:`.profiles.reject_reason_21`) run before the 2.0.1 ones. The power
-  model follows :func:`.composite.setting_at`: the limit as in 2.0.1, plus the signed setpoint (negative =
-  discharge, ``charging.power``) in a setpoint mode, setpoint 0 in Idle. While V2XChargingCtrlr.Enabled is false a
-  negative setpoint is applied as 0 (no discharge). GetCompositeSchedule reports ``operationMode``,
-  ``dischargeLimit`` and ``setpoint`` per period, capped at +/- the hardware maximum like the limit.
-- operationMode change of a transaction (K01.FR.110): TransactionEvent ``Updated`` ``OperationModeChanged`` with
-  ``transactionInfo.operationMode`` (checked every tick; a transaction starts as ChargingOnly).
-- UpdateDynamicSchedule (K28): ``Accepted`` for a Dynamic profile (the values present replace those of its period,
-  ``dynUpdateTime`` = now), ``Rejected`` ``InvalidProfile`` for another kind (K28.FR.11), ``Rejected`` ``NotFound``
-  for an unknown id. PullDynamicScheduleUpdate: sent for a Dynamic profile with ``dynUpdateInterval`` > 0 at
-  ``dynUpdateTime + dynUpdateInterval`` (then every interval until an update arrives), only while online; an
-  ``Accepted`` answer with a ``scheduleUpdate`` is applied the same way.
-- UsePriorityCharging (K21): ``Rejected`` ``TxNotFound`` (no such transaction), ``NoProfile`` ``NotFound`` (no
-  PriorityCharging profile on its EVSE or evseId 0), else ``Accepted``; a change sends NotifyPriorityCharging
-  after the answer. :meth:`Station21.set_priority_charging` is the local request (K22). Priority charging ends with
-  the transaction. NotifyPriorityCharging is not queued while offline.
-- maxOfflineDuration (Q11 / Q12): offline = from the end of a session to the next ``on_online``.
-- Meter values: Power.Active.Export, Energy.Active.Export.Register and Current.Export are served when configured;
-  once a transaction has discharged they are also added next to their Import counterparts in every reading, so
-  the import and export registers are always reported together. Import values stay >= 0 while discharging.
-- Device Model: V2XChargingCtrlr.Enabled (ReadWrite, true), SupportedEnergyTransferModes, SupportedOperationModes
-  (ReadOnly; the YAML may narrow them), SmartChargingCtrlr.SupportedAdditionalPurposes / SupportsDynamicProfiles /
-  SupportsLimitAtSoC (true) / SupportsEvseSleep (false).
 
 Not modelled: frequency response (CentralFrequency follows its setpoint, LocalFrequency and LocalLoadBalancing
 charge within the limits), SetpointPriority, setpointReactive and the _L2 / _L3 values (accepted, not applied),
@@ -103,7 +103,8 @@ from .adapter import Adapter21
 from .composite import CompositeSchedule21, Setting, composite_schedule, setting_at
 from .profiles import (DYNAMIC, MODE, PRIORITY, ProfileStore21, UpdateRejected, charging_profile21,
                        reject_reason_21)
-from .tariff import LIMIT_FIELDS, CostMeter, has_conditions, limits_of, reached, too_many_elements
+from .tariff import (LIMIT_FIELDS, CostMeter, has_conditions, limits_of, reached, tariff_key, too_many_elements,
+                     with_utc)
 
 log = logging.getLogger(__name__)
 
@@ -168,8 +169,15 @@ class Station21(Station201):
         self.tx_tariffs: Dict[str, m.TariffType] = {}  # driver-specific tariffs by transactionId (I08 / I11)
         #: Transaction limits (E16) and cost (I12) by transactionId.
         self.tx_limits: Dict[str, Dict[str, float]] = {}
+        #: ``tx_limits`` is the effective limit: per key the lower of the local (driver) and the CSMS limit (E16.FR.04).
+        self._local_limits: Dict[str, Dict[str, float]] = {}
         self._csms_limits: Dict[str, Dict[str, float]] = {}
+        #: transactionId -> the limit (``LIMIT_FIELDS`` key) that suspended it. Lifecycle: set by ``_check_limit``
+        #: (E16.FR.05, the EVSE is held at 0 W) -> cleared by ``_set_limits`` once the raised limit is no longer
+        #: reached (E16.FR.14) -> the next tick resumes the charge; dropped with the transaction.
         self._limit_reached: Dict[str, str] = {}
+        #: transactionId -> [simulated seconds since the transaction started, monotonic time of the last update].
+        self._tx_time: Dict[str, List[float]] = {}
         self._costs: Dict[str, CostMeter] = {}
         #: transactionInfo fields sent once in the next TransactionEvent of a transaction (I08.FR.22).
         self._tx_info_once: Dict[str, Dict[str, Any]] = {}
@@ -247,6 +255,7 @@ class Station21(Station201):
     def _set_default_tariff(self, req: m.SetDefaultTariffRequest) -> m.SetDefaultTariffResponse:
         self._require_tariffs("SetDefaultTariff")
         R = self.models.SetDefaultTariffResponse
+        req = req.model_copy(update={"tariff": with_utc(req.tariff)})
         if req.evse_id != 0 and req.evse_id not in self.evses:  # I07.FR.06
             return R(status="Rejected", status_info=self._info("UnknownEVSE"))
         problem = self._tariff_problem(req.tariff)
@@ -297,6 +306,7 @@ class Station21(Station201):
         e = next((x for x in self.evses.values() if x.tx is not None and x.tx.tx_id == req.transaction_id), None)
         if e is None or e.tx is None:  # I11.FR.04
             return R(status="TxNotFound")
+        req = req.model_copy(update={"tariff": with_utc(req.tariff)})
         problem = self._tariff_problem(req.tariff)
         if problem is not None:
             return R(status=problem)
@@ -322,7 +332,7 @@ class Station21(Station201):
         tariff of its EVSE (I07.FR.14)."""
         if not self._tariffs_enabled():
             return None
-        driver = self._adapter.driver_tariffs.pop(tx.id_token, None)
+        driver = self._adapter.driver_tariffs.pop(tariff_key(tx.id_token, tx.token_type), None)
         if driver is not None:
             problem = self._tariff_problem(driver)
             if problem is None:
@@ -344,13 +354,20 @@ class Station21(Station201):
     def _local_cost(self) -> bool:
         return self._tariffs_enabled() and self.dm.bool_value(TARIFF_ENABLED, "Cost")
 
-    def _set_limits(self, e: _Evse, tx: _Tx, values: Dict[str, float], *, confirm: bool) -> None:
-        """Merge limits into the transaction's, confirm them with LimitSet (E16.FR.01 / FR.03), check them again."""
-        if not values:
+    def _set_limits(self, e: _Evse, tx: _Tx, *, local: Optional[Dict[str, float]] = None,
+                    csms: Optional[Dict[str, float]] = None, confirm: bool) -> None:
+        """Merge local / CSMS limits into the transaction's, confirm the effective ones with LimitSet (E16.FR.01 /
+        FR.03), check them again. The effective limit is the lower of the two per key (E16.FR.04)."""
+        if not local and not csms:
             return
         self.settle()
-        limits = self.tx_limits.setdefault(tx.tx_id, {})
-        limits.update(values)
+        mine, theirs = self._local_limits.setdefault(tx.tx_id, {}), self._csms_limits.setdefault(tx.tx_id, {})
+        mine.update(local or {})
+        theirs.update(csms or {})
+        limits = self.tx_limits[tx.tx_id] = {k: min(x[k] for x in (mine, theirs) if k in x)
+                                             for k in {**mine, **theirs}}
+        if "max_cost" in limits:  # the cost limit needs a meter even when the transaction has no tariff
+            self._costs.setdefault(tx.tx_id, CostMeter(None))
         if confirm:
             self._queue_event(e, tx, TransactionEventEnumType.updated,
                               self.models.TriggerReasonEnumTypeExt21.limit_set,
@@ -363,7 +380,7 @@ class Station21(Station201):
     def set_transaction_limit(self, connector: int, **limits: Optional[float]) -> Dict[str, float]:
         """Local (EV driver) transaction limits of EVSE ``connector``: keywords ``max_energy`` (Wh), ``max_time``
         (s), ``max_cost``, ``max_so_c`` (%); ``None`` and unsupported ones are ignored (E16.FR.13). A CSMS limit is
-        never exceeded (E16.FR.04). Returns the limits in force; ``ValueError`` without a transaction."""
+        never exceeded, nor replaced by a later one (E16.FR.04). Returns the limits in force; ``ValueError`` without a transaction."""
         e = self._evse(connector)
         if e.tx is None:
             raise ValueError(f"EVSE {connector} has no transaction")
@@ -371,11 +388,25 @@ class Station21(Station201):
         if unknown:
             raise ValueError(f"unknown transaction limits: {', '.join(sorted(unknown))}")
         supported = set(self._supported_limits())
-        csms = self._csms_limits.get(e.tx.tx_id, {})
-        values = {k: min(v, csms[k]) if k in csms else v for k, v in limits.items()
-                  if v is not None and LIMIT_FIELDS[k] in supported}
-        self._set_limits(e, e.tx, values, confirm=True)
+        values = {k: v for k, v in limits.items() if v is not None and LIMIT_FIELDS[k] in supported}
+        self._set_limits(e, e.tx, local=values, confirm=True)
         return dict(self.tx_limits.get(e.tx.tx_id, {}))
+
+    def _tx_elapsed(self, e: _Evse) -> float:
+        """Simulated seconds since the transaction of ``e`` started: wall time x ``time_scale``, frozen while the
+        simulation is paused (``maxTime``, E16.FR.09). Brought up to now on every call."""
+        assert e.tx is not None
+        now = self.host.monotonic()
+        t = self._tx_time.setdefault(e.tx.tx_id, [0.0, now])
+        if not self.host.paused:
+            t[0] += max(0.0, now - t[1]) * self.host.time_scale
+        t[1] = now
+        return t[0]
+
+    def _advance(self, e: _Evse) -> None:
+        if e.tx is not None:  # also while not charging: maxTime counts from the start of the transaction
+            self._tx_elapsed(e)
+        super()._advance(e)
 
     def _reached(self, e: _Evse) -> Optional[str]:
         tx = e.tx
@@ -383,8 +414,7 @@ class Station21(Station201):
             return None
         cost = self._costs.get(tx.tx_id)
         energy = self._tx_energy(e)
-        return reached(self.tx_limits[tx.tx_id], energy_wh=energy,
-                       elapsed_s=(self.host.clock() - tx.started_at).total_seconds(),
+        return reached(self.tx_limits[tx.tx_id], energy_wh=energy, elapsed_s=self._tx_elapsed(e),
                        soc_pct=e.pw.soc_pct if e.pw is not None else None,
                        cost=cost.cost(energy, self._local_cost()) if cost is not None else None)
 
@@ -418,8 +448,7 @@ class Station21(Station201):
             self._costs.setdefault(tx.tx_id, CostMeter(None)).central = res.total_cost
         values = limits_of(res.transaction_limit, self._supported_limits())
         if values:  # E16.FR.02 / F07.FR.02; unsupported limits are dropped (E16.FR.13)
-            self._csms_limits.setdefault(tx.tx_id, {}).update(values)
-            self._set_limits(e, tx, values, confirm=not (req is not None and req.offline))  # E16.FR.18
+            self._set_limits(e, tx, csms=values, confirm=not (req is not None and req.offline))  # E16.FR.18
         elif res.total_cost is not None:
             self._check_limit(e)
 
@@ -545,10 +574,11 @@ class Station21(Station201):
             e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle, setpoint_w=setpoint)
         cost = self._costs.get(e.tx.tx_id) if e.tx is not None and dt > 0 else None
         if cost is not None:  # totalUsage.chargingTime / idleTime (I12)
+            sim = dt * self.host.time_scale  # simulated seconds
             if e.pw.power_w != 0:
-                cost.charging_s += dt
+                cost.charging_s += sim
             else:
-                cost.idle_s += dt
+                cost.idle_s += sim
 
     def tick(self) -> None:
         super().tick()
@@ -570,7 +600,8 @@ class Station21(Station201):
         self.priority.pop(e.id, None)
         self._modes.pop(e.id, None)
         if tx is not None:
-            for store in (self.tx_tariffs, self.tx_limits, self._csms_limits, self._limit_reached, self._costs,
+            for store in (self.tx_tariffs, self.tx_limits, self._local_limits, self._csms_limits, self._limit_reached,
+                      self._tx_time, self._costs,
                           self._tx_info_once, self.allowed_energy_transfer):
                 store.pop(tx.tx_id, None)  # type: ignore[attr-defined]
 
@@ -582,6 +613,7 @@ class Station21(Station201):
         if event is TransactionEventEnumType.started and tx.tx_id not in self._costs:
             tariff = self._start_tariff(e, tx)
             self._costs[tx.tx_id] = CostMeter(tariff)
+            self._tx_time.setdefault(tx.tx_id, [0.0, self.host.monotonic()])
             if tariff is not None:
                 self._tx_info_once.setdefault(tx.tx_id, {})["tariff_id"] = tariff.tariff_id
         once = self._tx_info_once.pop(tx.tx_id, None)
@@ -623,13 +655,16 @@ class Station21(Station201):
             component=mm.ComponentType(name="Connector", evse=mm.EVSEType(id=ev.evse_id, connector_id=ev.connector_id)),
             variable=mm.VariableType(name="AvailabilityState"))])
 
-    async def _send_status(self, ev: d.ConnectorStatus) -> None:  # type: ignore[override]
-        """G01: StatusNotification and / or NotifyEvent(Connector.AvailabilityState) by ``availability_report``."""
-        mode = getattr(self.cfg, "availability_report", "both")
+    def _status_sends(self, ev: d.ConnectorStatus) -> List[Tuple[str, Any]]:
+        """G01: StatusNotification and / or NotifyEvent(Connector.AvailabilityState) by ``availability_report``;
+        ``both`` is two outbox items, so a reconnect never resends the one already delivered."""
+        mode = getattr(self.cfg, "availability_report", "status")
+        out: List[Tuple[str, Any]] = []
         if mode in ("status", "both"):
-            await self._adapter.send_connector_status(ev)
+            out += super()._status_sends(ev)
         if mode in ("event", "both"):
-            await self._adapter.send_notify_event(self._availability_event(ev))
+            out.append(("NotifyEvent", lambda: self._adapter.send_notify_event(self._availability_event(ev))))
+        return out
 
     def _samples(self, e: _Evse, measurands: Any) -> List[d.Sample]:
         out = super()._samples(e, measurands)

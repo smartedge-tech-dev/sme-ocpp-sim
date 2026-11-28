@@ -793,11 +793,17 @@ class Station201(VersionStation):
         if self.host.online and wire != e.reported:
             e.reported = wire
             ev = self._status_event(e)  # captured now: the state may change before it is sent
-            self._push(_Out("StatusNotification", lambda: self._send_status(ev)))
+            for what, send in self._status_sends(ev):  # one outbox item per message: a resend never repeats one
+                self._push(_Out(what, send))
 
-    def _send_status(self, ev: d.ConnectorStatus) -> Awaitable[Any]:
-        """Report a connector status change (2.0.1: StatusNotification; 2.1 may add / use NotifyEvent, G01)."""
-        return self._adapter.send_connector_status(ev)
+    def _status_sends(self, ev: d.ConnectorStatus) -> List[Tuple[str, Callable[[], Awaitable[Any]]]]:
+        """The messages that report a connector status change (2.0.1: StatusNotification; 2.1 may use
+        NotifyEvent too, G01), as (name, sender)."""
+        return [("StatusNotification", lambda: self._adapter.send_connector_status(ev))]
+
+    async def _send_status(self, ev: d.ConnectorStatus) -> None:
+        for _, send in self._status_sends(ev):
+            await send()
 
     # ================================================================== readings / power model
 
