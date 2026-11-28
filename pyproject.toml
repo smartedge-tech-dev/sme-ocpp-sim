@@ -65,6 +65,7 @@ packages = [
   "sme_ocpp_sim.rpc",
   "sme_ocpp_sim.runtime",
   "sme_ocpp_sim.scenario",
+  "sme_ocpp_sim.trace",
   "sme_ocpp_sim.configs",
   "sme_ocpp_sim.scenarios",
 ]

@@ -2,9 +2,11 @@
 
   sme-ocpp-sim [run] [-c CONFIG] [--host 127.0.0.1] [--http-port 8082] [--no-browser]
                [-v] [--log-format {text,json}] [--mini-csms] [--csms-host HOST] [--csms-port 9000]
+               [--trace FILE]
   sme-ocpp-sim scenario run FILE [-c CONFIG] [--out verdict.json] [--junit junit.xml] [--trace frames.jsonl]
                             [--time-scale N] [-v] [--log-format {text,json}]
   sme-ocpp-sim scenario validate FILE [-c CONFIG]
+  sme-ocpp-sim analyze TRACE [--json] [--charger ID] [--ocpp-version V]
   sme-ocpp-sim --version
 
 The common options and the web server start come from ``sme_sim_common.cli``. ``--mini-csms`` / ``--csms-host`` /
@@ -13,6 +15,10 @@ from the web UI then writes them, like any other running value).
 
 ``scenario run`` is headless (no web server): it starts the engine with the config, runs the scenario, writes the
 verdict JSON (``--out``, default stdout) and exits 0 pass / 1 fail / 2 error, aborted or a load error (v0.3 M3).
+
+``analyze`` reads a trace (``ocppsim-trace/1``, or a header-less ``frames.jsonl`` = v0) and prints the summary of
+:mod:`.trace.analyze` (``--json``: the ``ocppsim-analysis/1`` report); exit 0, 2 when the file cannot be read.
+``--trace FILE`` (web app) records every charger from the start (= config ``trace.path``, v0.3 M5).
 """
 
 from __future__ import annotations
@@ -106,7 +112,7 @@ def scenario_main(argv) -> int:
         if name == "run":
             p.add_argument("--out", help="verdict JSON file (default: stdout)")
             p.add_argument("--junit", help="also write a JUnit XML report")
-            p.add_argument("--trace", help="write the frames of the scenario's chargers (JSON lines)")
+            p.add_argument("--trace", help="record the scenario's chargers into a trace file (ocppsim-trace/1)")
             p.add_argument("--time-scale", dest="time_scale", type=float,
                            help="sim speed for this run (overrides the config and the scenario's clock.time_scale)")
             p.add_argument("-v", "--verbose", action="store_true")
@@ -180,10 +186,48 @@ def scenario_main(argv) -> int:
     return vd.exit_code(verdict["result"])
 
 
+def analyze_main(argv) -> int:
+    """``analyze TRACE``: the trace summary (text, or ``--json``)."""
+    import json
+
+    from .trace.analyze import analyze, to_text
+    from .trace.format import TraceError, load
+
+    ap = argparse.ArgumentParser(prog=f"{APP_NAME} analyze", description="Summarise a trace file "
+                                 "(ocppsim-trace/1, or a frames.jsonl export = v0): per action CALL / result / "
+                                 "error counts and latency, connection, transactions, protocol anomalies, "
+                                 "Smart Charging profile timeline")
+    ap.add_argument("file", help="trace file (rotated parts named by its footer are read too)")
+    ap.add_argument("--json", action="store_true", help="print the ocppsim-analysis/1 JSON report")
+    ap.add_argument("--charger", help="only this charger id")
+    ap.add_argument("--ocpp-version", dest="ocpp_version", choices=("1.6", "2.0.1", "2.1"),
+                    help="OCPP version of chargers the trace does not name (v0 files); default: detected "
+                         "from the actions")
+    args = ap.parse_args(argv)
+    try:
+        trace = load(args.file)
+    except (OSError, TraceError, UnicodeDecodeError) as e:
+        print(f"analyze: cannot read {args.file}: {e}", file=sys.stderr)
+        return 2
+    if args.ocpp_version:
+        known = {c["id"] for c in (trace.header or {}).get("chargers", []) if isinstance(c, dict)}
+        extra = [{"id": cid, "ocpp_version": args.ocpp_version} for cid in
+                 sorted({str(f.get("charger")) for f in trace.frames} - known)]
+        trace.header = {**(trace.header or {}), "chargers": [*(trace.header or {}).get("chargers", []), *extra]}
+    report = analyze(trace, charger=args.charger)
+    if args.json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    else:
+        sys.stdout.write(to_text(report))
+    return 0
+
+
 def main(argv=None) -> int:
     rest = sys.argv[1:] if argv is None else list(argv)
     if rest[:1] == ["scenario"]:
         return scenario_main(rest[1:])
+    if rest[:1] == ["analyze"]:
+        return analyze_main(rest[1:])
     if rest[:1] == ["run"]:
         rest = rest[1:]
     ap = argparse.ArgumentParser(prog=APP_NAME,
@@ -198,6 +242,8 @@ def main(argv=None) -> int:
     g.add_argument("--csms-host", dest="csms_host", help="Mini CSMS listen host (use 0.0.0.0 in Docker)")
     g.add_argument("--csms-port", dest="csms_port", type=int,
                    help=f"Mini CSMS listen port (default {DEFAULT_CSMS_PORT})")
+    ap.add_argument("--trace", help="record every charger into this trace file from the start (ocppsim-trace/1; "
+                    "overrides trace.path)")
     args = ap.parse_args(rest)
 
     setup_logging(verbose=args.verbose, log_format=args.log_format)  # --log-format json: one object per line
@@ -218,6 +264,8 @@ def main(argv=None) -> int:
             cfg = SimConfig.model_validate({**cfg.model_dump(), "mini_csms": {**cfg.mini_csms.model_dump(), **override}})
         text = Path(path).read_text(encoding="utf-8") if path else None
         engine = OcppEngine(cfg, config_text=text, config_path=path)
+        if args.trace:   # not cfg.trace.path: the config is written back to its file
+            engine.trace_start_path = args.trace
         if path:
             engine.log_event("config", f"config file: {path}")  # also in the web UI event log
     except Exception as e:  # noqa: BLE001

@@ -213,6 +213,8 @@ def test_energy_limit_from_the_csms_suspends_and_cost_details_at_the_end():
                 assert total["currency"] == "JPY" and total["typeOfCost"] == "NormalCost"
                 assert total["total"]["exclTax"] == pytest.approx(
                     ended["costDetails"]["totalUsage"]["energy"] / 1000 * 30.0, abs=0.01)
+                # The frame log records the Ended event before the Mini CSMS handler stores the cost.
+                await _until(lambda: "total_cost" in csms.sessions["CP1"].transactions[tx])
                 kept = csms.sessions["CP1"].transactions[tx]
                 assert kept["tariff_id"] == "T1" and kept["total_cost"] == total["total"]["exclTax"]
             await _with_charger(url, "2.1", body, **METERED)

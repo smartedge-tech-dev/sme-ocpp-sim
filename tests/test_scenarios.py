@@ -248,8 +248,9 @@ def test_set_ev_is_used_once():
 
 # ------------------------------------------------------------------ HTTP API / MCP / CLI
 
-def test_http_api_run_status_abort_result():
+def test_http_api_run_status_abort_result(tmp_path):
     engine = _engine(DEAD_URL, "1.6")
+    engine.trace_dir = lambda: tmp_path   # web-started scenarios record a trace there
     engine.stop_grace_s = 0.2
     text = yaml.safe_dump(_sc([{"charger": "CP1", "steps": [{"do": "log", "message": "hi"},
                                                             {"do": "wait", "duration": "1000h"}]}]))
@@ -303,7 +304,10 @@ def test_cli_headless_exit_codes(tmp_path, capsys):
     v = json.loads(out.read_text("utf-8"))
     assert rc == 0 and v["result"] == "pass" and v["trace"] == str(trace), v
     assert ET.parse(junit).getroot().get("failures") == "0"
-    assert any(json.loads(line)["action"] == "StartTransaction" for line in trace.read_text("utf-8").splitlines())
+    lines = [json.loads(line) for line in trace.read_text("utf-8").splitlines()]
+    assert lines[0]["format"] == "ocppsim-trace" and lines[-1]["type"] == "footer"
+    assert any(x.get("action") == "StartTransaction" for x in lines)
+    assert any(x.get("event") == "start" for x in lines)   # the scenario's action, recorded as an event
     sc.write_text(yaml.safe_dump(_sc([{"charger": "CP1", "steps": [
         {"expect": {"state": {"status": "Faulted"}}, "within": 0.2}]}])), encoding="utf-8")
     assert main(["scenario", "run", str(sc), "-c", str(cfg), "--out", str(out)]) == 1
@@ -418,9 +422,10 @@ def test_engine_stop_aborts_running_scenario():
     asyncio.run(main_())
 
 
-def test_http_limits_and_expect_oldest():
+def test_http_limits_and_expect_oldest(tmp_path):
     from sme_ocpp_sim.web import MAX_SCENARIO_BYTES
     engine = _engine(DEAD_URL, "1.6")
+    engine.trace_dir = lambda: tmp_path
     engine.stop_grace_s = 0.2
     with TestClient(create_app(engine), base_url="http://127.0.0.1") as c:
         assert c.post("/api/scenarios/run", content=b"x" * (MAX_SCENARIO_BYTES + 1)).status_code == 413
@@ -500,6 +505,7 @@ def test_builtin_scenarios(tmp_path):
             builtin.path(bad)
     engine = OcppEngine(SimConfig.model_validate({"csms_defaults": {"url": "ws://127.0.0.1:9/ocpp"},
                                                   "chargers": [{"id": "DEMO-16"}, {"id": "DEMO-201"}]}))
+    engine.trace_dir = lambda: tmp_path   # web-started scenarios record a trace there
     with TestClient(create_app(engine)) as c:
         assert [e["name"] for e in c.get("/api/scenarios/builtin").json()["scenarios"]] == names
         assert "plug-charge-unplug" in c.get("/api/scenarios/builtin/plug-charge-unplug").text

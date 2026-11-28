@@ -68,6 +68,15 @@ mask keeps the stored password.
 |---|---|---|
 | `size` | `20000` | OCPP frames kept in memory for all chargers together (≥ 100) |
 
+## trace
+
+| Field | Default | Meaning |
+|---|---|---|
+| `path` | `null` | Record every charger into this trace file from the start (overwritten); its directory is also the trace directory of the HTTP API |
+| `rotate_mb` | `100` | Start a new part at this size (`null` = never) |
+
+See [Trace recording and analysis](trace-replay.md).
+
 ## csms_defaults
 
 | Field | Default | Meaning |

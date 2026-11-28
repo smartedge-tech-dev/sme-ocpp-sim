@@ -64,6 +64,7 @@ import ipaddress
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from sme_sim_common.engine import BaseEngine
@@ -123,10 +124,17 @@ class _FrameSink:
 
         def on_frame(info: Any) -> None:
             entry = engine.frame_log.add(charger, info)
+            for rec in tuple(engine.recorders):
+                rec.frame(entry)
             for listener in tuple(engine.frame_listeners):
                 listener(entry)
             engine.wake()
         return on_frame
+
+    def event_callback(self, charger: str):
+        """Connection lifecycle events of ``charger`` (``ChargerRuntime``) -> the trace recorders."""
+        engine = self._engine
+        return lambda event, detail: engine.trace_event(charger, event, detail)
 
 
 def _split(snap: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -167,6 +175,15 @@ class OcppEngine(BaseEngine):
         #: Called with every new :class:`.framelog.FrameEntry` of a charger (the scenario runner's frame stream:
         #: it does not depend on the ring buffer's size). A listener must not block or raise.
         self.frame_listeners: List[Callable[[Any], None]] = []
+        #: Active trace recorders (:class:`.trace.recorder.TraceRecorder`): the engine's own (:attr:`trace`) and a
+        #: running scenario's. Each gets every frame and event (and filters by charger itself).
+        self.recorders: List[Any] = []
+        #: The engine's own recording (config ``trace.path``, ``--trace``, ``POST /api/trace/start``); kept after
+        #: it stopped, for its status.
+        self.trace: Optional[Any] = None
+        #: ``--trace FILE``: where the engine's own recording starts, instead of ``config.trace.path``. Kept apart
+        #: from the config, which is written back to the config file.
+        self.trace_start_path: Optional[str] = None
         #: The scenario runner of the current / last scenario (``scenario.runner``; one at a time).
         self.scenario: Optional[Any] = None
         #: The standing traffic (:class:`.scenario.traffic.StandingTraffic`, config ``traffic:``).
@@ -235,7 +252,10 @@ class OcppEngine(BaseEngine):
 
     def _sync_clock(self, time_scale: float, running: bool) -> None:
         """Keep the sim clock in step with the clock just applied to the runtimes."""
+        changed = (time_scale, bool(running)) != (self.clock.time_scale, self.clock.running)
         self.clock.set(time_scale, running)
+        if changed:
+            self.trace_event(None, "clock", {"time_scale": time_scale, "running": bool(running)})
 
     @staticmethod
     def _apply_impairments(state: Dict[str, _Entry], config: SimConfig) -> None:
@@ -273,6 +293,7 @@ class OcppEngine(BaseEngine):
         self._install(merged)
         if gone or fresh:
             self.log_event("config", f"chargers restarted: {sorted(set(gone) | set(fresh))}")
+            self.trace_event(None, "chargers", {"chargers": self.trace_chargers()})
         if self._started and not self._stopping:
             await self._sync_csms(new_config.mini_csms)
             await self.traffic.reconfigure(old_config, new_config, rebuilt=set(gone) | set(fresh))
@@ -382,6 +403,12 @@ class OcppEngine(BaseEngine):
         self._apply_clock((e.runtime for e in self.state.values()), self.time_scale, self.running)
         self._sync_clock(self.time_scale, self.running)
         self.clock.reset()  # sim time starts with the engine (anchor = now), not when it was constructed
+        start_path = self.trace_start_path or self.config.trace.path
+        if start_path and not (self.trace is not None and self.trace.recording):
+            try:
+                await self.start_trace(start_path)
+            except (OSError, OperationNotPossible) as e:  # a bad path does not stop the simulator
+                self.log_event("error", f"trace: cannot record to {start_path}: {e}")
         for cid, e in self.state.items():
             if cid not in self._held:
                 self._launch(cid, e.runtime)
@@ -398,11 +425,99 @@ class OcppEngine(BaseEngine):
         self._stopping = True
         self._cancel_push_later()
         await self._halt(list(self._runs))
+        if self.trace is not None and self.trace.recording:  # after the chargers: their disconnects are in it
+            await self.stop_trace()
         if self.csms is not None:
             csms, self.csms = self.csms, None
             await csms.stop()
         await super().stop()
         self._cancel_push_later()
+
+    # ------------------------------------------------------------ trace (v0.3 M5)
+
+    def trace_chargers(self, ids: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+        """Header ``chargers`` of a trace: id, OCPP version, connector count, CSMS URL without credentials, plus
+        what a replay needs (all credential-free): vendor / model / serial, security profile, WebSocket
+        subprotocol, the connection ``path`` (identity included), ``ev_model``, the traffic / vehicle ``seed`` and
+        the charger's configured ``impairments``."""
+        from urllib.parse import quote
+
+        from .rpc.transport import derived_security_profile
+        from .trace.format import strip_credentials, url_path
+
+        want = set(ids) if ids is not None else None
+        out = []
+        for c in self.config.chargers:
+            if want is not None and c.id not in want:
+                continue
+            url, version = self.config.resolve_csms(c)
+            e = self.state.get(c.id)
+            sub = e.runtime.adapter.subprotocol if e is not None else None
+            out.append({"id": c.id, "ocpp_version": version,
+                        "connectors": e.runtime.connector_count if e is not None else c.connectors,
+                        "csms_url": strip_credentials(url),
+                        "vendor": c.vendor, "model": c.model, "serial": c.serial,
+                        "security_profile": derived_security_profile(c.password, url, bool(c.client_cert_file)),
+                        "subprotocol": sub,
+                        "path": url_path(f"{url.rstrip('/')}/{quote(c.id, safe='')}"),
+                        "ev_model": c.session.ev_model, "seed": self.config.traffic.seed,
+                        "impairments": c.impairments.model_dump(mode="json")})
+        return out
+
+    def trace_event(self, charger: Optional[str], event: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        """Hand an event (connection lifecycle, an operator / scenario action, clock) to the active recorders."""
+        for rec in tuple(self.recorders):
+            rec.event(charger, event, detail)
+
+    def trace_dir(self) -> Path:
+        """Where ``POST /api/trace/start`` and web-started scenarios write: the directory of ``trace.path``, else
+        ``traces/`` beside the config file (Windows exe: ``~/.sme-ocpp-sim/traces``; no config: the working
+        directory's ``traces/``)."""
+        import sys
+
+        if self.trace_start_path or self.config.trace.path:
+            return Path(self.trace_start_path or self.config.trace.path).expanduser().resolve().parent
+        if getattr(sys, "frozen", False):
+            from .templates_builtin import user_data_dir
+            return user_data_dir() / "traces"
+        base = Path(self.config_path).resolve().parent if getattr(self, "config_path", None) else Path.cwd()
+        return base / "traces"
+
+    async def open_recorder(self, path: Any, chargers: Optional[Iterable[str]] = None) -> Any:
+        """Start a :class:`.trace.recorder.TraceRecorder` on ``path`` fed by this engine (``chargers`` = only
+        those); stop it with :meth:`close_recorder`. Raises ``OSError`` when the file cannot be created."""
+        from . import __version__
+        from .trace.recorder import TraceRecorder
+
+        only = list(chargers) if chargers is not None else None
+        rec = TraceRecorder(path, tool_version=__version__, time_scale=self.time_scale,
+                            chargers_info=self.trace_chargers(only), chargers=only,
+                            sim_start=self.clock.now_sim().isoformat(timespec="milliseconds"),
+                            sim_now=self.clock.total_sim, rotate_mb=self.config.trace.rotate_mb)
+        await asyncio.to_thread(rec.start)
+        self.recorders.append(rec)
+        return rec
+
+    async def close_recorder(self, rec: Any) -> None:
+        if rec in self.recorders:
+            self.recorders.remove(rec)
+        await asyncio.to_thread(rec.stop)
+
+    async def start_trace(self, path: Any) -> Any:
+        """Start the engine's own recording (every charger); one at a time."""
+        if self.trace is not None and self.trace.recording:
+            raise OperationNotPossible(f"a trace is already recording to {self.trace.path}")
+        self.trace = await self.open_recorder(path)
+        self.log_event("info", f"trace recording to {self.trace.path}")
+        return self.trace
+
+    async def stop_trace(self) -> Any:
+        rec = self.trace
+        if rec is None or not rec.recording:
+            raise OperationNotPossible("no trace is recording")
+        await self.close_recorder(rec)
+        self.log_event("info", f"trace stopped: {rec.path} ({rec.frames} frame(s), {rec.dropped} dropped)")
+        return rec
 
     # ------------------------------------------------------------ clock
 

@@ -174,6 +174,10 @@ left out; `last_seq` is the newest sequence number of the whole log (filters ign
 
 The frame log contains OCPP frames only, never HTTP headers or passwords.
 
+## Trace { #trace }
+
+`GET /api/trace`, `POST /api/trace/start` / `stop`, `GET /api/trace/files[/{file}[/analyze]]`, `GET /api/frames/analyze` and `GET /api/frames.jsonl?format=v1`: see [Trace recording and analysis](trace-replay.md#http-api).
+
 ## Scenarios { #scenarios }
 
 | Method | Path | Meaning |

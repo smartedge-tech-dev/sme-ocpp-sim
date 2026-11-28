@@ -131,6 +131,14 @@ class FrameLogConfig(StrictModel):
     size: int = Field(20000, ge=100)
 
 
+class TraceConfig(StrictModel):
+    """Trace recording (v0.3 M5, ``trace/``): ``path`` set = record from the engine start into that file
+    (overwritten); ``POST /api/trace/start`` also writes into its directory. ``rotate_mb``: start a new part when
+    a part reaches the size (``None`` = never)."""
+    path: Optional[str] = None
+    rotate_mb: Optional[float] = Field(100.0, gt=0)
+
+
 class ReconnectConfig(StrictModel):
     min_s: float = Field(1.0, gt=0)
     max_s: float = Field(60.0, gt=0)
@@ -658,6 +666,7 @@ class TrafficConfig(StrictModel):
 class SimConfig(StrictModel):
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     frame_log: FrameLogConfig = Field(default_factory=FrameLogConfig)
+    trace: TraceConfig = Field(default_factory=TraceConfig)
     csms_defaults: CsmsDefaults = Field(default_factory=CsmsDefaults)
     ev_models: List[EvModelConfig] = Field(default_factory=list)
     chargers: List[ChargerConfig] = Field(default_factory=list)
@@ -811,7 +820,8 @@ def load_file(path: Union[str, Path]) -> SimConfig:
 
 
 #: Top-level blocks :func:`write_back` may rewrite, and their value when everything in them is default.
-WRITE_BACK_BLOCKS: Dict[str, Any] = {"simulation": {}, "frame_log": {}, "csms_defaults": {}, "ev_models": [],
+WRITE_BACK_BLOCKS: Dict[str, Any] = {"simulation": {}, "frame_log": {}, "trace": {}, "csms_defaults": {},
+                                     "ev_models": [],
                                      "chargers": [], "mini_csms": {}, "traffic": {}}
 
 

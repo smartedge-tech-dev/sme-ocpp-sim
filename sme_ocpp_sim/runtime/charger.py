@@ -33,6 +33,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Set, Union
 
+from ..trace.format import url_path
 from ..charging import power
 from ..charging.ev import PRESETS, EvModel, Vehicle
 from ..charging.power import AcSupply, PowerState
@@ -157,6 +158,9 @@ class ChargerRuntime:
         self._max_retries: Optional[int] = rc.max_retries
         self._backoff = backoff or Backoff(rc.min_s, BACKOFF_FACTOR, rc.max_s, rc.jitter)
         self._frame_cb = frame_log.callback(cfg.id) if frame_log is not None else None
+        # Connection lifecycle for the trace recorder (optional on the sink: ``event_callback(cid)``).
+        ev_cb = getattr(frame_log, "event_callback", None) if frame_log is not None else None
+        self._event_cb: Optional[Callable[[str, Dict[str, Any]], None]] = ev_cb(cfg.id) if ev_cb else None
         #: The RPC connection of the current session (frame injection); None between sessions.
         self._rpc: Optional[RpcConnection] = None
         #: CSMS -> CP actions this charger's version handles: the names ``impairments.block`` may use.
@@ -318,6 +322,7 @@ class ChargerRuntime:
             except HandshakeError as e:
                 self.last_error = {"kind": e.kind, "message": str(e)}
                 log.warning("%s: connect failed (%s)", self.cfg.id, e.kind)
+                self._lifecycle("connect_failed", {"kind": e.kind})
                 try:
                     self.station.on_connect_failed(e.kind, str(e))
                 except Exception:  # noqa: BLE001 - a station bug must not stop the reconnect loop
@@ -330,6 +335,9 @@ class ChargerRuntime:
             # The back-off is reset only after an accepted boot (see _boot): a CSMS that accepts the socket and
             # then drops it must still be backed off.
             was_reset = await self._session(ws, stop)
+            self._lifecycle("disconnected", {
+                "reason": "stopped" if stop.is_set() else "reset" if was_reset
+                else (self.last_error or {}).get("kind", "disconnected")})
             if stop.is_set() or self.gave_up is not None:
                 break
             if self._reconnect_after is not None:
@@ -363,6 +371,7 @@ class ChargerRuntime:
         self.adapter.bind(rpc.call)
         self.connected = True
         self._session_no += 1
+        self._lifecycle("connected", {"session": self._session_no, "path": url_path(self.transport.url)})
         self._session_down.clear()
         self._session_up.set()
         rx = asyncio.create_task(rpc.run())
@@ -397,6 +406,14 @@ class ChargerRuntime:
         if not self._reset_done.is_set() and not stop.is_set() and not aborted:
             self.last_error = {"kind": "disconnected", "message": self._close_text(ws, rx_error)}
         return self._reset_done.is_set()
+
+    def _lifecycle(self, event: str, detail: Dict[str, Any]) -> None:
+        """Report a connection lifecycle event to the trace sink (never raises)."""
+        if self._event_cb is not None:
+            try:
+                self._event_cb(event, detail)
+            except Exception:  # noqa: BLE001 - recording must never break the connection loop
+                log.exception("%s: trace event %s failed", self.cfg.id, event)
 
     async def _close_session(self, rpc: RpcConnection, rx: asyncio.Task, waits: List[asyncio.Task]) -> Optional[str]:
         """Tear one session down; returns why the receive loop failed, if it did."""

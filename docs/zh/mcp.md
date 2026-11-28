@@ -55,6 +55,8 @@ Web UI 中的按钮相同。充电桩相关工具通过 `cid` 接收充电桩 ID
 | `get_traffic` | `GET /api/traffic` | 常驻[流量](traffic.md)的状态、计数、功率 |
 | `set_traffic` | `PUT /api/traffic` | 替换 `traffic:` 块 |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | 启动 / 停止常驻流量 |
+| `get_trace` / `start_trace` / `stop_trace` | `GET /api/trace`、`POST /api/trace/start` / `stop` | [Trace](trace-replay.md) 录制 |
+| `analyze_frames` | `GET /api/frames/analyze` | 帧日志分析 |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | 计划的到达（对 seed 确定） |
 | `expect_frame` | `POST /api/frames/expect` | 等待匹配条件与 payload matcher 的帧 |
 
