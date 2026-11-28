@@ -7,7 +7,9 @@ Workbook sheets (row 1 = column headers, row 2 = ``#`` help texts, ``#`` rows ar
 * ``config_keys`` - ``charger`` / ``key`` / ``value``: the OCPP 1.6 ``config_keys`` of each charger;
 * ``variables`` - one row per 2.0.1 Device Model ``variables`` entry (``charger`` + the entry's fields; the
   definition of a user-defined variable in ``extra``);
-* ``ev_models`` - the ``ev_models`` list (``curve`` / ``max_dc_kw`` in ``extra``).
+* ``ev_models`` - the ``ev_models`` list (``curve`` / ``max_dc_kw`` in ``extra``). The vehicle pool profile has
+  columns: ``weight``, and ``initial_soc`` / ``target_soc`` each flattened into ``<field>_dist`` / ``_min`` /
+  ``_max`` / ``_mean`` / ``_sd`` (a plain number = ``fixed`` with only ``_mean``).
 
 An import replaces ``chargers`` and ``ev_models`` as a whole (a missing optional sheet means "none"); every other
 block (``simulation``, ``csms_defaults``, ``mini_csms`` ...) is kept from the running config. The engine reload
@@ -116,10 +118,50 @@ EV_MODELS = Sheet("ev_models", [
     ("phases", "1, 2 or 3"),
     ("min_current_a", "Min current (A)"),
     ("efficiency", "Charging efficiency (0-1]"),
+    ("weight", "Vehicle pool weight (blank = 1, 0 = never drawn)"),
+    ("initial_soc_dist", "Initial SoC: fixed, uniform or normal (all blank = session.initial_soc)"),
+    ("initial_soc_min", "Initial SoC lower bound (%, uniform / normal; blank = 0)"),
+    ("initial_soc_max", "Initial SoC upper bound (%, uniform / normal; blank = 100)"),
+    ("initial_soc_mean", "Initial SoC value (fixed) or mean (normal), %"),
+    ("initial_soc_sd", "Initial SoC standard deviation (normal)"),
+    ("target_soc_dist", "Target SoC: fixed, uniform or normal (all blank = session.target_soc)"),
+    ("target_soc_min", "Target SoC lower bound (%, uniform / normal; blank = 0)"),
+    ("target_soc_max", "Target SoC upper bound (%, uniform / normal; blank = 100)"),
+    ("target_soc_mean", "Target SoC value (fixed) or mean (normal), %"),
+    ("target_soc_sd", "Target SoC standard deviation (normal)"),
     ("extra", "Other fields, e.g. {curve: [[0, 1.0], [80, 0.5], [100, 0.1]]}"),
 ], kinds={"capacity_kwh": "number", "max_ac_kw": "number", "max_current_a": "number", "phases": "int",
-          "min_current_a": "number", "efficiency": "number"}, required=("id", "capacity_kwh", "max_ac_kw"),
-    optional=True)
+          "min_current_a": "number", "efficiency": "number", "weight": "number",
+          **{f"{f}_{k}": "number" for f in ("initial_soc", "target_soc") for k in ("min", "max", "mean", "sd")}},
+    required=("id", "capacity_kwh", "max_ac_kw"), optional=True)
+
+#: SoC fields of an ``ev_models`` entry and their mapping keys; each key has a ``<field>_<key>`` column.
+SOC_FIELDS = ("initial_soc", "target_soc")
+SOC_KEYS = ("dist", "min", "max", "mean", "sd")
+
+
+def _flatten_ev(d: Dict[str, Any]) -> Dict[str, Any]:
+    """An ``ev_models`` dump -> sheet fields: each SoC field into its columns (a number as ``fixed``)."""
+    for f in SOC_FIELDS:
+        soc = d.pop(f, None)
+        if soc is None:
+            continue
+        soc = soc if isinstance(soc, dict) else {"dist": "fixed", "mean": soc}  # blank dist = uniform
+        d |= {f"{f}_{k}": soc[k] for k in SOC_KEYS if soc.get(k) is not None}
+    return d
+
+
+def _unflatten_ev(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Sheet fields -> an ``ev_models`` mapping (columns win over a mapping in ``extra``); ``fixed`` with only a
+    mean becomes a plain number again."""
+    for f in SOC_FIELDS:
+        cols = {k: d.pop(f"{f}_{k}") for k in SOC_KEYS if f"{f}_{k}" in d}
+        if not cols:
+            continue
+        base = d.get(f)
+        soc = {**(base if isinstance(base, dict) else {}), **cols}
+        d[f] = soc["mean"] if soc.get("dist") == "fixed" and set(soc) == {"dist", "mean"} else soc
+    return d
 
 SHEETS = (CHARGERS, CONFIG_KEYS, VARIABLES, EV_MODELS)
 
@@ -145,7 +187,7 @@ def export_rows(cfg: SimConfig) -> Dict[str, List[Dict[str, Any]]]:
             variables.append({"charger": c.id, **v})
         d.update(d.pop("session", {}))
         chargers.append({"id": c.id, **d})
-    evs = [e.model_dump(mode="json", exclude_defaults=True) | {"id": e.id} for e in cfg.ev_models]
+    evs = [_flatten_ev(e.model_dump(mode="json", exclude_defaults=True) | {"id": e.id}) for e in cfg.ev_models]
     return {"chargers": chargers, "config_keys": keys, "variables": variables, "ev_models": evs}
 
 
@@ -176,9 +218,26 @@ def _charger_errors(e: ValidationError, row: int, var_rows: List[int], cid: str)
     return out
 
 
+def _soc_loc(loc: Tuple[Any, ...]) -> Tuple[Any, ...]:
+    """``(<soc field>, <union tag>, key, ..)`` -> ``(<soc field>_<key>,)``, its column (a mapping-level error:
+    ``_dist``; a number: ``_mean``)."""
+    if not loc or loc[0] not in SOC_FIELDS:
+        return loc
+    key = next((k for k in loc[2:] if k in SOC_KEYS), None)  # loc[1] is the union tag (number / mapping)
+    if key is None:
+        key = "dist" if loc[1:2] == ("mapping",) else "mean"
+    return (f"{loc[0]}_{key}",)
+
+
 def _rows_errors(e: ValidationError, sheet: Sheet, row: int) -> List[str]:
-    return [f"{sheet.title} row {row}{_column(sheet, tuple(err['loc']))}: "
-            f"{'.'.join(map(str, err['loc'])) + ': ' if err['loc'] else ''}{_msg(err)}" for err in e.errors()]
+    out = []
+    for err in e.errors():
+        loc = tuple(err["loc"])
+        if sheet is EV_MODELS:
+            loc = _soc_loc(loc)
+        out.append(f"{sheet.title} row {row}{_column(sheet, loc)}: "
+                   f"{'.'.join(map(str, loc)) + ': ' if loc else ''}{_msg(err)}")
+    return out
 
 
 def build(tables: Dict[str, List[SheetRow]], base: Optional[SimConfig], errors: List[str],
@@ -192,7 +251,7 @@ def build(tables: Dict[str, List[SheetRow]], base: Optional[SimConfig], errors: 
         if not r.ok:
             continue
         try:
-            ev = EvModelConfig.model_validate(r.merged())
+            ev = EvModelConfig.model_validate(_unflatten_ev(r.merged()))
         except ValidationError as e:
             errors.extend(_rows_errors(e, EV_MODELS, r.row_no))
             continue

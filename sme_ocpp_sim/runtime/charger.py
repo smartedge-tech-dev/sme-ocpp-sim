@@ -28,14 +28,16 @@ import asyncio
 import dataclasses
 import inspect
 import logging
+import random
 import time
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Set, Union
 
 from ..charging import power
-from ..charging.ev import PRESETS, EvModel
+from ..charging.ev import PRESETS, EvModel, Vehicle
 from ..charging.power import AcSupply, PowerState
-from ..config import ChargerConfig, ImpairmentConfig, ReconnectConfig
+from ..charging.vehicles import VehiclePool, build_pool, stream_rng
+from ..config import POOL, ChargerConfig, ImpairmentConfig, ReconnectConfig
 from ..protocol import base as d
 from ..protocol.registry import get_station_class
 from ..protocol.station import VersionStation
@@ -91,21 +93,31 @@ class ChargerRuntime:
         monotonic: Callable[[], float] = time.monotonic,
         connect: Callable[[TransportConfig], Awaitable[Any]] = open_connection,
         backoff: Optional[Backoff] = None,
-        ev: Optional[EvModel] = None,
+        ev: Union[EvModel, VehiclePool, None] = None,
         tick_s: float = 1.0,
         time_scale: float = 1.0,
         station: Optional[Callable[..., VersionStation]] = None,
+        vehicle_seed: int = 0,
     ) -> None:
         """``ev`` defaults to the preset ``cfg.session.ev_model`` (``SimConfig.resolve_ev`` also knows
-        ``ev_models``); ``tick_s`` is the power model step, ``time_scale`` its simulated-time factor. time_scale
+        ``ev_models``); a :class:`.VehiclePool` (``session.ev_model: pool``, default: the presets) makes
+        :meth:`vehicle` draw the EV of each transaction from it, ``vehicle_seed`` seeding the per-connector streams
+        (they start with the runtime: a rebuilt runtime, e.g. after a config change, replays from the start);
+        ``tick_s`` is the power model step, ``time_scale`` its simulated-time factor. time_scale
         speeds up only the power model (ramp, energy, SoC); charging profiles stay on the wall clock (see the
         module docstring). ``station`` overrides the station class registered for ``ocpp_version`` (tests)."""
         if tick_s <= 0 or time_scale <= 0:
             raise ValueError("tick_s and time_scale must be > 0")
+        if ev is None and cfg.session.ev_model == POOL:
+            ev = build_pool((), initial_soc_pct=cfg.session.initial_soc, target_soc_pct=cfg.session.target_soc)
         if ev is None and cfg.session.ev_model not in PRESETS:
             raise ValueError(f"EV model {cfg.session.ev_model!r} is not a preset; pass ev=")
         self.cfg = cfg
-        self.ev: EvModel = ev or PRESETS[cfg.session.ev_model]
+        #: The vehicle pool of ``session.ev_model: pool`` (``None``: every session uses :attr:`ev`).
+        self.pool: Optional[VehiclePool] = ev if isinstance(ev, VehiclePool) else None
+        self.vehicle_seed = vehicle_seed
+        self._vehicle_rngs: Dict[int, random.Random] = {}
+        self.ev: EvModel = (self.pool.default_ev if self.pool is not None else ev) or PRESETS[cfg.session.ev_model]
         self.supply = AcSupply(cfg.voltage_v, cfg.phases, cfg.line_to_line)
         self._tick_s, self._time_scale = tick_s, time_scale
         self._paused = False
@@ -485,8 +497,20 @@ class ChargerRuntime:
     async def safe(self, aw: Awaitable[Any], what: str) -> Any:
         return await self._safe(aw, what)
 
-    def step_power(self, pw: PowerState, dt_s: float, evse_limit_w: Optional[float]) -> PowerState:
-        return power.step(pw, dt_s=dt_s, ev=self.ev, target_soc_pct=self.cfg.session.target_soc,
+    def vehicle(self, connector_id: int) -> Vehicle:
+        """The EV of a new session on ``connector_id``: drawn from :attr:`pool` (stream
+        ``vehicle:{charger}:{connector}`` of :attr:`vehicle_seed`), else :attr:`ev` with the session's SoC."""
+        if self.pool is None:
+            return Vehicle(self.ev, self.cfg.session.initial_soc, self.cfg.session.target_soc)
+        rng = self._vehicle_rngs.get(connector_id)
+        if rng is None:
+            rng = self._vehicle_rngs[connector_id] = stream_rng(self.vehicle_seed, self.cfg.id, connector_id)
+        return self.pool.draw(rng)
+
+    def step_power(self, pw: PowerState, dt_s: float, evse_limit_w: Optional[float],
+                   vehicle: Optional[Vehicle] = None) -> PowerState:
+        ev, target = (vehicle.ev, vehicle.target_soc_pct) if vehicle else (self.ev, self.cfg.session.target_soc)
+        return power.step(pw, dt_s=dt_s, ev=ev, target_soc_pct=target,
                           evse_limit_w=evse_limit_w, evse_max_w=self.cfg.max_power_w, supply=self.supply,
                           ramp_up_w_per_s=self.cfg.ramp_up_w_per_s,
                           ramp_down_w_per_s=self.cfg.ramp_down_w_per_s, time_scale=self._time_scale)

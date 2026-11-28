@@ -88,12 +88,26 @@ def ev_min_power_w(ev: EvModel, phase_voltage_v: float, phases_used: int) -> flo
     return ev.min_current_a * phase_voltage_v * phases_used
 
 
-#: Illustrative presets (not specific vehicles). ``compact-40kwh`` mirrors the design §7 example.
+@dataclass(frozen=True)
+class Vehicle:
+    """The EV of one charging session: its model plus the session's start and target SoC (%)."""
+
+    ev: EvModel
+    initial_soc_pct: float
+    target_soc_pct: float
+
+
+#: Illustrative, abstract presets: vehicle classes, not specific vehicles (no real-car data is shipped).
+#: ``compact-40kwh`` mirrors the design §7 example. Their pool weights and initial SoC distributions are in
+#: :data:`.vehicles.PRESET_PROFILES`.
 PRESETS: Dict[str, EvModel] = {
     m.id: m
     for m in (
         EvModel("kei-20kwh", capacity_kwh=20, max_ac_w=3000, max_current_a=15, phases=1),
         EvModel("compact-40kwh", capacity_kwh=40, max_ac_w=6000, max_current_a=30, phases=1),
         EvModel("midsize-60kwh", capacity_kwh=60, max_ac_w=11000, max_current_a=16, phases=3),
+        EvModel("suv-90kwh", capacity_kwh=90, max_ac_w=11000, max_current_a=16, phases=3),
+        EvModel("phev-12kwh", capacity_kwh=12, max_ac_w=3200, max_current_a=16, phases=1),
+        EvModel("van-75kwh", capacity_kwh=75, max_ac_w=11000, max_current_a=16, phases=3, efficiency=0.88),
     )
 }

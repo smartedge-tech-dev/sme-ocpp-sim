@@ -218,3 +218,71 @@ def test_tick_loop_survives_a_failing_tick(caplog):
         await _until(lambda: len(calls) >= 3)
         assert any("power model tick failed" in r.getMessage() and r.exc_info for r in caplog.records)
     _scenario(body)
+
+
+def _one_vehicle_pool():
+    """A pool where only ``pool-ev`` (2 kW, initial SoC 50-60 %) can be drawn."""
+    from sme_ocpp_sim.charging.ev import EvModel
+    from sme_ocpp_sim.charging.vehicles import PoolEntry, SocSpec, VehiclePool, build_pool
+    ev = EvModel("pool-ev", capacity_kwh=50, max_ac_w=2000, max_current_a=10)
+    zero = [PoolEntry(e.ev, 0, e.initial_soc, e.target_soc)
+            for e in build_pool((), initial_soc_pct=30, target_soc_pct=90).entries]
+    return VehiclePool((*zero, PoolEntry(ev, 1, SocSpec("uniform", 50, 60), SocSpec.fixed(95))))
+
+
+def test_pool_session_draws_its_vehicle():
+    """``session.ev_model: pool``: the transaction runs on the drawn EV (power limit, initial SoC)."""
+    async def body(peer, rt):
+        await _charging(peer, rt)
+        await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == 2000)
+        assert 50 <= rt.snapshot()["connectors"][0]["soc_pct"] <= 60.5
+        assert rt.ev.id == "pool-ev"  # the pool's default model while idle
+    _scenario(body, cfg_kw={"session": {"ev_model": "pool"}}, rt_kw={"ev": _one_vehicle_pool()})
+
+
+def test_pool_vehicle_sequence_is_seeded():
+    from sme_ocpp_sim.charging.vehicles import build_pool, stream_rng
+    rt = ChargerRuntime(_cfg(session={"ev_model": "pool"}), "ws://csms", vehicle_seed=7)
+    pool = build_pool((), initial_soc_pct=30, target_soc_pct=90)
+    assert rt.pool == pool  # no ev=: the presets
+    rng = stream_rng(7, CP, 1)
+    expected = [pool.draw(rng) for _ in range(5)]
+    expected_first = expected[0]
+    assert [rt.vehicle(1) for _ in range(5)] == expected
+    again = ChargerRuntime(_cfg(session={"ev_model": "pool"}), "ws://csms", vehicle_seed=7)
+    assert again.vehicle(1) == expected_first  # a rebuilt runtime (config reload) replays the stream from the start
+    fixed = ChargerRuntime(_cfg(), "ws://csms").vehicle(1)
+    assert (fixed.ev.id, fixed.initial_soc_pct, fixed.target_soc_pct) == ("compact-40kwh", 30, 90)
+
+
+def test_pool_draws_per_transaction_and_phases_follow_the_vehicle():
+    """Two transactions in a row on a 3-phase supply: each draws its own EV (1-phase 2 kW / 3-phase 6 kW); power
+    and the phases an A limit applies to follow the drawn vehicle."""
+    from sme_ocpp_sim.charging.ev import EvModel
+    from sme_ocpp_sim.charging.vehicles import PoolEntry, SocSpec, VehiclePool, stream_rng
+    one = EvModel("one-phase", capacity_kwh=50, max_ac_w=2000, max_current_a=10, phases=1)
+    three = EvModel("three-phase", capacity_kwh=50, max_ac_w=6000, max_current_a=10, phases=3)
+    pool = VehiclePool((PoolEntry(one, 1, SocSpec.fixed(20), SocSpec.fixed(95)),
+                        PoolEntry(three, 1, SocSpec.fixed(20), SocSpec.fixed(95))))
+    seed = 0
+    while True:  # the first seed whose two first draws are different vehicles
+        rng = stream_rng(seed, CP, 1)
+        drawn = [pool.draw(rng).ev for _ in range(2)]
+        if drawn[0] != drawn[1]:
+            break
+        seed += 1
+    watts = {"one-phase": 2000, "three-phase": 6000}
+
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        for n, ev in enumerate(drawn):
+            await rt.plug(1)
+            assert await rt.swipe(1, "T") == "Accepted"
+            await _until(lambda: len(s.starts) == n + 1 and _statuses(s, 1)[-1:] == ["Charging"])
+            await _until(lambda: rt.snapshot()["connectors"][0]["power_w"] == watts[ev.id])
+            assert rt.station._phases(1) == ev.phases
+            await rt.unplug(1)
+            await _until(lambda: _statuses(s, 1)[-1:] == ["Available"])
+            assert rt.station._phases(1) == 3  # no EV: every supply phase
+    _scenario(body, cfg_kw={"phases": 3, "max_power_w": 22000, "session": {"ev_model": "pool"}},
+              rt_kw={"ev": pool, "vehicle_seed": seed})

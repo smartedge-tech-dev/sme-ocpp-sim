@@ -52,8 +52,12 @@ class StationHost(Protocol):
     def monotonic(self) -> float:
         """Monotonic clock of the power model intervals."""
 
-    def step_power(self, pw: Any, dt_s: float, evse_limit_w: Optional[float]) -> Any:
-        """Step one connector's power model (``charging.power.step``) by ``dt_s`` wall seconds at the time scale."""
+    def vehicle(self, connector_id: int) -> Any:
+        """The ``charging.ev.Vehicle`` (model + initial / target SoC) of a new session on ``connector_id``."""
+
+    def step_power(self, pw: Any, dt_s: float, evse_limit_w: Optional[float], vehicle: Any = None) -> Any:
+        """Step one connector's power model (``charging.power.step``) by ``dt_s`` wall seconds at the time scale;
+        ``vehicle`` is the session's ``host.vehicle`` (``None``: ``ev`` with the session's target SoC)."""
 
     def spawn(self, coro: Coroutine[Any, Any, Any]) -> Optional[asyncio.Task]:
         """Start a session task; refused (``coro`` closed, ``None`` returned) when the session is not connected."""

@@ -80,7 +80,7 @@ config_keys: {MeterValueSampleInterval: "60"}
 | `chargers` | 每台充电桩一行（必需） | `id`（必填）、`template`、`ocpp_version`、`csms_url`、`password`、`vendor`、`model`、`serial`、`firmware`、`connectors`、`max_power_w`、`voltage_v`、`phases`、`line_to_line`、`auth_mode`、`id_tags`（逗号分隔）、`ev_model`、`initial_soc`、`target_soc`（`session` 字段）、`extra` |
 | `config_keys` | 每个 OCPP 1.6 配置键一行 | `charger`、`key`、`value` |
 | `variables` | 每个 OCPP 2.0.1 `variables` 条目一行 | `charger`、`component`、`component_instance`、`evse`、`connector`、`variable`、`variable_instance`、`value`、`target`、`min_set`、`max_set`、`extra`（用户自定义变量的定义） |
-| `ev_models` | 每个 `ev_models` 条目一行 | `id`、`capacity_kwh`、`max_ac_kw`、`max_current_a`、`phases`、`min_current_a`、`efficiency`、`extra`（`curve`、`max_dc_kw`） |
+| `ev_models` | 每个 `ev_models` 条目一行 | `id`、`capacity_kwh`、`max_ac_kw`、`max_current_a`、`phases`、`min_current_a`、`efficiency`、`weight`、`initial_soc_dist`、`initial_soc_min`、`initial_soc_max`、`initial_soc_mean`、`initial_soc_sd`、`target_soc_dist`、`target_soc_min`、`target_soc_max`、`target_soc_mean`、`target_soc_sd`（`initial_soc` / `target_soc` 展开；数值为 `fixed` 加 `_mean`；`_dist` 为空即 `uniform`）、`extra`（`curve`、`max_dc_kw`） |
 
 `extra` 以 YAML flow 映射保存其余字段，例如 `{verify_tls: false, ramp_up_w_per_s: 500}`。
 

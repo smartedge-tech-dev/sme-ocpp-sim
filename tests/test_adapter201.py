@@ -132,7 +132,11 @@ class _Host:
     def monotonic(self):
         return 0.0
 
-    def step_power(self, pw, dt_s, evse_limit_w):
+    def vehicle(self, connector_id):
+        from sme_ocpp_sim.charging.ev import Vehicle
+        return Vehicle(self.ev, self.cfg.session.initial_soc, self.cfg.session.target_soc)
+
+    def step_power(self, pw, dt_s, evse_limit_w, vehicle=None):
         from sme_ocpp_sim.charging import power
         return power.step(pw, dt_s=dt_s, ev=self.ev, target_soc_pct=90, evse_limit_w=evse_limit_w,
                           evse_max_w=self.cfg.max_power_w, supply=self.supply)

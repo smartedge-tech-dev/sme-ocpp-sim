@@ -162,6 +162,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 from ...charging import power
+from ...charging.ev import EvModel, Vehicle
 from ...charging.power import PowerState
 from ...charging.tx_data import TxDataBuffer, TxReading
 from ...rpc import CallError, wait_event
@@ -277,6 +278,7 @@ class _Conn:
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0                     # energy register
     pw: Optional[PowerState] = None           # power model state while charging (None otherwise)
+    vehicle: Optional[Vehicle] = None         # EV of the running session (``host.vehicle``), with ``pw``
     last_mono: Optional[float] = None
     meter_task: Optional[asyncio.Task] = None
 
@@ -895,7 +897,7 @@ class Station16(VersionStation):
         """Readings of the configured measurands (others are skipped; SoC only while an EV charges).
         Current.Import is the balanced per-phase current, reported once without a phase unless
         ``meter.phase_values`` asks for one value per phase (Voltage too)."""
-        r = power.meter_reading(c.pw, self.ev, self.supply) if c.pw is not None else None
+        r = power.meter_reading(c.pw, self._ev(c), self.supply) if c.pw is not None else None
         watts = r.power_active_import_w if r else 0.0
         amps = r.current_import_a if r else 0.0
         mode = self.cfg.meter.phase_values
@@ -906,7 +908,7 @@ class Station16(VersionStation):
                         for p, v in power.phase_voltages(self.supply, mode)]
                 continue
             if mode != "off" and name == CURRENT:
-                used = r.phases if r else self.supply.phases_used(self.ev)
+                used = r.phases if r else self.supply.phases_used(self._ev(c))
                 out += [d.Sample(name, round(a, CURRENT_DECIMALS), "A", phase=p, location=LOCATION)
                         for p, a in power.phase_currents(amps, self.supply, used)]
                 continue
@@ -924,12 +926,16 @@ class Station16(VersionStation):
 
     # ================================================================== power model / smart charging
 
+    def _ev(self, c: _Conn) -> EvModel:
+        """The EV of c's running session, else the charger's default model."""
+        return c.vehicle.ev if c.vehicle is not None else self.ev
+
     def _phases(self, connector_id: int) -> int:
         """Phases a limit in A applies to: the EV's while one charges, else the supply's (errata 3.34)."""
         # A charging EV draws on min(EV, supply) phases, so an A limit only reaches those (errata 3.34); with no EV
         # (or connector 0, the whole charger) the limit applies to every supply phase.
         c = self.conns.get(connector_id)
-        return self.supply.phases_used(self.ev) if c is not None and c.pw is not None else self.supply.phases
+        return self.supply.phases_used(self._ev(c)) if c is not None and c.pw is not None else self.supply.phases
 
     def _transactions(self) -> Dict[int, ActiveTransaction]:
         # TODO(spec): 1.6 transaction ids are integers; 2.0.1 string ids need a mapping in charging.profiles.
@@ -946,7 +952,7 @@ class Station16(VersionStation):
         now = self.host.monotonic()
         if c.pw is not None and not self.host.paused:  # paused: frozen, the interval just restarts (no catch-up)
             dt = max(0.0, now - c.last_mono) if c.last_mono is not None else 0.0
-            c.pw = self.host.step_power(c.pw, dt, self._limit_w(c))
+            c.pw = self.host.step_power(c.pw, dt, self._limit_w(c), c.vehicle)
             c.meter_wh = c.pw.energy_wh
         c.last_mono = now
 
@@ -1060,7 +1066,8 @@ class Station16(VersionStation):
             return res.id_token_info.status
         if tx.profile is not None:
             self._bind_profile(c, tx)
-        c.pw = PowerState(soc_pct=self.cfg.session.initial_soc, energy_wh=c.meter_wh)  # a fresh EV session
+        c.vehicle = self.host.vehicle(c.id)  # a fresh EV session (drawn from the pool for ev_model: pool)
+        c.pw = PowerState(soc_pct=c.vehicle.initial_soc_pct, energy_wh=c.meter_wh)
         c.last_mono = None
         self._advance(c)  # zero-length step: initial power and suspension; charging starts now
         self._refresh(c)  # Charging (or Suspended*)
@@ -1119,7 +1126,7 @@ class Station16(VersionStation):
         if c.meter_task is not None and c.meter_task is not asyncio.current_task():
             c.meter_task.cancel()
         c.meter_task = None
-        c.tx, c.last_mono, c.finishing, c.pw = None, None, finishing, None
+        c.tx, c.last_mono, c.finishing, c.pw, c.vehicle = None, None, finishing, None, None
         self.profiles.end_transaction(c.id)
         if c.pending_operative is not None:
             c.operative, c.pending_operative = c.pending_operative, None

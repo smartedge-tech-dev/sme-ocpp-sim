@@ -83,8 +83,7 @@ mask keeps the stored password.
 ## ev_models
 
 Custom EV models, referenced by `session.ev_model`. An entry overrides a built-in preset with the same id.
-Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40 kWh, 6 kW, 30 A, 1 phase),
-`midsize-60kwh` (60 kWh, 11 kW, 16 A, 3 phases).
+The built-in presets are listed under [Vehicle pool](#vehicle-pool).
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -97,6 +96,61 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `min_current_a` | `6.0` | Below this current per phase the EV cannot charge (≤ `max_current_a`) |
 | `efficiency` | `0.9` | Fraction of the energy that reaches the battery (0–1] |
 | `curve` | built-in | List of `[SoC %, fraction of maximum]` pairs: the charging taper |
+| `weight` | `1` | Vehicle pool weight (`session.ev_model: pool`); `0` = never drawn |
+| `initial_soc` | charger's `session.initial_soc` | Initial SoC of a pool draw: a number (fixed) or a distribution (below) |
+| `target_soc` | charger's `session.target_soc` | Target SoC of a pool draw: a number or a distribution |
+
+### Vehicle pool
+
+`session.ev_model: pool` draws the EV of every new transaction from the vehicle pool: the built-in presets
+plus the `ev_models` entries (an entry with a preset's id replaces it), picked by `weight`. The initial and
+target SoC come from the drawn entry. A SoC distribution is a mapping:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `dist` | `uniform` | `fixed` (`mean`), `uniform` on `[min, max]`, or `normal` (`mean`, `sd`) truncated to `[min, max]`. A missing `dist` with `mean` / `sd` is an error (it is not guessed) |
+| `min` / `max` | `0` / `100` | Bounds (%) |
+| `mean` | none | Fixed value or normal mean (within `[min, max]`; not allowed for `uniform`) |
+| `sd` | none | Standard deviation of `normal` (≥ 0) |
+
+```yaml
+ev_models:
+  - id: my-van
+    capacity_kwh: 75
+    max_ac_kw: 11
+    phases: 3
+    weight: 2
+    initial_soc: {dist: normal, mean: 35, sd: 10, min: 5, max: 80}
+    target_soc: 90
+chargers:
+  - id: CP001
+    session: {ev_model: pool}
+```
+
+The draws are deterministic: each connector has its own random stream `vehicle:{charger}:{connector}`, so
+adding a charger does not change the others. There is no seed setting yet (the traffic generator of a later
+release adds one): the seed is fixed at 0, so every connector draws the same sequence on every run. The stream
+starts when the charger starts: a restart, or a configuration change that rebuilds the charger (for example an
+edited `ev_models`), replays it from the beginning. Every draw takes exactly three random numbers (vehicle,
+initial SoC, target SoC), so changing an entry's distribution changes only the values drawn from that entry,
+not the later draws; changing weights or the list of entries changes which vehicles are drawn. Values are
+rounded to 0.01 %.
+
+When an entry's initial SoC can exceed its target SoC (both set; for a distribution, its `max` against the
+target's `min`), loading the YAML file logs a warning: such a session starts above its target and takes no
+energy (SuspendedEV).
+
+Presets (abstract vehicle classes, not real models; pool weight, initial SoC; their target SoC is the
+charger's `session.target_soc`):
+
+| Preset | Battery, AC | Weight | Initial SoC |
+|---|---|---|---|
+| `kei-20kwh` | 20 kWh, 3 kW, 15 A, 1 phase | 2 | uniform 10–60 % |
+| `compact-40kwh` | 40 kWh, 6 kW, 30 A, 1 phase | 3 | uniform 10–60 % |
+| `midsize-60kwh` | 60 kWh, 11 kW, 16 A, 3 phases | 2 | uniform 10–60 % |
+| `suv-90kwh` | 90 kWh, 11 kW, 16 A, 3 phases | 1 | normal 40 ± 15, 10–80 % |
+| `phev-12kwh` | 12 kWh, 3.2 kW, 16 A, 1 phase | 1 | uniform 0–40 % |
+| `van-75kwh` | 75 kWh, 11 kW, 16 A, 3 phases, efficiency 0.88 | 1 | normal 30 ± 10, 5–70 % |
 
 ## chargers
 
@@ -127,8 +181,8 @@ Built-in presets: `kei-20kwh` (20 kWh, 3 kW, 15 A, 1 phase), `compact-40kwh` (40
 | `line_to_line` | `false` | `true`: `voltage_v` is line-to-line on a 3-phase supply (e.g. Japanese 3-phase 200 V delta); per-phase voltage = `voltage_v / √3` |
 | `ramp_up_w_per_s` | none | Power ramp-up in W per simulated second (none = step change) |
 | `ramp_down_w_per_s` | none | Power ramp-down (none = step change, so a lowered limit applies within one tick) |
-| `session.ev_model` | `compact-40kwh` | The EV plugged into the connectors (preset or `ev_models` id) |
-| `session.initial_soc` | `30.0` | SoC (%) at the start of every transaction |
+| `session.ev_model` | `compact-40kwh` | The EV plugged into the connectors (preset or `ev_models` id), or `pool`: each transaction draws one from the [vehicle pool](#vehicle-pool) |
+| `session.initial_soc` | `30.0` | SoC (%) at the start of every transaction (with `pool`: the default of the `ev_models` entries without `initial_soc`) |
 | `session.target_soc` | `90.0` | When reached, the EV stops accepting power (SuspendedEV) |
 | `meter.begin_end_messages` | `false` | OCPP 1.6: also send a MeterValues with context `Transaction.Begin` after the accepted StartTransaction and one with `Transaction.End` right before the StopTransaction (measurands from `MeterValuesSampledData`). OCPP 2.0.1 always has them in the `Started` / `Ended` events |
 | `meter.phase_values` | `off` | `off`: one `Voltage` and one balanced `Current.Import` without a phase. `L-N`: one `Voltage` per supply phase (`L1-N`, `L2-N`, `L3-N`); `L-L`: line-to-line voltages (`L1-L2`, `L2-L3`, `L3-L1`, √3 × the phase voltage) on a 3-phase supply, `L-N` on 1 or 2 phases. With either, `Current.Import` is reported per supply phase (`L1`..; 0 A on the phases the EV does not use). Uses `voltage_v` / `phases` / `line_to_line` |
