@@ -23,7 +23,7 @@
 - **Security Profile 0 / 1 / 2 / 3**：`ws://`、HTTP Basic、带 Basic 认证的 `wss://`、带 TLS 客户端证书的 `wss://`；证书管理（用生成的 CSR 进行 SignCertificate、CertificateSigned、InstallCertificate 等）和 SecurityEventNotification。
 - **内置 Mini CSMS**（端口 9000）：在同一进程中运行的简易 OCPP 1.6J / 2.0.1 CSMS，无需 SteVe 即可试用，可查看充电站上报的内容，并用 JSON 编辑器发送任意 CALL。
 - **Excel 导入 / 导出与充电桩模板。** 在 Excel 中编辑充电桩列表，或从内置或自定义模板一次添加 N 台。
-- **帧日志** 记录每一个 OCPP 帧，可过滤并导出 JSON Lines；为测试脚本提供 HTTP API 和 WebSocket。
+- **帧日志** 记录每一个 OCPP 帧，可过滤并导出 JSON Lines；为测试脚本提供 HTTP API 和 WebSocket，为 AI 助手提供 MCP 端点。
 - **YAML 配置**，可在浏览器中编辑并保存回文件（Windows exe 保存在 `~/.sme-ocpp-sim/config.yaml`）。
 - **英语、日语和简体中文。** UI 跟随浏览器语言。
 
@@ -81,6 +81,7 @@ docker run --rm -p 8082:8082 --add-host=host.docker.internal:host-gateway ghcr.i
 - [Mini CSMS](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/mini-csms/)——端口 9000 上的内置 CSMS
 - [Excel 与充电桩模板](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/excel-templates/)——导入 / 导出与从模板批量添加
 - [HTTP API](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/http-api/)——REST 路由与 `/ws` 约定
+- [MCP、健康检查与日志](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/mcp/)——从 AI 助手操作充电桩（`/mcp`）、`/healthz`、`--log-format json`
 - [开发](https://smartedge-tech-dev.github.io/sme-ocpp-sim/zh/development/)
 - [更新日志](CHANGELOG.md)
 

@@ -46,7 +46,9 @@ def frozen(tmp_path, monkeypatch, home):
 def _start(monkeypatch, argv):
     """Run ``main`` without the web server; return the engine and the config path given to the web app."""
     seen = {}
-    monkeypatch.setattr(web, "create_app", lambda engine, path: seen.update(engine=engine, path=path) or "app")
+    # setup_logging replaces the root handlers (pytest's caplog handler too); logging is tested in test_mcp.py
+    monkeypatch.setattr(cli, "setup_logging", lambda **kw: None)
+    monkeypatch.setattr(web, "create_app", lambda engine, path, **kw: seen.update(engine=engine, path=path) or "app")
     monkeypatch.setattr(cli, "run_web", lambda app, args, name: None)
     assert cli.main(list(argv) + ["--no-browser"]) == 0
     return seen["engine"], seen["path"]

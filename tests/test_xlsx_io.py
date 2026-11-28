@@ -269,14 +269,38 @@ def test_export_writes_no_formula_cells():
     assert ch.vendor == "=1+1" and ch.id_tags == ["=1+1", "@SUM(A1)"] and ch.config_keys == {"K": "=1+1", "L": "+5"}
 
 
-def test_import_row_cap():
-    from sme_ocpp_sim.xlsx_io import MAX_IMPORT_ROWS
+def test_layout_rows_match_the_template():
+    from sme_ocpp_sim.xlsx_io import LAYOUT_ROWS
 
     wb = _book(SCHEMA.blank_template())
-    for i in range(MAX_IMPORT_ROWS + 1):
+    assert {ws.title: ws.max_row for ws in wb.worksheets} == {ws.title: LAYOUT_ROWS for ws in wb.worksheets}
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_import_row_cap_boundary(extra):
+    """Exactly MAX_IMPORT_ROWS charger data rows pass the row cap, one more is refused."""
+    from sme_ocpp_sim.xlsx_io import CHARGERS_ROW_CAP, MAX_IMPORT_ROWS
+
+    wb = _book(SCHEMA.blank_template())
+    for i in range(MAX_IMPORT_ROWS + extra):
         wb["chargers"].append([f"R{i}"])
+    cfg, errors = import_xlsx(_bytes(wb))  # sme-sim-common's per-sheet row cap (Sheet.max_rows)
+    capped = f"chargers: more than {CHARGERS_ROW_CAP} rows (row limit), import refused"
+    assert (capped in errors) == bool(extra), errors[:3]
+    if extra:
+        assert cfg is None
+
+
+def test_import_row_cap_other_sheets():
+    from sme_ocpp_sim.xlsx_io import LAYOUT_ROWS, MAX_IMPORT_ROWS
+
+    assert SCHEMA.max_rows == 10 * MAX_IMPORT_ROWS + LAYOUT_ROWS  # config_keys / variables / ev_models
+    wb = _book(SCHEMA.blank_template())
+    wb["chargers"].append(["A"])
+    for i in range(MAX_IMPORT_ROWS + 1):  # more than chargers allows, within the other sheets' cap
+        wb["config_keys"].append(["A", f"K{i}", "1"])
     cfg, errors = import_xlsx(_bytes(wb))
-    assert cfg is None and errors == [f"chargers: {MAX_IMPORT_ROWS + 1} rows, at most {MAX_IMPORT_ROWS} are accepted"]
+    assert not any("row limit" in e for e in errors), errors[:3]
 
 
 def test_web_import_size_cap(client):
@@ -284,7 +308,7 @@ def test_web_import_size_cap(client):
 
     c, engine = client
     r = c.post("/api/config/import", files={"file": ("big.xlsx", b"x" * (MAX_IMPORT_BYTES + 1))})
-    assert r.status_code == 413 and "too large" in r.text
+    assert r.status_code == 413 and "import size limit" in r.text  # make_base_app(max_import_bytes=)
     assert [ch.id for ch in engine.config.chargers] == ["0123", "1e5", "V2"]
 
 

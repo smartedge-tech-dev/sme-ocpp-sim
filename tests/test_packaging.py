@@ -31,7 +31,8 @@ def test_default_config_is_bundled_demo(monkeypatch):
 
     assert cli.DEFAULT_CONFIG == ROOT / "configs" / "demo-site.yaml"
     seen = {}
-    monkeypatch.setattr(web, "create_app", lambda engine, path: seen.update(engine=engine, path=path) or "app")
+    monkeypatch.setattr(web, "create_app", lambda engine, path, **kw: seen.update(engine=engine, path=path) or "app")
+    monkeypatch.setattr(cli, "setup_logging", lambda **kw: None)  # keep the root handlers of pytest
     monkeypatch.setattr(cli, "run_web", lambda app, args, name: seen.update(app=app))
     assert cli.main(["--no-browser"]) == 0
     assert seen["app"] == "app"

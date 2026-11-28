@@ -37,9 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Frame injection (expert use): `POST /api/chargers/{id}/send` sends an arbitrary CALL (schema check optional,
   `validate: false`) and returns the CSMS answer, or writes a `raw` frame verbatim. The station state does not
   change; injected frames are marked in the frame log.
+- MCP endpoint `POST /mcp` on the web port (MCP streamable HTTP; no authentication, like the web UI;
+  DNS-rebinding protection on a loopback `--host`): 27 tools wrapping the HTTP API (charger state, connect /
+  disconnect, plug, authorize, start / stop transaction, faults, external limit, impairments, drop, frame
+  injection, DataTransfer, frame log, Mini CSMS). `claude mcp add --transport http ocpp http://127.0.0.1:8082/mcp`; see the new
+  docs page "MCP, health check and logs".
+- `GET /healthz` (`{"status": "ok", ...}`) for Docker / Kubernetes probes.
+- `--log-format json`: one JSON object per log line, uvicorn's logs included.
 
 ### Changed
 
+- Dependency `sme-sim-common[xlsx,mcp]>=1.3,<2` (adds the official `mcp` SDK). The Excel export's formula
+  quoting, the 10 MB import size limit and the import row limits (5000 `chargers` data rows, 50 000 in each
+  other sheet; the cap reported counts the 2 header / help rows and blank or `#` rows too) now come from
+  sme-sim-common; a sheet over its limit is reported as `<sheet>: more than N rows (row limit), import refused`, an oversized upload as 413 `... (import size limit)`.
 - OCPP 2.0.1: `Ended.meterValue` now starts with a `Transaction.Begin` reading (TxEndedInterval 0 = the start
   and end values).
 - An nginx HTTP 400 "SSL certificate" page with a client certificate configured is reported as

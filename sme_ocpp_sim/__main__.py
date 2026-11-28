@@ -1,7 +1,7 @@
 """Command line entry point.
 
   sme-ocpp-sim [run] [-c CONFIG] [--host 127.0.0.1] [--http-port 8082] [--no-browser]
-               [--mini-csms] [--csms-host HOST] [--csms-port 9000]
+               [-v] [--log-format {text,json}] [--mini-csms] [--csms-host HOST] [--csms-port 9000]
   sme-ocpp-sim --version
 
 The common options and the web server start come from ``sme_sim_common.cli``. ``--mini-csms`` / ``--csms-host`` /
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from sme_sim_common.cli import add_common_args, run_web
+from sme_sim_common.logs import setup_logging
 
 from . import __version__
 
@@ -67,7 +68,7 @@ def main(argv=None) -> int:
                                              "default config: the bundled configs/demo-site.yaml "
                                              "(Windows exe: ~/.sme-ocpp-sim/config.yaml, created from it)")
     add_common_args(ap, default_http_port=DEFAULT_HTTP_PORT, app_name=APP_NAME, version=__version__,
-                    templates=False)
+                    templates=False, log_format=True)
     g = ap.add_argument_group("Mini CSMS (built-in simple CSMS, overrides the mini_csms block)")
     g.add_argument("--mini-csms", dest="mini_csms", action="store_true", default=None,
                    help="enable the Mini CSMS WebSocket server")
@@ -76,8 +77,7 @@ def main(argv=None) -> int:
                    help=f"Mini CSMS listen port (default {DEFAULT_CSMS_PORT})")
     args = ap.parse_args(rest)
 
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging(verbose=args.verbose, log_format=args.log_format)  # --log-format json: one object per line
 
     from .config import SimConfig, load_file
     from .engine import OcppEngine
@@ -103,7 +103,7 @@ def main(argv=None) -> int:
 
     from .web import create_app
 
-    run_web(create_app(engine, path), args, name=f"SME OCPPSim v{__version__}")
+    run_web(create_app(engine, path, host=args.host), args, name=f"SME OCPPSim v{__version__}")
     return 0
 
 
