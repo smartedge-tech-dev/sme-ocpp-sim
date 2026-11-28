@@ -247,12 +247,47 @@ class ImpairmentConfig(StrictModel):
     - ``block``: CSMS -> CP actions this charger refuses, action name -> ``NotImplemented`` / ``NotSupported``
       (answered with that CALLERROR, the version's code) or ``NoReply`` (no answer at all, the CSMS times out).
       The names are checked against the actions of the charger's OCPP version when the config is applied.
+    - ``latency_ms`` / ``jitter_ms`` / ``direction``: every frame sent (``tx``), received (``rx``) or both is held
+      ``latency_ms`` +- ``jitter_ms`` (uniform) before it is passed on; frames keep their order (a short delay
+      never overtakes a long one). The delays come from ``random.Random`` seeded with ``seed`` (None: a CRC32 of
+      the charger id), so a run is reproducible.
+    - ``drop_every_s`` (+- ``drop_jitter_s``): drop the connection after that long connected, again on every
+      connection (None = off). ``drop_mode`` ``abort`` drops the TCP connection without a close frame (a pulled
+      cable), ``close`` closes with code 1001. ``down_s``: the pause before reconnecting after such a drop (also
+      the default of a forced drop). Simulated drops never count against ``reconnect.max_retries`` /
+      ``boot_max_retries`` and use no back-off.
 
     Not part of the charger's restart key: a change is applied to the running charger without a reconnect.
     """
 
     block: Dict[Annotated[str, Field(min_length=1)], Literal["NotImplemented", "NotSupported", "NoReply"]] = Field(
         default_factory=dict)
+    latency_ms: float = Field(0.0, ge=0, le=600_000)
+    jitter_ms: float = Field(0.0, ge=0, le=600_000)
+    direction: Literal["both", "tx", "rx"] = "both"
+    seed: Optional[int] = None
+    drop_every_s: Optional[float] = Field(None, gt=0)
+    drop_jitter_s: float = Field(0.0, ge=0)
+    down_s: float = Field(5.0, ge=0, le=86_400)
+    drop_mode: Literal["abort", "close"] = "abort"
+
+    @model_validator(mode="after")
+    def _check_ranges(self) -> "ImpairmentConfig":
+        if self.jitter_ms > self.latency_ms:
+            raise ValueError("impairments.jitter_ms must not exceed latency_ms (a delay is never negative)")
+        if self.drop_every_s is not None and self.drop_jitter_s >= self.drop_every_s:
+            raise ValueError("impairments.drop_jitter_s must be smaller than drop_every_s")
+        return self
+
+    @property
+    def delays(self) -> bool:
+        """True when frames are delayed."""
+        return self.latency_ms > 0
+
+    @property
+    def active(self) -> bool:
+        """True when any impairment is on (the snapshot's ``impaired``)."""
+        return bool(self.block) or self.delays or self.drop_every_s is not None
 
 
 #: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.

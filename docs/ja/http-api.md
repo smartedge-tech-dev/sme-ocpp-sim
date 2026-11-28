@@ -68,7 +68,8 @@ WriteOnly の変数は `null`）を含み、CSMS が SetVariables で変更し�
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — 充電器の `fault_codes` のいずれか（1.6 は `ChargePointErrorCode`、2.0.1 は `ReasonEnumType` の故障値。それ以外は `400`）。実行中のトランザクションを終了し（1.6 は理由 `Other`、2.0.1 は `stoppedReason` = そのコード）、`Faulted` を報告します |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — Available / Preparing に戻します |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充電器 → CSMS） |
-| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}}` — コマンド遮断（[後述](#command-blocking-and-frame-injection)） |
+| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}, "latency_ms": 200, ...}` — コマンド遮断・遅延・周期切断（[後述](#command-blocking-and-frame-injection)） |
+| POST | `/api/chargers/{id}/drop` | `{"mode"?: "abort" \| "close", "reconnect_after_s"?}` — 今すぐ切断（[後述](#network-impairments)） |
 | POST | `/api/chargers/{id}/send` | `{"action": "Heartbeat", "payload": {}, "validate": true}` または `{"raw": "[2,\"id-1\",\"Heartbeat\",{}]"}` — フレーム注入（[後述](#command-blocking-and-frame-injection)） |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` または `{"all": true}` |
 | POST | `/api/chargers/bulk/disconnect` | 同上 |
@@ -84,7 +85,21 @@ WriteOnly の変数は `null`）を含み、CSMS が SetVariables で変更し�
 CALLERROR `NotImplemented` / `NotSupported`（OCPP-J 1.6 と 2.0.1 で同じ名前）を返すか、`NoReply` なら何も返さず、
 CSMS 側がタイムアウトします。フレームログでは受信した CALL に `blocked: <code>` / `blocked: no reply` が付き、
 充電器のスナップショットは `impaired: true` になります（UI ではバッジに `!`）。UI では充電器詳細パネルの
-**コマンド遮断** から設定します。
+**通信異常** から設定します。
+
+### Network impairments
+
+同じ `impairments` ブロックに遅延（`latency_ms`・`jitter_ms`・`direction`・`seed`）と周期切断（`drop_every_s`・
+`drop_jitter_s`・`drop_mode`・`down_s`）も入ります（[設定](configuration.md#chargers) 参照）。`PUT` はブロック全体を
+受け取り（省略した項目は既定値。`jitter_ms` > `latency_ms` などの範囲外は `400`）、再接続なしで開いている接続に
+反映します。次のフレームから新しい遅延になります。
+
+`POST /api/chargers/{id}/drop` は今すぐ接続を切り、`{"ok": true, "mode", "reconnect_after_s"}` を返します。
+`mode` の既定は `drop_mode`、`reconnect_after_s`（0 〜 86400）の既定は `down_s`。未接続なら `409`。充電器は
+バックオフではなくこの待ち時間の後に再接続します。模擬切断は接続失敗**ではなく**、Boot が Accepted になる前でも
+`reconnect.max_retries` / `boot_max_retries` に数えません。トランザクションと送信待ちメッセージは保持されます。
+スナップショットは次の Boot Accepted まで `last_error.kind` が `simulated_drop`、切断回数は `drops`、いずれかの
+異常が有効な間は `impaired` が `true` です。UI では充電器詳細パネルの **通信異常**（**今すぐ切断** もここ）。
 
 **フレーム注入**（`POST /api/chargers/{id}/send`）は、シミュレーターが自分からは送らないメッセージに CSMS がどう
 反応するかを試すための上級者向け入口です。

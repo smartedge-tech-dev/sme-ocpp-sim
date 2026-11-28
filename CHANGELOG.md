@@ -26,8 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and clock-aligned readings of these intervals.
 - Command blocking: charger block `impairments.block` maps CSMS → charger actions to `NotImplemented` /
   `NotSupported` (answered with that CALLERROR) or `NoReply` (no answer). Applied live without a reconnect,
-  switchable through `GET` / `PUT /api/chargers/{id}/impairments` and the **Block commands** dialog; the frame log
+  switchable through `GET` / `PUT /api/chargers/{id}/impairments` and the **Impairments** dialog; the frame log
   marks blocked CALLs and the snapshot has `impaired`. `GET /api/chargers/{id}` adds `csms_actions`.
+- Network impairments in the same `impairments` block, all applied live: latency / jitter per direction
+  (`latency_ms`, `jitter_ms`, `direction`, seeded by `seed` for reproducible runs; frame order is kept),
+  periodic disconnects (`drop_every_s`, `drop_jitter_s`, `drop_mode` `abort` / `close`) and the pause before
+  reconnecting (`down_s`). `POST /api/chargers/{id}/drop` drops the connection now. Simulated drops do not count
+  against `max_retries` / `boot_max_retries` and keep transactions; snapshot `drops`, `last_error` kind
+  `simulated_drop`. UI: the **Impairments** dialog (with **Drop now**); the badge shows `!` while any is on.
 - Frame injection (expert use): `POST /api/chargers/{id}/send` sends an arbitrary CALL (schema check optional,
   `validate: false`) and returns the CSMS answer, or writes a `raw` frame verbatim. The station state does not
   change; injected frames are marked in the frame log.

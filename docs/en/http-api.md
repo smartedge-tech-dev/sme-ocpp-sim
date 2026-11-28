@@ -70,7 +70,8 @@ See [Excel import / export and charger templates](excel-templates.md) for the wo
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}` — one of the charger's `fault_codes` (1.6: `ChargePointErrorCode`; 2.0.1: the fault values of `ReasonEnumType`), `400` otherwise; ends a running transaction (1.6: reason `Other`; 2.0.1: `stoppedReason` = the code) and reports `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}` — back to Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}` (charger → CSMS) |
-| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}}` — command blocking, see [below](#command-blocking-and-frame-injection) |
+| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}, "latency_ms": 200, ...}` — command blocking, latency, periodic drops, see [below](#command-blocking-and-frame-injection) |
+| POST | `/api/chargers/{id}/drop` | `{"mode"?: "abort" \| "close", "reconnect_after_s"?}` — drop the connection now, see [below](#network-impairments) |
 | POST | `/api/chargers/{id}/send` | `{"action": "Heartbeat", "payload": {}, "validate": true}` or `{"raw": "[2,\"id-1\",\"Heartbeat\",{}]"}` — frame injection, see [below](#command-blocking-and-frame-injection) |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`, `["CP-0001"]` or `{"all": true}` |
 | POST | `/api/chargers/bulk/disconnect` | same as above |
@@ -87,8 +88,24 @@ change is applied to the running charger at once, without a reconnect, and is wr
 `POST /api/config/save`. A blocked CSMS → charger CALL is answered with CALLERROR `NotImplemented` or
 `NotSupported` (the same wire names in OCPP-J 1.6 and 2.0.1), or, with `NoReply`, not at all, so the CSMS runs
 into its own timeout. The frame log marks the received CALL with `blocked: <code>` / `blocked: no reply`, and the
-charger snapshot has `impaired: true` (the UI shows `!` on the badge). In the UI: **Block commands** in the
+charger snapshot has `impaired: true` (the UI shows `!` on the badge). In the UI: **Impairments** in the
 charger detail panel.
+
+### Network impairments
+
+The same `impairments` block also holds the latency (`latency_ms`, `jitter_ms`, `direction`, `seed`) and the
+periodic drops (`drop_every_s`, `drop_jitter_s`, `drop_mode`, `down_s`), see
+[Configuration](configuration.md#chargers). `PUT` takes the whole block (fields left out get their defaults;
+`400` for out-of-range values, e.g. `jitter_ms` > `latency_ms`) and applies it to the open connection without a
+reconnect: the next frame already gets the new delay.
+
+`POST /api/chargers/{id}/drop` drops the connection now and returns `{"ok": true, "mode", "reconnect_after_s"}`.
+`mode` defaults to `drop_mode`, `reconnect_after_s` (0 – 86400) to `down_s`; `409` while the charger is not
+connected. The charger reconnects after that pause instead of its back-off. A simulated drop is **not** a
+failed connection: it never counts against `reconnect.max_retries` / `boot_max_retries`, even before an accepted
+boot. Transactions and queued messages are kept. The snapshot shows `last_error.kind` `simulated_drop` until
+the next accepted boot and counts the drops in `drops`; `impaired` is `true` while any impairment is on. In the
+UI: **Impairments** in the charger detail panel (also **Drop now**).
 
 **Frame injection** (`POST /api/chargers/{id}/send`) is an expert entry for testing how a CSMS handles messages
 the simulator would not send on its own:

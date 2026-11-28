@@ -12,9 +12,13 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
   ``ChargePointErrorCode``), default ``OtherError``; a fault ends a running transaction with reason ``Other``
   and reports ``Faulted``, clear-fault returns the connector to Available / Preparing);
 * ``POST /api/chargers/{id}/datatransfer`` - body ``{"vendor_id", "message_id", "data"}``, CP -> CSMS;
-* ``GET|PUT /api/chargers/{id}/impairments`` - the charger's ``impairments`` block (command blocking:
-  ``{"block": {"RemoteStartTransaction": "NotSupported", ...}}``); PUT replaces it through a reload, but the block
-  is not part of the charger's restart key, so the running charger keeps its connection;
+* ``GET|PUT /api/chargers/{id}/impairments`` - the charger's ``impairments`` block (command blocking
+  ``{"block": {"RemoteStartTransaction": "NotSupported", ...}}``, latency / jitter, periodic drops); PUT replaces
+  it through a reload, but the block is not part of the charger's restart key, so the running charger keeps its
+  connection;
+* ``POST /api/chargers/{id}/drop`` - body ``{"mode"?: "abort" | "close", "reconnect_after_s"?}``: drop the
+  connection now like a network failure and reconnect after the pause (defaults: ``drop_mode`` / ``down_s``);
+  not a failed connection for the retry limits; 409 while not connected;
 * ``POST /api/chargers/{id}/send`` - frame injection (expert use): ``{"action", "payload", "validate": true,
   "timeout"?}`` sends a CALL past the station (no station state changes) and returns ``{"ok": true, "result"}`` /
   ``{"ok": false, "error"}`` (CALLERROR), 504 on timeout; ``validate: false`` skips the schema checks;
@@ -167,6 +171,14 @@ class FaultBody(ConnectorBody):
 class ExternalLimitBody(BaseModel):
     connector: int = Field(0, ge=0)  # 0 = the whole charger
     limit_w: Optional[float] = Field(None, ge=0)  # None = remove the limit
+
+
+class DropBody(BaseModel):
+    """``POST /api/chargers/{id}/drop``: both default to the charger's ``impairments`` (``drop_mode``, ``down_s``)."""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Optional[Literal["abort", "close"]] = None
+    reconnect_after_s: Optional[float] = Field(None, ge=0, le=86_400)
 
 
 class DataTransferBody(BaseModel):
@@ -528,6 +540,17 @@ def _router(engine: OcppEngine) -> APIRouter:
         data["chargers"][i] = {**c.model_dump(), "impairments": body.model_dump()}
         await apply(data)  # impairments is not part of the restart key: the running charger keeps its connection
         return {"ok": True, **charger_cfg(cid)[1].impairments.model_dump(mode="json")}
+
+    @r.post("/chargers/{cid}/drop", summary="Drop the connection now (simulated network failure)")
+    async def drop(cid: str, body: DropBody = Body(default_factory=DropBody)):
+        rt = runtime(cid)
+        try:
+            rt.drop(body.mode, body.reconnect_after_s)
+        except ConnectionError as e:
+            raise bad(409, e) from None
+        imp = rt.impairments
+        return {"ok": True, "mode": body.mode or imp.drop_mode,
+                "reconnect_after_s": imp.down_s if body.reconnect_after_s is None else body.reconnect_after_s}
 
     @r.post("/chargers/{cid}/send", summary="Inject a CALL or a raw frame (expert use; no station state change)")
     async def send(cid: str, body: SendBody):

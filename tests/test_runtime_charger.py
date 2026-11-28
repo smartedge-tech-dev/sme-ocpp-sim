@@ -649,3 +649,93 @@ def test_reconnect_failures_reset_after_accepted_boot(version):
         finally:
             await peer.stop()
     asyncio.run(main())
+
+
+# ------------------------------------------------------------------ network impairments (v0.2.2 A part 2)
+
+def test_forced_drop_reconnects_after_the_pause_and_keeps_the_transaction():
+    async def body(peer, rt):
+        s = await _online(peer, rt)
+        await rt.plug(1)
+        assert await rt.swipe(1, "TAG1") == "Accepted"
+        attempts = rt.connect_attempts
+        rt.drop("abort", reconnect_after_s=0.3)
+        await _until(lambda: (rt.last_error or {}).get("kind") == "simulated_drop")
+        assert not rt.connected and rt.drops == 1
+        assert await rt.stop_tx(1)  # queued while offline, delivered on the next session
+        t0 = time.monotonic()
+        await _until(lambda: rt.online and len(peer.history) == 2)
+        assert time.monotonic() - t0 >= 0.25  # the pause, not the (shorter) back-off
+        assert rt.connect_attempts == attempts + 1 and rt.last_error is None
+        await _until(lambda: peer.history[-1].stops)
+        assert peer.history[-1].stops[0]["transaction_id"] == s.starts[0]["transaction_id"]
+        assert rt.snapshot()["drops"] == 1
+    _scenario(body, cfg_kw={"auth_mode": "local_only", "id_tags": ["TAG1"]})
+
+
+def test_drop_needs_a_connection_and_a_valid_mode():
+    rt = ChargerRuntime(_cfg(), "ws://127.0.0.1:1/ocpp", "1.6")
+    with pytest.raises(ConnectionError):
+        rt.drop()
+    rt.connected = True
+    for kw in ({"mode": "unplug"}, {"reconnect_after_s": -1}):
+        with pytest.raises(ValueError):
+            rt.drop(**kw)
+
+
+@VERSIONS
+def test_simulated_drops_do_not_count_against_max_retries(version):
+    # The documented choice: a simulated drop is not a failed connection, even before an accepted boot, where a
+    # real disconnect would count (and max_retries=0 would give up at once).
+    async def main():
+        peer = PEERS[version](hb_interval=30, boot_statuses=["Pending"] * 10, retry_interval=30)
+        await peer.start()
+        try:
+            rt = ChargerRuntime(_cfg(), peer.url, version, call_timeout=5,
+                                reconnect=ReconnectConfig(min_s=0.05, max_s=0.1, jitter=0, max_retries=0))
+            stop = asyncio.Event()
+            task = asyncio.create_task(rt.run(stop))
+            for n in range(1, 4):
+                await _until(lambda: rt.connected and rt.registration == "Pending" and len(peer.history) == n)
+                rt.drop("close", reconnect_after_s=0.05)
+                await _until(lambda: not rt.connected)
+            await _until(lambda: rt.connected and len(peer.history) == 4)
+            assert rt.gave_up is None and rt._failures == 0 and rt.drops == 3 and not task.done()
+            stop.set()
+            await asyncio.wait_for(task, 3)
+        finally:
+            await peer.stop()
+    asyncio.run(main())
+
+
+@VERSIONS
+def test_periodic_drop_and_live_switch_off(version):
+    async def body(peer, rt):
+        await _until(lambda: rt.online)
+        assert rt.drops == 0
+        rt.set_impairments(rt.impairments.model_copy(update={"drop_every_s": 0.3, "drop_jitter_s": 0.1,
+                                                             "down_s": 0.1, "drop_mode": "close"}))
+        assert rt.impaired
+        await _until(lambda: rt.drops >= 2 and rt.online)
+        assert rt.gave_up is None and len(peer.history) >= 3
+        rt.set_impairments(rt.impairments.model_copy(update={"drop_every_s": None}))
+        await _until(lambda: rt.online)
+        drops = rt.drops
+        await asyncio.sleep(0.8)  # well past the old interval
+        assert rt.drops == drops and rt.online and not rt.impaired
+    _scenario(body, version=version)
+
+
+def test_latency_applies_live_to_the_open_session():
+    async def body(peer, rt):
+        await _until(lambda: rt.online)
+        attempts = rt.connect_attempts
+        sock = rt._rpc._ws
+        assert sock.next_delay("tx") == 0.0
+        rt.set_impairments(rt.impairments.model_copy(update={"latency_ms": 200, "direction": "tx"}))
+        assert sock.next_delay("tx") == pytest.approx(0.2) and sock.next_delay("rx") == 0.0
+        t0 = time.monotonic()
+        await rt.heartbeat()  # CP -> CSMS: the CALL waits 0.2 s before it is written
+        assert time.monotonic() - t0 >= 0.18
+        assert rt.connect_attempts == attempts and rt.online  # no reconnect
+    _scenario(body)

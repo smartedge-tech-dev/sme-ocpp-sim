@@ -144,6 +144,18 @@ chargers:
         ChargerConfig(id="A", power_w=6000)  # M3 placeholder removed
 
 
+def test_impairments_defaults_ranges_and_active():
+    from sme_ocpp_sim.config import ImpairmentConfig
+    imp = ImpairmentConfig()
+    assert not imp.active and imp.direction == "both" and imp.down_s == 5 and imp.drop_mode == "abort"
+    assert ImpairmentConfig(latency_ms=10).active and ImpairmentConfig(drop_every_s=30).active
+    assert ImpairmentConfig(block={"Reset": "NoReply"}).active and not ImpairmentConfig(jitter_ms=0, seed=1).active
+    assert ImpairmentConfig(latency_ms=10, jitter_ms=10).jitter_ms == 10
+    for kw in ({"latency_ms": 10, "jitter_ms": 11}, {"drop_every_s": 0}, {"drop_every_s": 5, "drop_jitter_s": 5},
+               {"down_s": -1}, {"direction": "up"}, {"drop_mode": "unplug"}, {"latency_ms": -1}):
+        with pytest.raises(ValidationError):
+            ImpairmentConfig(**kw)
+
 def test_retry_limits_default_unlimited_and_non_negative():
     from sme_ocpp_sim.config import ReconnectConfig
     assert ReconnectConfig().max_retries is None and ChargerConfig(id="A").boot_max_retries is None

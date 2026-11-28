@@ -41,8 +41,23 @@ from ..protocol.registry import get_station_class
 from ..protocol.station import VersionStation
 from ..rpc import (Backoff, HandshakeError, RpcConnection, TransportConfig, after_this_reply, open_connection,
                    wait_event, wait_or_stop)
+from ..rpc.impair import ImpairedSocket, impairment_seed, make_rng
 
 log = logging.getLogger(__name__)
+
+
+async def _wait_any(*events: asyncio.Event, timeout: Optional[float] = None) -> bool:
+    """Wait until one of ``events`` is set or ``timeout`` passes; True if one was set."""
+    if any(e.is_set() for e in events):
+        return True
+    tasks = [asyncio.ensure_future(e.wait()) for e in events]
+    try:
+        done, _ = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return bool(done)
 
 BACKOFF_FACTOR = 2.0
 #: RpcConnection writes the CALLRESULT right after the handler returns; follow-up CALLs (StatusNotification,
@@ -127,6 +142,16 @@ class ChargerRuntime:
         self._rpc: Optional[RpcConnection] = None
         #: CSMS -> CP actions this charger's version handles: the names ``impairments.block`` may use.
         self.csms_actions: tuple = tuple(sorted(self.adapter.handlers(self.station)))
+        #: Simulated network drops so far (forced or periodic); they never count as failed connections.
+        self.drops = 0
+        self._net_drop = asyncio.Event()             # set by drop(): end the current session like a network failure
+        self._drop_request: Optional[tuple] = None   # (mode, reconnect_after_s) of the pending drop
+        self._reconnect_after: Optional[float] = None  # set when the last session ended by a simulated drop
+        self._imp_changed = asyncio.Event()          # set_impairments ran: the periodic drop timer starts over
+        self._session_up = asyncio.Event()           # set while a session runs ...
+        self._session_down = asyncio.Event()         # ... and this one while none does
+        self._session_down.set()
+        self._session_no = 0
         self.impairments = ImpairmentConfig()
         self.set_impairments(cfg.impairments)
 
@@ -143,13 +168,59 @@ class ChargerRuntime:
         """Apply ``imp`` to the running charger (no reconnect); the next inbound CALL already sees it."""
         self.validate_impairments(imp)
         self.impairments = imp.model_copy(deep=True)
+        # Latency / jitter are read per frame by the session's ImpairedSocket; the drop timer re-reads its
+        # settings (a change restarts the current interval).
+        self._imp_changed.set()
 
     def _block_mode(self, action: str) -> Optional[str]:
         return self.impairments.block.get(action)
 
     @property
     def impaired(self) -> bool:
-        return bool(self.impairments.block)
+        return self.impairments.active
+
+    def drop(self, mode: Optional[str] = None, reconnect_after_s: Optional[float] = None) -> None:
+        """Drop the current connection like a network failure (``mode`` ``abort`` / ``close``, default
+        ``impairments.drop_mode``) and reconnect after ``reconnect_after_s`` (default ``impairments.down_s``)
+        instead of the back-off. Transactions and queued messages are kept and go out on the next session; the
+        drop is not a failed connection (``reconnect.max_retries`` / ``boot_max_retries`` do not count it).
+        ``ConnectionError`` when not connected."""
+        if not self.connected:
+            raise ConnectionError(f"charger {self.cfg.id} is not connected")
+        if mode not in (None, "abort", "close"):
+            raise ValueError(f"drop mode {mode!r}: expected abort or close")
+        if reconnect_after_s is not None and reconnect_after_s < 0:
+            raise ValueError("reconnect_after_s must be >= 0")
+        imp = self.impairments
+        self._drop_request = (mode or imp.drop_mode, imp.down_s if reconnect_after_s is None else reconnect_after_s)
+        self._net_drop.set()
+
+    async def _drop_timer(self, stop: asyncio.Event) -> None:
+        """Periodic drops (``impairments.drop_every_s`` +- ``drop_jitter_s``), counted from each session start."""
+        rng, rng_seed = None, None
+        while not stop.is_set():
+            self._imp_changed.clear()
+            imp = self.impairments
+            if imp.drop_every_s is None:
+                await _wait_any(stop, self._imp_changed)
+                continue
+            if not self._session_up.is_set():
+                await _wait_any(stop, self._imp_changed, self._session_up)
+                continue
+            seed = impairment_seed(imp.seed, self.cfg.id)
+            if rng is None or seed != rng_seed:
+                rng, rng_seed = make_rng(seed, "drop"), seed
+            j = imp.drop_jitter_s
+            interval = imp.drop_every_s + (rng.uniform(-j, j) if j else 0.0)
+            sid = self._session_no
+            if await _wait_any(stop, self._imp_changed, timeout=interval):
+                continue  # stopped, or the settings changed: start over
+            if self._session_no == sid and self.connected:
+                try:
+                    self.drop(imp.drop_mode, imp.down_s)
+                except ConnectionError:
+                    pass
+            await _wait_any(stop, self._session_down)
 
     # ================================================================== frame injection (expert use)
 
@@ -192,9 +263,12 @@ class ChargerRuntime:
         """
         self.gave_up = None
         self._failures = self._boot_failures = 0
+        timer = asyncio.ensure_future(self._drop_timer(stop))
         try:
             await self._run(stop)
         finally:
+            timer.cancel()
+            await asyncio.gather(timer, return_exceptions=True)
             self.station.close()  # station timers (reservation expiry, ...) do not outlive the run
 
     async def _run(self, stop: asyncio.Event) -> None:
@@ -219,6 +293,11 @@ class ChargerRuntime:
             was_reset = await self._session(ws, stop)
             if stop.is_set() or self.gave_up is not None:
                 break
+            if self._reconnect_after is not None:
+                # A simulated drop: not a failed connection (no retry count, no back-off), just the pause.
+                if await wait_or_stop(stop, self._reconnect_after):
+                    break
+                continue
             # A session that ended before an accepted boot is a failed connection (a Reset is not).
             if not was_reset and not self._accepted_this_session and self._count_failure(
                     (self.last_error or {}).get("kind", "disconnected")):
@@ -230,23 +309,44 @@ class ChargerRuntime:
         """Serve one connection; returns True when it ended because of a Reset."""
         self._reset_done.clear()
         self._abort.clear()
+        self._net_drop.clear()
+        self._drop_request = self._reconnect_after = None
         before = self.last_error  # an error left from an earlier attempt is not this session's
         self.registration = None
         self._accepted_this_session = False
-        rpc = RpcConnection(ws, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
+        # Latency / jitter (impairments): read live per frame, so a change needs no reconnect.
+        sock = ImpairedSocket(ws, lambda: self.impairments, impairment_seed(self.impairments.seed, self.cfg.id))
+        rpc = RpcConnection(sock, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
                             call_timeout=self.call_timeout, on_frame=self._frame_cb, name=self.cfg.id,
                             call_guard=self.station.check_call, block=self._block_mode)
         self._rpc = rpc
         self.adapter.bind(rpc.call)
         self.connected = True
+        self._session_no += 1
+        self._session_down.clear()
+        self._session_up.set()
         rx = asyncio.create_task(rpc.run())
         waits = [asyncio.create_task(stop.wait()), asyncio.create_task(self._reset_done.wait()),
-                 asyncio.create_task(self._abort.wait())]
+                 asyncio.create_task(self._abort.wait()), asyncio.create_task(self._net_drop.wait())]
         self._spawn(self._online_guarded())
+        drop: Optional[tuple] = None
         try:
             await asyncio.wait([rx, *waits], return_when=asyncio.FIRST_COMPLETED)
+            if self._net_drop.is_set() and not stop.is_set() and not self._reset_done.is_set():
+                drop = self._drop_request
+                self.drops += 1
+                log.info("%s: simulated drop (%s), reconnect in %.1f s", self.cfg.id, drop[0], drop[1])
+                await sock.drop(drop[0])
         finally:
             rx_error = await self._close_session(rpc, rx, waits)
+            await sock.aclose_pump()
+            self._session_up.clear()
+            self._session_down.set()
+        if drop is not None:
+            self._reconnect_after = drop[1]
+            self.last_error = {"kind": "simulated_drop",
+                               "message": f"simulated drop ({drop[0]}); reconnecting in {drop[1]:g} s"}
+            return False
         # An abort that recorded no error of its own (the outbox worker lost the connection) is a disconnect.
         aborted = self._abort.is_set() and self.last_error is not None and self.last_error is not before
         if not self._reset_done.is_set() and not stop.is_set() and not aborted:
@@ -584,5 +684,6 @@ class ChargerRuntime:
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
             "security_profile": self.transport.security_profile,
             "impaired": self.impaired,
+            "drops": self.drops,
             **self.station.snapshot(),
         }

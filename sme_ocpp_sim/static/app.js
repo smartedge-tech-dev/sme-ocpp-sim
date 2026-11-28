@@ -147,7 +147,7 @@ function setBadge(el, c) {
     ? t(c.gave_up.reason === "boot_max_retries" ? "conn.gave_up.title_boot" : "conn.gave_up.title",
       { attempts: c.gave_up.attempts, kind: c.gave_up.last_kind || "?" })
     : errText(c.last_error);
-  if (c.impaired) {  // command blocking is on: mark the badge so a silent CSMS timeout is not a surprise
+  if (c.impaired) {  // impairments are on: mark the badge so a CSMS timeout or a drop is not a surprise
     el.textContent += " !";
     el.title = [el.title, t("imp.badge")].filter(Boolean).join(" / ");
   }
@@ -931,7 +931,12 @@ async function selectWhenListed(id) {
 
 const BLOCK_MODES = ["NotImplemented", "NotSupported", "NoReply"];
 
-async function openBlockDialog() {
+// Number inputs of the impairments dialog: element id -> field (null when empty, for the optional ones).
+const IMP_NUMBERS = { impLatency: "latency_ms", impJitter: "jitter_ms", impSeed: "seed", impDropEvery: "drop_every_s",
+  impDropJitter: "drop_jitter_s", impDown: "down_s" };
+const IMP_OPTIONAL = new Set(["seed", "drop_every_s"]);
+
+async function openImpairDialog() {
   const id = S.sel;
   if (!id) return;
   let detail, imp;
@@ -939,22 +944,47 @@ async function openBlockDialog() {
     [detail, imp] = await Promise.all([api("GET", `/api/chargers/${enc(id)}`), api("GET", chargerUrl(id, "impairments"))]);
   } catch (e) { fail(e); return; }
   const block = imp.block || {};
-  $("blockTitle").textContent = t("imp.title", { id });
-  $("blockErr").textContent = "";
+  $("impairTitle").textContent = t("imp.title", { id });
+  $("impairErr").textContent = "";
+  for (const [el, k] of Object.entries(IMP_NUMBERS)) $(el).value = imp[k] == null ? "" : imp[k];
+  $("impDirection").value = imp.direction || "both";
+  $("impDropMode").value = imp.drop_mode || "abort";
+  $("impDropNow").disabled = !detail.connected;
   $("blockRows").replaceChildren(...(detail.csms_actions || []).map((a) => h("tr", null, h("td", null, a),
     h("td", null, h("select", { "data-action": a },
       h("option", { value: "" }, t("imp.mode.none")),
       ...BLOCK_MODES.map((m) => h("option", { value: m, selected: block[a] === m }, t(`imp.mode.${m}`))))))));
-  $("blockForm").dataset.id = id;
-  $("dlgBlock").showModal();
+  $("impairForm").dataset.id = id;
+  $("dlgImpair").showModal();
 }
 
-async function saveBlock() {
-  const id = $("blockForm").dataset.id;
-  const block = {};
-  for (const sel of $("blockRows").querySelectorAll("select")) if (sel.value) block[sel.dataset.action] = sel.value;
-  await api("PUT", chargerUrl(id, "impairments"), { block });
-  Shell.toast(t("imp.saved", { id, n: Object.keys(block).length }), "ok");
+function impairBody() {
+  const body = { block: {}, direction: $("impDirection").value, drop_mode: $("impDropMode").value };
+  for (const sel of $("blockRows").querySelectorAll("select")) if (sel.value) body.block[sel.dataset.action] = sel.value;
+  for (const [el, k] of Object.entries(IMP_NUMBERS)) {
+    const v = $(el).value.trim();
+    if (v !== "") body[k] = Number(v);
+    else if (IMP_OPTIONAL.has(k)) body[k] = null;
+  }
+  return body;
+}
+
+async function saveImpair() {
+  const id = $("impairForm").dataset.id;
+  const body = impairBody();
+  await api("PUT", chargerUrl(id, "impairments"), body);
+  Shell.toast(t("imp.saved", { id, n: Object.keys(body.block).length }), "ok");
+}
+
+async function dropNow() {
+  const id = $("impairForm").dataset.id;
+  const v = $("impDown").value.trim();
+  const body = { mode: $("impDropMode").value };
+  if (v !== "") body.reconnect_after_s = Number(v);
+  try {
+    const r = await api("POST", chargerUrl(id, "drop"), body);
+    Shell.toast(t("imp.dropped", { id, s: r.reconnect_after_s }), "ok");
+  } catch (e) { $("impairErr").textContent = String((e && e.message) || e); }
 }
 
 function openDataTransfer() {
@@ -1168,7 +1198,8 @@ $("dConnect").addEventListener("click", () => op(S.sel, "connect"));
 $("dDisconnect").addEventListener("click", () => op(S.sel, "disconnect"));
 $("dDataTransfer").addEventListener("click", openDataTransfer);
 $("dSettings").addEventListener("click", () => openSettingsDialog(S.sel));
-$("dBlock").addEventListener("click", openBlockDialog);
+$("dImpair").addEventListener("click", openImpairDialog);
+$("impDropNow").addEventListener("click", dropNow);
 $("scProfiles").addEventListener("click", () => openProfileDialog(S.sel));
 $("scConnector").addEventListener("change", () => { S.composite = null; drawChart(); loadSmartCharging(); });
 for (const id of ["fCharger", "fDir"]) $(id).addEventListener("change", renderFrames);
@@ -1193,7 +1224,7 @@ $("xlsxFile").addEventListener("change", (e) => {
   if (file) importXlsx(file);
 });
 bindForm("dtForm", "dtErr", sendDataTransfer, true);
-bindForm("blockForm", "blockErr", saveBlock);
+bindForm("impairForm", "impairErr", saveImpair);
 
 // Composite schedule and chart refresh for the selected charger (the "now" line moves even without pushes).
 // Paused while the tab is hidden; refreshed at once when it becomes visible again.
