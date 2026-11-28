@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-28
+
 ### Added
 
 - Scenario and Traffic panels in the web UI (v0.3 M9, **Simulation** menu): load a built-in scenario or a file,

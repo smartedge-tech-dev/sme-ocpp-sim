@@ -15,7 +15,7 @@ again from the demo configuration. With `-c FILE` that file is used and saved in
 the config file in use at startup (`config file: ...`).
 
 ```powershell
-.\sme-ocpp-sim-v0.2.2-windows.exe -c my-site.yaml
+.\sme-ocpp-sim-v0.3.0-windows.exe -c my-site.yaml
 ```
 
 ## pip
