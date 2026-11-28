@@ -66,9 +66,12 @@ def test_durations_and_times():
     for bad in ("5 parsecs", "-1", True, ""):
         with pytest.raises(ValueError):
             parse_duration(bad)
-    # unquoted 08:00 is YAML 1.1 sexagesimal (480): read back as a clock time
-    sc = load_text("format: ocppsim-scenario/1\nname: n\ntracks:\n- charger: A\n  steps:\n  - {at: 08:00, do: plug}\n")
-    assert sc.tracks[0].steps[0].at == "08:00"
+    # unquoted 8:00 / 8:00:30 is YAML 1.1 sexagesimal (480 / 28830): ambiguous, so it must be quoted
+    assert load_text("format: ocppsim-scenario/1\nname: n\ntracks:\n- charger: A\n  steps:\n"
+                     "  - {at: 08:00, do: plug}\n").tracks[0].steps[0].at == "08:00"   # a string in YAML
+    for t in ("8:00", "8:00:30"):
+        assert "quote clock times" in _err(f"format: ocppsim-scenario/1\nname: n\ntracks:\n- charger: A\n"
+                                           f"  steps:\n  - {{at: {t}, do: plug}}\n")
     assert "HH:MM" in _err(_sc([{"charger": "A", "steps": [{"at": "noon", "do": "plug"}]}]))
 
 
@@ -202,7 +205,8 @@ def test_fail_stop_continue_and_expect_not():
     assert steps[(t, "loud")]["status"] == "fail" and steps[(t, "loud")]["evidence"]
     assert steps[(t, "never")]["status"] == "skipped" and steps[("other", "w")]["status"] == "skipped"
     junit = ET.fromstring(to_junit(v))
-    assert junit.get("failures") == "2" and junit.find("testcase/failure") is not None
+    assert junit.tag == "testsuites" and junit.get("failures") == "2"
+    assert junit.find("testsuite/testcase/failure") is not None
 
 
 def test_action_error_and_then_mismatch():
@@ -255,7 +259,8 @@ def test_http_api_run_status_abort_result():
         v = c.get("/api/scenarios/result").json()
         assert v["result"] == "aborted" and [s["status"] for s in v["steps"]] == ["pass", "aborted"]
         x = c.get("/api/scenarios/result", params={"format": "junit"})
-        assert x.headers["content-type"].startswith("application/xml") and ET.fromstring(x.text).tag == "testsuite"
+        assert x.headers["content-type"].startswith("application/xml") and ET.fromstring(x.text).tag == "testsuites"
+        assert 'name="scenario"' in x.text and 'message="aborted"' in x.text
         r = c.post("/api/frames/expect", json={"action": "Heartbeat", "within": 0.1})
         assert r.json()["matched"] is False
         assert c.post("/api/frames/expect", json={"payload": {"a": {"bad": 1}}}).status_code == 400
@@ -294,3 +299,136 @@ def test_cli_headless_exit_codes(tmp_path, capsys):
                   encoding="utf-8")
     assert main(["scenario", "validate", str(sc), "-c", str(cfg)]) == 2
     assert "unknown charger 'NOPE'" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ review follow-ups
+
+DT = {"do": "send", "action": "DataTransfer", "payload": {"vendorId": "acme"}}
+DT_FRAME = {"frame": {"dir": "tx", "action": "DataTransfer"}}
+
+
+def test_frame_cursor_and_from():
+    v = _run("1.6", _sc([{"charger": "CP1", "steps": [
+        ONLINE, DT,
+        {"id": "a", "expect": DT_FRAME, "within": 10},
+        {"id": "b", "expect": DT_FRAME, "within": 0.5, "on_fail": "continue"},   # the one frame is used up
+        {"id": "c", "expect": DT_FRAME, "from": "action", "within": 10},
+        {"id": "d", "expect": {"frame": {"dir": "tx", "action": "BootNotification"}}, "from": "scenario_start",
+         "within": 10},
+    ]}]))
+    st = {s["id"]: s["status"] for s in v["steps"]}
+    assert st == {"1": "pass", "2": "pass", "a": "pass", "b": "fail", "c": "pass", "d": "pass"}, v
+    assert "from: only on frame" in _err(_sc([{"charger": "A", "steps": [{"do": "plug", "from": "action"}]}]))
+
+
+def test_params_in_typed_fields():
+    sc = load_data(_sc([{"charger": "A", "repeat": "${n}", "steps": [
+        {"do": "plug", "connector": "${conn}"},
+        {"expect": {"state": {"online": True, "connector": "${conn}"}}, "within": "${w}"}]}],
+        params={"conn": 2, "w": "5s", "n": 3}))
+    t = expand(sc, ["A"])[0]
+    assert len(t.steps) == 6 and t.steps[0].step.connector == 2 and t.steps[1].step.within == 5.0
+    sc = load_data(_sc([{"charger": "A", "steps": [{"do": "plug", "connector": "${i}"}]}]))
+    with pytest.raises(ScenarioError, match=r"tracks.0.steps.0.*connector"):
+        expand(sc, ["A"])   # ${i} = 0 is not a connector
+    assert "tracks.0.steps.0.connector" in _err(_sc([{"charger": "A", "steps": [{"do": "plug",
+                                                                                 "connector": "${zz}"}]}]))
+
+
+def test_repeat_rounds_and_until_pending():
+    assert "repeat track takes only relative" in _err(_sc([{"charger": "A", "repeat": 2, "steps": [
+        {"at": "08:00", "do": "log", "message": "x"}]}]))
+    assert "repeat" in _err(_sc([{"charger": "A", "repeat": 1001, "steps": [{"do": "log", "message": "x"}]}]))
+    engine = _engine(DEAD_URL, "1.6")
+    sc = load_data(_sc([{"charger": "CP1", "repeat": 2, "steps": [
+        {"id": "l", "at": "+10m", "do": "log", "message": "r${round}"}, {"do": "wait", "duration": "1h"}]},
+        {"name": "u", "charger": "CP1", "steps": [{"id": "w", "do": "wait", "duration": "10h"},
+                                                  {"id": "p", "do": "log", "message": "never"}]}], until="+3h"))
+    v = asyncio.run(ScenarioRunner(engine, sc).run())
+    st = {(s["track"], s["id"]): s for s in v["steps"]}
+    assert 4800 <= st[("track1:CP1", "l#2")]["t_sim"] < 5400
+    assert st[("u", "w")]["status"] == "fail" and st[("u", "p")]["status"] == "skipped"
+    assert "until" in st[("u", "p")]["message"] and v["result"] == "fail"
+
+
+def test_time_scale_restore():
+    async def main_():
+        engine = _engine(DEAD_URL, "1.6")   # not started: only its clock is used
+        long = load_data(_sc([{"charger": "CP1", "steps": [{"do": "wait", "duration": "1000h"}]}],
+                             clock={"time_scale": 1800}))
+        r = ScenarioRunner(engine, long)
+        r.start()
+        await asyncio.sleep(0.1)
+        assert engine.time_scale == 1800
+        r.abort()
+        await r.wait()
+        assert engine.time_scale == 3600 and r.result == "aborted"
+        bad = load_data(_sc([{"charger": "CP1", "steps": [{"do": "plug", "connector": 9}]}],
+                            clock={"time_scale": 1800}))
+        assert (await ScenarioRunner(engine, bad).run())["result"] == "error" and engine.time_scale == 3600
+        r = ScenarioRunner(engine, long)
+        r.start()
+        await asyncio.sleep(0.1)
+        engine.set_running(time_scale=10)   # changed meanwhile: kept
+        r.abort()
+        await r.wait()
+        assert engine.time_scale == 10
+    asyncio.run(main_())
+
+
+def test_frame_buffer_overflow():
+    async def fn(engine):
+        sc = load_data(_sc([{"charger": "CP1", "steps": [
+            ONLINE, {"do": "send", "action": "Heartbeat"}, {"do": "send", "action": "Heartbeat"},
+            {"do": "send", "action": "Heartbeat"},
+            {"id": "x", "expect": {"frame": {"dir": "tx", "action": "BootNotification"}},
+             "from": "scenario_start", "within": 1}]}]))
+        r = ScenarioRunner(engine, sc)
+        r.max_frames = 3
+        return await r.run()
+    v = asyncio.run(_with_peer("1.6", fn))
+    x = next(s for s in v["steps"] if s["id"] == "x")
+    assert x["status"] == "fail" and "overflowed" in x["message"]
+
+
+def test_engine_stop_aborts_running_scenario():
+    async def main_():
+        engine = _engine(DEAD_URL, "1.6")
+        engine.stop_grace_s = 0.2
+        await engine.start()
+        r = engine.scenario = ScenarioRunner(engine, load_data(_sc([{"charger": "CP1", "steps": [
+            {"do": "wait", "duration": "1000h"}]}])))
+        r.start()
+        await asyncio.sleep(0.1)
+        await engine.stop()
+        assert r.done and r.result == "aborted" and r._on_frame not in engine.frame_listeners
+    asyncio.run(main_())
+
+
+def test_http_limits_and_expect_oldest():
+    from sme_ocpp_sim.web import MAX_SCENARIO_BYTES
+    engine = _engine(DEAD_URL, "1.6")
+    engine.stop_grace_s = 0.2
+    with TestClient(create_app(engine), base_url="http://127.0.0.1") as c:
+        assert c.post("/api/scenarios/run", content=b"x" * (MAX_SCENARIO_BYTES + 1)).status_code == 413
+        r = c.post("/api/scenarios/run", content=b"format: \xff\xfe")
+        assert r.status_code == 400 and "UTF-8" in r.text
+        r = c.post("/api/frames/expect", json={"since": 0, "within": 0}).json()
+        assert "oldest_seq" in r and "warning" not in r
+
+
+def test_junit_strips_control_chars():
+    v = {"scenario": "s\x01", "result": "fail", "steps": [
+        {"id": "1", "track": "t", "kind": "expect", "status": "fail", "message": "bad\x01\x1fchar", "evidence": [3]}]}
+    x = to_junit(v)
+    root = ET.fromstring(x)
+    assert "\x01" not in x and root.find("testsuite/testcase/failure").get("message") == "badchar [frames 3]"
+
+
+def test_cli_output_error_is_exit_2(tmp_path, capsys):
+    cfg = tmp_path / "sim.yaml"
+    cfg.write_text(yaml.safe_dump({"csms_defaults": {"url": DEAD_URL}, "chargers": [{"id": "CP1"}]}), "utf-8")
+    sc = tmp_path / "s.yaml"
+    sc.write_text(yaml.safe_dump(_sc([{"charger": "CP1", "steps": [{"do": "log", "message": "x"}]}])), "utf-8")
+    assert main(["scenario", "run", str(sc), "-c", str(cfg), "--out", str(tmp_path)]) == 2  # a directory
+    assert "scenario error" in capsys.readouterr().err

@@ -51,11 +51,11 @@ until: "+4h"                              # optional hard end (sim time)
 | `repeat: n` | Run the track's steps n times (`${round}` = 0-based round; step ids get `#1`, `#2` ...) |
 | `clock.start_at` | Restart the sim clock at this date-time for the run (it anchors `at: "HH:MM"`) |
 | `clock.time_scale` | Sim speed for this run (restored afterwards); `--time-scale` of the CLI overrides it |
-| `until` | End of the run: a step still running then fails |
+| `until` | End of the run: a step still running then fails, steps not started are skipped (the event log says how many) |
 
 Every key is checked (a typo is an error with its position, e.g. `tracks.0.steps.2.do`); charger ids and
 `${...}` names are checked against the running config before anything runs. A whole-string `"${n}"` keeps the
-parameter's type (number, bool). Unquoted `08:00` is read as a time too.
+parameter's type (number, bool). Quote clock times (`"08:00"`): YAML reads an unquoted one as a number, which is rejected.
 
 ### Timing
 
@@ -104,8 +104,13 @@ A rejected action (unknown connector, no transaction to stop ...) is a step **er
 - `expect_not`: a frame filter; the step fails as soon as a match appears in the window.
 - `await_csms`: waits for a CALL from the CSMS (an operator action on the CSMS side); `prompt` is shown in the
   status and the event log while it waits.
-- Frames are searched from the start of the track's **previous action step**, so an answer that came before the
-  assertion started is found. Two assertions in a row look at the same frames.
+- Each track has a **frame cursor**: it starts at the scenario start; a passing `expect.frame` / `await_csms`
+  moves it to the matched frame (with `then`: the answer); an action step moves it to the newest frame when the
+  action started (so an answer that came before the assertion started is still found). `expect_not` and
+  `expect.state` leave it. A frame assertion searches after the cursor by default, so two `expect`s of the same
+  action need two frames. `from: action` searches from the start of the previous action instead, `from:
+  scenario_start` from the scenario start.
+- `await_csms` waits 30 wall seconds like any assertion unless it sets `within`: give an operator more time.
 - `on_fail: stop` (default) ends the whole scenario at a failed or rejected step; `continue` goes on.
 
 **Matchers** (Q6: built in, no JSONPath, no code): a path is dotted, integer parts index lists
@@ -155,4 +160,14 @@ The web UI has no scenario panel yet; it shows the scenario's `log` lines and it
 
 - Generator tracks (`generate:`, the traffic generator) come with v0.3 M4; `seed` is only recorded until then.
 - `send` injects charger → CSMS CALLs; CSMS-side steps are `await_csms` (or the Mini CSMS API).
-- The trace file is the current frame log format; the versioned trace format comes later.
+- The trace file is the current frame log format (written while the run goes); the versioned trace format comes
+  later.
+- `repeat` (at most 1000 rounds): `at: "+dur"` counts from the start of the round; clock / date-time `at` is not
+  allowed there.
+- `clock.time_scale` is restored after the run unless the speed was changed meanwhile; `clock.start_at` restarts
+  the engine's sim clock, which stays where the run left it.
+- The runner keeps at most 200 000 frames per charger; an assertion that needs a dropped frame fails with
+  "frame buffer overflowed".
+- `POST /api/frames/expect`: to catch a frame caused by your own action, read `last_seq` (`GET /api/frames`)
+  before the action and pass it as `since`; the answer has `oldest_seq` and a `warning` when `since` is older
+  than the frame log.

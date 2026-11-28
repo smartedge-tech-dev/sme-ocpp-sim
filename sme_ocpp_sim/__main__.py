@@ -74,6 +74,23 @@ def _load_config(path: Optional[str]):
     return (load_file(path) if path else SimConfig()), path
 
 
+def _on_sigint(loop, abort):
+    """Make Ctrl+C abort the scenario (the verdict is still written); returns the undo function. Windows has no
+    ``loop.add_signal_handler``: a ``signal.signal`` handler hands the abort to the loop thread."""
+    import signal
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, abort)
+        return lambda: loop.remove_signal_handler(signal.SIGINT)
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
+    try:
+        old = signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(abort))
+    except ValueError:  # not the main thread
+        return lambda: None
+    return lambda: signal.signal(signal.SIGINT, old)
+
+
 def scenario_main(argv) -> int:
     """``scenario run`` / ``scenario validate`` (exit codes: :mod:`.scenario.verdict`)."""
     ap = argparse.ArgumentParser(prog=f"{APP_NAME} scenario", description="Run or check a scenario file "
@@ -123,29 +140,32 @@ def scenario_main(argv) -> int:
 
     async def run() -> dict:
         engine = OcppEngine(cfg)
-        await engine.start()
+        runner = engine.scenario = ScenarioRunner(engine, sc, source=args.file)
+        runner.trace_path = args.trace
+        restore = _on_sigint(asyncio.get_running_loop(), runner.abort)
         try:
-            runner = engine.scenario = ScenarioRunner(engine, sc, source=args.file)
-            runner.trace_path = args.trace
-            verdict = await runner.run()
-            if args.trace:
-                vd.write(args.trace, runner.trace_jsonl())
-            return verdict
+            await engine.start()
+            runner.start()
+            return await runner.wait()
         finally:
+            restore()
             await engine.stop()
 
     try:
         verdict = asyncio.run(run())
+        text = vd.to_json(verdict)
+        if args.out:
+            vd.write(args.out, text)
+        else:
+            sys.stdout.write(text)
+        if args.junit:
+            vd.write(args.junit, vd.to_junit(verdict))
     except KeyboardInterrupt:
         print("scenario aborted", file=sys.stderr)
         return 2
-    text = vd.to_json(verdict)
-    if args.out:
-        vd.write(args.out, text)
-    else:
-        sys.stdout.write(text)
-    if args.junit:
-        vd.write(args.junit, vd.to_junit(verdict))
+    except Exception as e:  # noqa: BLE001 - engine start, run or writing the outputs
+        print(f"scenario error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     failed = [s for s in verdict["steps"] if s["status"] in ("fail", "error")]
     print(f"scenario {verdict['scenario']}: {verdict['result']} ({len(verdict['steps'])} step(s), "
           f"{verdict['wall_s']:.1f} s wall, {verdict['sim_s']:.0f} s sim)"

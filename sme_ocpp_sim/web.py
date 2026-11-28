@@ -683,14 +683,24 @@ def _router(engine: OcppEngine) -> APIRouter:
         from .scenario.model import ScenarioError, load_text
         from .scenario.runner import ScenarioRunner
 
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            declared = 0
+        if declared > MAX_SCENARIO_BYTES:
+            raise bad(413, f"scenario: larger than {MAX_SCENARIO_BYTES} bytes")
         body = await request.body()
         if len(body) > MAX_SCENARIO_BYTES:
             raise bad(413, f"scenario: larger than {MAX_SCENARIO_BYTES} bytes")
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise bad(400, f"scenario: not UTF-8 text ({e.reason} at byte {e.start})") from None
         cur = current_runner()
         if cur is not None and not cur.done:
             raise bad(409, f"scenario {cur.scenario.name!r} is running (abort it first)")
         try:
-            runner = ScenarioRunner(engine, load_text(body.decode("utf-8", errors="replace")))
+            runner = ScenarioRunner(engine, load_text(text))
         except ScenarioError as e:
             raise bad(400, e) from None
         engine.scenario = runner
@@ -740,15 +750,21 @@ def _router(engine: OcppEngine) -> APIRouter:
         loop = asyncio.get_running_loop()
         end = loop.time() + body.within
         since = engine.frame_log.last_seq if body.since is None else body.since
+        oldest = engine.frame_log.oldest_seq
+        extra = {"oldest_seq": oldest}
+        if since + 1 < oldest:
+            extra["warning"] = f"frames {since + 1}..{oldest - 1} have left the frame log; they were not searched"
         while True:
             for e in engine.frame_log.since(since, charger=body.charger, action=body.action, direction=body.dir):
                 if body.message_type and e.message_type != body.message_type:
                     continue
                 if body.payload and match_all(frame_payload(e.raw), body.payload) is not None:
                     continue
-                return {"ok": True, "matched": True, "frame": e.to_dict(), "last_seq": engine.frame_log.last_seq}
+                return {"ok": True, "matched": True, "frame": e.to_dict(), "last_seq": engine.frame_log.last_seq,
+                        **extra}
             if loop.time() >= end:
-                return {"ok": True, "matched": False, "frame": None, "last_seq": engine.frame_log.last_seq}
+                return {"ok": True, "matched": False, "frame": None, "last_seq": engine.frame_log.last_seq,
+                        **extra}
             await asyncio.sleep(0.05)
 
     return r

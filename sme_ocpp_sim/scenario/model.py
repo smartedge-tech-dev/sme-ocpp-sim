@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 from pydantic.functional_validators import BeforeValidator
 
 from .match import MatcherError, check_matcher
@@ -45,6 +45,9 @@ ACTION_PARAMS: Dict[str, frozenset] = {
 _REQUIRED = {"swipe": ("id_tag",), "impair": ("impairments",), "wait": ("duration",), "log": ("message",)}
 ASSERTIONS = ("expect", "expect_not", "await_csms")
 _TIMING = frozenset({"id", "at", "after", "on_fail"})
+_ALIASES = {"validate_": "validate", "from_": "from"}
+#: Most rounds of a ``repeat`` track.
+MAX_REPEAT = 1000
 _PARAM_FIELDS = frozenset().union(*ACTION_PARAMS.values())
 
 _DUR_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h|d)")
@@ -105,8 +108,8 @@ def parse_time(v: str) -> TimeSpec:
 
 def _time_text(v: Any) -> str:
     if isinstance(v, int) and not isinstance(v, bool):
-        # YAML 1.1 reads an unquoted 08:00 as the sexagesimal integer 480 (minutes): turn it back into a time.
-        return f"{v // 60:02d}:{v % 60:02d}"
+        # YAML 1.1 reads an unquoted 08:00 as the sexagesimal integer 480 (and 08:00:30 as 28830): ambiguous.
+        raise ValueError(f"quote clock times (\"08:00\"): YAML reads an unquoted one as the number {v}")
     if isinstance(v, datetime):
         return v.isoformat()
     if not isinstance(v, str):
@@ -221,6 +224,7 @@ class Step(_Strict):
     raw: Optional[str] = Field(None, min_length=1)
     validate_: Optional[bool] = Field(None, alias="validate")
     timeout: Optional[float] = Field(None, gt=0, le=300)
+    from_: Optional[Literal["prev_step", "action", "scenario_start"]] = Field(None, alias="from")
     ev_model: Optional[str] = Field(None, min_length=1)
     initial_soc: Optional[float] = Field(None, ge=0, le=100)
     target_soc: Optional[float] = Field(None, ge=0, le=100)
@@ -242,7 +246,9 @@ class Step(_Strict):
             raise ValueError("a step has exactly one of do / expect / expect_not / await_csms")
         if self.at is not None and self.after is not None:
             raise ValueError("give at or after, not both")
-        given = {("validate" if f == "validate_" else f) for f in self.model_fields_set} - _TIMING
+        given = {_ALIASES.get(f, f) for f in self.model_fields_set} - _TIMING - {"from"}
+        if self.from_ is not None and (self.do is not None or (self.expect is not None and self.expect.state)):
+            raise ValueError("from: only on frame assertions (expect.frame / expect_not / await_csms)")
         if self.do is not None:
             extra = sorted(given - {"do"} - ACTION_PARAMS[self.do])
             if extra:
@@ -279,7 +285,7 @@ class Track(_Strict):
     name: Optional[str] = None
     charger: Optional[str] = Field(None, min_length=1)
     for_each: Optional[ForEach] = None
-    repeat: int = Field(1, ge=1, le=10000)
+    repeat: int = Field(1, ge=1, le=MAX_REPEAT)
     steps: List[Step] = Field(min_length=1)
     generate: Optional[Any] = None
 
@@ -289,12 +295,14 @@ class Track(_Strict):
             raise ValueError("generate: generator tracks come with the traffic generator (v0.3 M4)")
         if (self.charger is None) == (self.for_each is None):
             raise ValueError("a track has exactly one of charger / for_each")
+        if self.repeat > 1 and any(s.at is not None and parse_time(s.at)[0] != "rel" for s in self.steps):
+            raise ValueError("a repeat track takes only relative times (at: +dur from the round start, after)")
         return self
 
 
 class ClockSpec(_Strict):
     start_at: Optional[datetime] = None        # sim clock anchor (the engine's clock restarts there)
-    time_scale: Optional[float] = Field(None, gt=0, le=100000)  # sim speed for this run (default: the config's)
+    time_scale: Optional[float] = Field(None, gt=0, le=3600)  # sim speed for this run (default: the config's)
 
 
 class Scenario(_Strict):
@@ -306,6 +314,9 @@ class Scenario(_Strict):
     params: Dict[str, Union[bool, int, float, str]] = Field(default_factory=dict)
     tracks: List[Track] = Field(min_length=1)
     until: Optional[TimeText] = None
+
+    #: The tracks as loaded, before ``${...}`` replacement (:func:`expand` validates the replaced steps).
+    _raw_tracks: Optional[List[Any]] = PrivateAttr(default=None)
 
 
 # ------------------------------------------------------------------ loading
@@ -324,10 +335,19 @@ def load_data(data: Any) -> Scenario:
         raise ScenarioError("a scenario is a mapping with format: ocppsim-scenario/1")
     if data.get("format") != FORMAT:
         raise ScenarioError(f"format: must be {FORMAT!r} (got {data.get('format')!r})")
+    # Pass 1: a whole-string ${...} may stand in any field (connector: "${conn}"), so the structure is checked
+    # with the parameters (and placeholders for the per-track names) put in; expand() checks the real values.
+    params = data.get("params") or {}
+    probe = data
+    if isinstance(params, dict) and isinstance(data.get("tracks"), list):
+        env = {**params, "charger": "CHARGER", "i": 1, "round": 1}
+        probe = {**data, "tracks": _subst(data["tracks"], env, "tracks")}
     try:
-        return Scenario.model_validate(data)
+        sc = Scenario.model_validate(probe)
     except ValidationError as e:
         raise ScenarioError(_errors(e)) from None
+    sc._raw_tracks = data.get("tracks")
+    return sc
 
 
 def load_text(text: str) -> Scenario:
@@ -372,6 +392,7 @@ class PlannedStep:
     id: str
     step: Step
     at: Optional[TimeSpec]
+    round: int = 0
 
 
 @dataclass(frozen=True)
@@ -393,7 +414,8 @@ def expand(sc: Scenario, charger_ids: List[str]) -> List[PlannedTrack]:
             if not targets:
                 raise ScenarioError(f"{loc}.for_each: no chargers")
         else:
-            targets = [str(_subst(tr.charger, dict(sc.params), f"{loc}.charger"))]
+            raw_charger = sc._raw_tracks[ti].get("charger") if sc._raw_tracks else tr.charger
+            targets = [str(_subst(raw_charger, dict(sc.params), f"{loc}.charger"))]
         for i, cid in enumerate(targets):
             if cid not in known:
                 where = f"{loc}.for_each.chargers" if tr.for_each is not None else f"{loc}.charger"
@@ -403,7 +425,9 @@ def expand(sc: Scenario, charger_ids: List[str]) -> List[PlannedTrack]:
                 env = {**sc.params, "charger": cid, "i": i, "round": r}
                 for si, st in enumerate(tr.steps):
                     sloc = f"{loc}.steps.{si}"
-                    data = _subst(st.model_dump(exclude_unset=True, by_alias=True), env, sloc)
+                    raw = (sc._raw_tracks[ti]["steps"][si] if sc._raw_tracks
+                           else st.model_dump(exclude_unset=True, by_alias=True))
+                    data = _subst(raw, env, sloc)
                     try:
                         s = Step.model_validate(data)
                     except ValidationError as e:
@@ -411,7 +435,7 @@ def expand(sc: Scenario, charger_ids: List[str]) -> List[PlannedTrack]:
                     sid = s.id or f"{si + 1}"
                     if tr.repeat > 1:
                         sid = f"{sid}#{r + 1}"
-                    steps.append(PlannedStep(sid, s, parse_time(s.at) if s.at is not None else None))
+                    steps.append(PlannedStep(sid, s, parse_time(s.at) if s.at is not None else None, r))
             base = tr.name or f"track{ti + 1}"
             name = f"{base}:{cid}" if tr.for_each is not None or tr.name is None else base
             out.append(PlannedTrack(name, cid, tuple(steps)))

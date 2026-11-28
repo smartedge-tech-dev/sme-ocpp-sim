@@ -172,7 +172,9 @@ def build_registry(app: Any) -> McpRegistry:
         destructive=True)
     add("expect_frame", "One-shot assertion: wait up to 'within' seconds for a frame in the log after seq "
         "'since' (default: now) matching charger / dir / action / message_type and payload matchers (dotted path "
-        "-> literal or {in, gt, ge, lt, le, re, exists}). Returns matched and the frame.", "POST",
+        "-> literal or {in, gt, ge, lt, le, re, exists}). Returns matched and the frame. Not to miss a frame caused "
+        "by your own action, read get_frames' last_seq before the action and pass it as since; a warning says "
+        "when since is older than the log (oldest_seq).", "POST",
         "/api/frames/expect", _obj(_model_props(ExpectFrameBody), cid=False), destructive=False)
 
     # ---- built-in Mini CSMS

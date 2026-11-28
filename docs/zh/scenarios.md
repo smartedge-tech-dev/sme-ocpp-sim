@@ -49,10 +49,10 @@ until: "+4h"                              # 可选的结束时刻（仿真时间
 | `repeat: n` | 步骤重复 n 次（`${round}` = 从 0 开始的轮次；步骤 id 加 `#1`、`#2` …） |
 | `clock.start_at` | 运行时让仿真时钟从此时刻重新开始（`at: "HH:MM"` 的基准） |
 | `clock.time_scale` | 本次运行的速度（结束后恢复）；CLI 的 `--time-scale` 优先 |
-| `until` | 运行结束；届时仍在执行的步骤判 fail |
+| `until` | 运行结束；届时仍在执行的步骤判 fail，尚未开始的步骤为 skipped（数量写入事件日志） |
 
 所有键都会检查（拼写错误报错并带位置，例如 `tracks.0.steps.2.do`）；充电桩 id 和 `${...}` 名称在运行前与当前配置核对。
-整个字符串为 `"${n}"` 时保持参数类型（数字、布尔）。不加引号的 `08:00` 也按时刻读取。
+整个字符串为 `"${n}"` 时保持参数类型（数字、布尔）。时刻请加引号（`"08:00"`）：不加引号时 YAML 读成数字，会报错。
 
 ### 定时
 
@@ -97,7 +97,11 @@ until: "+4h"                              # 可选的结束时刻（仿真时间
 - `expect.state`：`connector`、`status`、`has_transaction`、`power_w`、`soc_pct`、`meter_wh`、`online`、`connected`。
 - `expect_not`：帧条件；窗口内一出现匹配即 fail。
 - `await_csms`：等待来自 CSMS 的 CALL（CSMS 侧的操作员动作）；等待期间 `prompt` 显示在状态和事件日志中。
-- 帧从该 track **上一个动作步骤**开始时查找，因此断言开始前已到达的应答也能找到。连续的断言查看同一批帧。
+- 每个 track 有一个**帧游标**：从场景开始处起步；通过的 `expect.frame` / `await_csms` 把它移到匹配的帧
+  （有 `then` 时移到应答）；动作步骤把它移到动作开始时的最新帧（因此断言开始前已到达的应答也能找到）。
+  `expect_not` 和 `expect.state` 不移动它。帧断言默认在游标之后查找，所以同一动作写两个 `expect` 需要两帧。
+  `from: action` 改为从上一个动作开始处查找，`from: scenario_start` 从场景开始处查找。
+- `await_csms` 未设 `within` 时同样只等 30 秒实际时间；等待操作员时请设长一些。
 - `on_fail: stop`（默认）在步骤失败或被拒绝时结束整个场景；`continue` 则继续。
 
 **Matcher**（Q6：内置，不用 JSONPath，不嵌代码）：路径用点分隔，整数段为列表下标
@@ -144,4 +148,9 @@ Web UI 暂无场景面板；场景的 `log` 行及开始 / 结果显示在事件
 
 - 生成器 track（`generate:`，流量生成器）随 v0.3 M4 提供；在此之前 `seed` 只做记录。
 - `send` 注入充电桩 → CSMS 的 CALL；CSMS 侧步骤用 `await_csms`（或 Mini CSMS API）。
-- trace 文件是当前的帧日志格式；带版本的 trace 格式以后提供。
+- trace 文件是当前的帧日志格式（运行中边跑边写）；带版本的 trace 格式以后提供。
+- `repeat`（最多 1000 轮）中 `at: "+dur"` 从每轮开始计；不能用时刻 / 日期时间形式的 `at`。
+- `clock.time_scale` 运行后恢复（期间速度被改过则不恢复）；`clock.start_at` 让引擎的仿真时钟重新开始，运行后保持原样。
+- 每个充电桩最多保留 200 000 帧；需要已丢弃帧的断言以 "frame buffer overflowed" 判 fail。
+- `POST /api/frames/expect`：为免漏掉自己动作引起的帧，动作前先读 `last_seq`（`GET /api/frames`）并作为 `since`
+  传入；`since` 早于帧日志时，返回中带 `oldest_seq` 和 `warning`。

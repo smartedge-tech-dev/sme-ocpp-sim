@@ -378,6 +378,10 @@ class OcppEngine(BaseEngine):
                 self._launch(cid, e.runtime)
 
     async def stop(self) -> None:
+        runner = self.scenario
+        if runner is not None and runner.abort():  # a running scenario ends as aborted, with its cleanup
+            with contextlib.suppress(Exception):
+                await runner.wait()
         self._started = False
         self._stopping = True
         self._cancel_push_later()

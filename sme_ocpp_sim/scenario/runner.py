@@ -2,17 +2,24 @@
 clock and judges its assertions on the charger frame stream.
 
 - **Timing**: ``at`` / ``after`` / ``wait`` / ``within_sim`` / ``until`` are sim time (``engine.clock``, so they
-  follow ``time_scale`` and pause; Q2); ``within`` is wall time. OCPP timestamps on the wire stay wall time.
+  follow ``time_scale`` and pause; Q2); ``within`` is wall time. OCPP timestamps on the wire stay wall time. In a
+  ``repeat`` track ``at: "+dur"`` counts from the start of the round.
 - **Actions** go through :mod:`.ops`, like the web routes (same checks, same effects); ``wait`` / ``log`` are the
   runner's own.
-- **Frames**: the runner listens on ``engine.frame_listeners`` from its start and keeps every frame of its
-  chargers (independent of the frame log's ring size). An ``expect`` / ``expect_not`` / ``await_csms`` looks at
-  the frames after the start of the track's previous action step (frame seq), so an answer that came before the
-  assertion started is not missed.
+- **Frames**: the runner listens on ``engine.frame_listeners`` and keeps, per charger and ordered by seq, the
+  frames of the chargers a frame assertion can look at (independent of the frame log's ring size). Each track has
+  a **cursor**: it starts at the scenario start, a passing ``expect.frame`` / ``await_csms`` moves it to the
+  matched frame (with ``then``: the answer), an action step moves it to the newest frame seq when the action
+  started; ``expect_not`` / ``expect.state`` leave it. A frame assertion searches after the cursor (``from:
+  prev_step``, default), after the start of the previous action (``from: action``) or from the scenario start
+  (``from: scenario_start``). Frames no track can need any more are dropped; at most :data:`MAX_FRAMES` per
+  charger are kept, an assertion that would need a dropped one fails ("frame buffer overflowed").
 - **Failure**: a failed assertion or a rejected action with ``on_fail: stop`` (default) stops the whole scenario;
   ``continue`` goes on with the next step. Steps that did not run are ``skipped``.
-- **Result**: ``aborted`` (stopped from outside) > ``error`` (an action failed / setup failed) > ``fail`` >
-  ``pass``. ``until`` ends the run: a step still running then fails.
+- **Result**: ``aborted`` (stopped from outside, also by an engine stop) > ``error`` (an action failed / setup
+  failed) > ``fail`` > ``pass``. ``until`` ends the run: a step still running then fails, later ones are skipped.
+- **Clock**: ``clock.time_scale`` is restored afterwards unless someone changed the speed meanwhile;
+  ``clock.start_at`` restarts the engine's sim clock, which stays where the run left it.
 
 One scenario runs at a time (``engine.scenario``); its chargers are :attr:`ScenarioRunner.chargers` (the traffic
 generator, M4, pauses itself there: Q3).
@@ -21,13 +28,13 @@ generator, M4, pauses itself there: Q3).
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import bisect
 import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import IO, Any, Dict, List, Optional, Tuple
 
 from .. import __version__
 from ..framelog import FrameEntry
@@ -39,13 +46,19 @@ from .model import (DEFAULT_WITHIN_S, FrameSpec, PlannedStep, PlannedTrack, Scen
 log = logging.getLogger("sme_ocpp_sim.scenario")
 
 VERDICT_FORMAT = "ocppsim-verdict/1"
-#: Wall seconds between state checks of an assertion (frames wake it at once).
+#: Wall seconds between state checks of an assertion (frames of its charger wake it at once).
 POLL_S = 0.05
+#: Frames kept per charger at most (oldest dropped first).
+MAX_FRAMES = 200_000
 _REPLIES = ("CALLRESULT", "CALLERROR")
 
 
 class _Stop(Exception):
     """A step failed with ``on_fail: stop``: the scenario ends."""
+
+
+class _Overflow(Exception):
+    """A frame assertion needs frames the buffer has dropped."""
 
 
 @dataclass
@@ -60,27 +73,45 @@ class StepRecord:
     evidence: List[int] = field(default_factory=list)   # frame seqs
 
 
+@dataclass
+class _Buf:
+    seqs: List[int] = field(default_factory=list)
+    entries: List[FrameEntry] = field(default_factory=list)
+    dropped_upto: int = 0            # newest seq dropped by the size cap
+
+
 def _short(v: Any, n: int = 300) -> str:
     s = json.dumps(v, ensure_ascii=False, default=str)
     return s if len(s) <= n else s[: n - 3] + "..."
 
 
+def _uses_frames(s) -> bool:
+    return s.expect_not is not None or s.await_csms is not None or (s.expect is not None and s.expect.frame is not None)
+
+
 class ScenarioRunner:
+    max_frames = MAX_FRAMES
+
     def __init__(self, engine: Any, scenario: Scenario, *, source: Optional[str] = None) -> None:
         self.engine = engine
         self.scenario = scenario
         self.source = source
         self.tracks: List[PlannedTrack] = expand(scenario, list(engine.chargers))
         self.chargers = frozenset(t.charger for t in self.tracks)
+        self._frame_chargers = frozenset(t.charger for t in self.tracks if any(_uses_frames(s.step) for s in t.steps))
+        self._keep_all = {t.name for t in self.tracks if any(s.step.from_ == "scenario_start" for s in t.steps)}
         self.records: Dict[Tuple[str, str], StepRecord] = {
             (t.name, s.id): StepRecord(s.id, t.name, s.step.kind) for t in self.tracks for s in t.steps}
         self.state = "pending"                      # pending | running | done
         self.result: Optional[str] = None
         self.error: Optional[str] = None
         self.prompts: Dict[str, str] = {}
-        self.frames: List[FrameEntry] = []
         self.trace_path: Optional[str] = None
-        self._new_frame = asyncio.Event()
+        self._trace: Optional[IO[str]] = None
+        self._bufs: Dict[str, _Buf] = {c: _Buf() for c in self._frame_chargers}
+        self._payloads: Dict[int, Any] = {}
+        self._events: Dict[str, asyncio.Event] = {}
+        self._floors: Dict[str, Tuple[str, int]] = {}   # track -> (charger, lowest seq it may still search after)
         self._task: Optional[asyncio.Task] = None
         self._aborted = False
         self._end_reason: Optional[str] = None      # until | stop
@@ -130,11 +161,12 @@ class ScenarioRunner:
     def _wall(self) -> float:
         return time.monotonic() - self._w0
 
-    def _target(self, spec: Tuple[str, Any]) -> float:
-        """Sim seconds since the start at which ``spec`` (a parsed ``at`` / ``until``) falls."""
+    def _target(self, spec: Tuple[str, Any], base: float = 0.0) -> float:
+        """Sim seconds since the start at which ``spec`` (a parsed ``at`` / ``until``) falls; ``base`` = start of a
+        relative one."""
         kind, v = spec
         if kind == "rel":
-            return v
+            return base + v
         ref = self._ref
         if kind == "clock":
             t = ref.replace(hour=v.hour, minute=v.minute, second=v.second, microsecond=0)
@@ -152,42 +184,82 @@ class ScenarioRunner:
     # ------------------------------------------------------------ frames
 
     def _on_frame(self, e: FrameEntry) -> None:
-        if e.charger in self.chargers:
-            self.frames.append(e)
-            ev, self._new_frame = self._new_frame, asyncio.Event()
+        if e.charger not in self.chargers:
+            return
+        if self._trace is not None:
+            self._trace.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
+        buf = self._bufs.get(e.charger)
+        if buf is None:
+            return
+        buf.seqs.append(e.seq)
+        buf.entries.append(e)
+        if len(buf.entries) > self.max_frames:
+            cut = max(1, self.max_frames // 10)
+            buf.dropped_upto = buf.seqs[cut - 1]
+            self._drop(buf, cut)
+        ev = self._events.pop(e.charger, None)
+        if ev is not None:
             ev.set()
 
+    def _drop(self, buf: _Buf, n: int) -> None:
+        for x in buf.entries[:n]:
+            self._payloads.pop(x.seq, None)
+        del buf.seqs[:n], buf.entries[:n]
+
+    def _trim(self, cid: str) -> None:
+        """Drop the frames of ``cid`` no track can search any more (none for a track with ``from:
+        scenario_start``)."""
+        buf = self._bufs.get(cid)
+        if buf is None or any(c == cid and name in self._keep_all for name, (c, _) in self._floors.items()):
+            return
+        floors = [v for c, v in self._floors.values() if c == cid]
+        if not floors:
+            return
+        self._drop(buf, bisect.bisect_right(buf.seqs, min(floors)))
+
+    def _payload(self, e: FrameEntry) -> Any:
+        p = self._payloads.get(e.seq)
+        if p is None:
+            p = self._payloads[e.seq] = frame_payload(e.raw)
+        return p
+
     def _find(self, charger: str, since: int, spec: FrameSpec) -> List[FrameEntry]:
+        buf = self._bufs[charger]
+        if since < buf.dropped_upto:
+            raise _Overflow
         out = []
-        for e in self.frames:
-            if (e.seq <= since or e.charger != charger or (spec.dir and e.direction != spec.dir)
-                    or (spec.action and e.action != spec.action)
+        for e in buf.entries[bisect.bisect_right(buf.seqs, since):]:
+            if ((spec.dir and e.direction != spec.dir) or (spec.action and e.action != spec.action)
                     or (spec.message_type and e.message_type != spec.message_type)):
                 continue
-            if spec.payload and match_all(frame_payload(e.raw), spec.payload) is not None:
+            if spec.payload and match_all(self._payload(e), spec.payload) is not None:
                 continue
             out.append(e)
         return out
 
     def _reply(self, call: FrameEntry) -> Optional[FrameEntry]:
-        for e in self.frames:
-            if (e.seq > call.seq and e.charger == call.charger and e.uid == call.uid
-                    and e.direction != call.direction and e.message_type in _REPLIES):
+        buf = self._bufs[call.charger]
+        for e in buf.entries[bisect.bisect_right(buf.seqs, call.seq):]:
+            if e.uid == call.uid and e.direction != call.direction and e.message_type in _REPLIES:
                 return e
         return None
 
-    async def _until(self, deadline: Tuple[str, float]) -> bool:
-        """Wait for a new frame or the next poll; False once ``deadline`` (``("wall"|"sim", t)``) has passed."""
+    async def _until(self, deadline: Tuple[str, float], cid: str) -> bool:
+        """Wait for a new frame of ``cid`` or the next poll; False once ``deadline`` (``("wall"|"sim", t)``) has
+        passed."""
         kind, t = deadline
         now = self._wall() if kind == "wall" else self._sim()
         if now >= t:
             return False
         left = t - now if kind == "wall" else self.clock.to_wall(t - now)
-        ev = self._new_frame
+        ev = self._events.get(cid)
+        if ev is None:
+            ev = self._events[cid] = asyncio.Event()
+        waiter = asyncio.ensure_future(ev.wait())   # asyncio.wait: a racing cancellation is never swallowed
         try:
-            await asyncio.wait_for(ev.wait(), min(POLL_S, max(left, 0.001)))
-        except asyncio.TimeoutError:
-            pass
+            await asyncio.wait({waiter}, timeout=min(POLL_S, max(left, 0.001)))
+        finally:
+            waiter.cancel()
         return True
 
     def _deadline(self, step) -> Tuple[str, float]:
@@ -243,19 +315,19 @@ class ScenarioRunner:
                     return True
                 r = self._reply(e)
                 if r is None:
-                    why = f"no answer yet to seq {e.seq}"
+                    if not rec.evidence:
+                        why, rec.evidence = f"no answer yet to seq {e.seq}", [e.seq]
                     continue
                 if then.message_type and r.message_type != then.message_type:
-                    why = f"answer seq {r.seq} is a {r.message_type}"
-                    rec.evidence = [e.seq, r.seq]
+                    why, rec.evidence = f"answer seq {r.seq} is a {r.message_type}", [e.seq, r.seq]
                     continue
-                miss = match_all(frame_payload(r.raw), then.payload) if then.payload else None
+                miss = match_all(self._payload(r), then.payload) if then.payload else None
                 if miss is None:
                     rec.evidence = [e.seq, r.seq]
                     rec.message = f"{what}: seq {e.seq}, answer seq {r.seq}"
                     return True
                 why, rec.evidence = f"answer seq {r.seq}: {miss}", [e.seq, r.seq]
-            if not await self._until(deadline):
+            if not await self._until(deadline, cid):
                 rec.message = f"{what}: no match within {self._window(ps.step)}" + (f" ({why})" if why else "")
                 return False
 
@@ -276,7 +348,7 @@ class ScenarioRunner:
             if miss is None:
                 rec.message = f"state of connector {spec.connector}: {_short(values)}"
                 return True
-            if not await self._until(deadline):
+            if not await self._until(deadline, cid):
                 rec.message = f"state of connector {spec.connector} within {self._window(ps.step)}: {miss}"
                 return False
 
@@ -290,7 +362,7 @@ class ScenarioRunner:
                 rec.message = f"unwanted frame seq {hit[0].seq} ({hit[0].direction} {hit[0].message_type} " \
                               f"{hit[0].action})"
                 return False
-            if not await self._until(deadline):
+            if not await self._until(deadline, cid):
                 rec.message = f"no such frame within {self._window(ps.step)}"
                 return True
 
@@ -307,19 +379,25 @@ class ScenarioRunner:
             self.prompts.pop(track, None)
 
     async def _track(self, tr: PlannedTrack) -> None:
-        since = self._seq0
+        cursor = action_mark = self._seq0
+        self._floors[tr.name] = (tr.charger, cursor)
+        round_no, round_start = -1, self._sim()
         for ps in tr.steps:
             rec = self.records[(tr.name, ps.id)]
             s = ps.step
+            if ps.round != round_no:
+                round_no, round_start = ps.round, self._sim()
             if ps.at is not None:
-                await self._sleep_until(self._target(ps.at))
+                await self._sleep_until(self._target(ps.at, round_start))
             elif s.after:
                 await self.clock.sleep_sim(s.after)
             rec.status, rec.t_wall, rec.t_sim = "running", round(self._wall(), 3), round(self._sim(), 3)
+            since = {"action": action_mark, "scenario_start": self._seq0}.get(s.from_ or "prev_step", cursor)
             try:
                 if s.do is not None:
                     if s.do not in ("wait", "log"):
-                        since = self.engine.frame_log.last_seq
+                        action_mark = self.engine.frame_log.last_seq
+                        cursor = max(cursor, action_mark)
                     await self._do(tr.charger, ps, rec)
                     ok = True
                 elif s.expect is not None and s.expect.frame is not None:
@@ -331,9 +409,15 @@ class ScenarioRunner:
                     ok = await self._expect_not(tr.charger, since, ps, rec)
                 else:
                     ok = await self._await_csms(tr.charger, since, ps, rec, tr.name)
+                if ok and s.do is None and s.expect_not is None and rec.evidence:
+                    cursor = max(cursor, *rec.evidence)
                 rec.status = "pass" if ok else "fail"
             except ops.OpError as e:
                 rec.status, rec.message = "error", f"{e.kind}: {e}"
+            except _Overflow:
+                rec.status, rec.message = "fail", f"frame buffer overflowed (more than {self.max_frames} frames)"
+            self._floors[tr.name] = (tr.charger, min(cursor, action_mark))
+            self._trim(tr.charger)
             if rec.status != "pass":
                 log.info("scenario %s: %s %s %s: %s", self.scenario.name, tr.name, ps.id, rec.status, rec.message)
                 if s.on_fail == "stop":
@@ -348,7 +432,10 @@ class ScenarioRunner:
         eng.frame_listeners.append(self._on_frame)
         tasks: List[asyncio.Task] = []
         watch: List[asyncio.Task] = []
+        cancelled = False
         try:
+            if self.trace_path:
+                self._trace = open(self.trace_path, "w", encoding="utf-8")
             if sc.clock.time_scale is not None:
                 self._scale_before = eng.time_scale
                 eng.set_running(time_scale=sc.clock.time_scale)
@@ -367,8 +454,7 @@ class ScenarioRunner:
                 if any(t in watch for t in done):
                     self._end_reason = "until"
                     break
-                stop = next((t for t in done if not t.cancelled() and isinstance(t.exception(), _Stop)), None)
-                if stop is not None:
+                if any(not t.cancelled() and isinstance(t.exception(), _Stop) for t in done):
                     self._end_reason = "stop"
                     break
                 broken = next((t for t in done if not t.cancelled() and t.exception() is not None), None)
@@ -377,8 +463,7 @@ class ScenarioRunner:
                 if not (pending - set(watch)):
                     break
         except asyncio.CancelledError:
-            if not self._aborted:
-                raise
+            cancelled = not self._aborted
         except ScenarioError as e:
             self.error = str(e)
         except Exception as e:  # noqa: BLE001 - an internal error is a verdict "error", not a crash
@@ -387,16 +472,31 @@ class ScenarioRunner:
         finally:
             for t in tasks + watch:
                 t.cancel()
-            await asyncio.gather(*tasks, *watch, return_exceptions=True)
-            with contextlib.suppress(ValueError):
-                eng.frame_listeners.remove(self._on_frame)
-            if self._scale_before is not None:
-                eng.set_running(time_scale=self._scale_before)
-            self._finish()
+            try:
+                await asyncio.gather(*tasks, *watch, return_exceptions=True)
+            except asyncio.CancelledError:   # cancelled again while cleaning up: finish the cleanup first
+                cancelled = True
+            self._cleanup()
+        if cancelled:
+            raise asyncio.CancelledError
         return self.verdict()
 
+    def _cleanup(self) -> None:
+        eng, sc = self.engine, self.scenario
+        if self._on_frame in eng.frame_listeners:
+            eng.frame_listeners.remove(self._on_frame)
+        if self._trace is not None:
+            self._trace.close()
+            self._trace = None
+        if self._scale_before is not None and eng.time_scale == sc.clock.time_scale:
+            eng.set_running(time_scale=self._scale_before)   # not when someone changed the speed meanwhile
+        self._finish()
+
     def _finish(self) -> None:
+        if self.state == "done":
+            return
         self._wall_s, self._sim_s = self._wall(), self._sim()
+        not_run = 0
         for r in self.records.values():
             if r.status == "running":
                 if self._aborted:
@@ -406,7 +506,11 @@ class ScenarioRunner:
                 else:
                     r.status, r.message = "skipped", "scenario stopped"
             elif r.status == "pending":
-                r.status = "skipped"
+                r.status, not_run = "skipped", not_run + 1
+                if self._end_reason == "until":
+                    r.message = "scenario until reached before the step started"
+        if self._end_reason == "until" and not_run:
+            log.info("scenario %s: until reached, %d step(s) not run", self.scenario.name, not_run)
         statuses = {r.status for r in self.records.values()}
         if self._aborted:
             self.result = "aborted"
@@ -418,7 +522,11 @@ class ScenarioRunner:
             self.result = "pass"
         self.state = "done"
         self.prompts.clear()
-        self.engine.log_event("scenario", f"scenario {self.scenario.name}: {self.result}")
+        self._bufs.clear()
+        self._payloads.clear()
+        self.engine.log_event("scenario", f"scenario {self.scenario.name}: {self.result}"
+                              + (f" (until reached, {not_run} step(s) not run)" if self._end_reason == "until"
+                                 and not_run else ""))
 
     # ------------------------------------------------------------ reports
 
@@ -439,7 +547,7 @@ class ScenarioRunner:
         return {"state": self.state, "name": self.scenario.name, "result": self.result, "error": self.error,
                 "started": self._started_at.isoformat() if self._started_at else None,
                 "wall_s": round(self._wall() if running else self._wall_s, 3),
-                "sim_s": round(self._sim() if running else self._sim_s, 3),
+                "sim_s": round(max(0.0, self._sim()) if running else self._sim_s, 3),
                 "sim_time": self.clock.now_sim().isoformat() if running else None,
                 "steps": self._counts(), "tracks": tracks,
                 "prompts": [{"track": k, "prompt": v} for k, v in self.prompts.items()]}
@@ -450,8 +558,3 @@ class ScenarioRunner:
                 "started": self._started_at.isoformat() if self._started_at else None,
                 "wall_s": round(self._wall_s, 3), "sim_s": round(self._sim_s, 3), "tool_version": __version__,
                 "trace": self.trace_path, "steps": [asdict(r) for r in self.records.values()]}
-
-    def trace_jsonl(self) -> str:
-        """The recorded frames of the scenario's chargers as JSON lines (the frame log's export format)."""
-        return "".join(json.dumps(e.to_dict(), ensure_ascii=False) + "\n" for e in self.frames)
-
