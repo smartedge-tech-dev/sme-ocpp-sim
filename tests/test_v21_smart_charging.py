@@ -334,6 +334,8 @@ def test_v2x_discharge_round_trip():
                                   "dischargeLimit": -5000, "limit": 7000}], tx=tx, pid=3)
                 assert (await _call(csms, v, "SetChargingProfile", _set(1, profile)))["status"] == "Accepted"
                 await _until(lambda: _conn(rt)["power_w"] == -3000.0)
+                # The EV charged briefly before the profile arrived; from here on the import register must hold.
+                import_wh = _conn(rt)["meter_wh"]
                 assert _conn(rt)["operation_mode"] == "CentralSetpoint"
                 await _until(lambda: any("OperationModeChanged" in f and "CentralSetpoint" in f
                                          for f in _frames(csms, "TransactionEvent")))
@@ -345,7 +347,7 @@ def test_v2x_discharge_round_trip():
                     {"startPeriod": 0, "limit": 7000.0, "dischargeLimit": -5000.0, "setpoint": -3000.0,
                      "operationMode": "CentralSetpoint"}]
                 await _until(lambda: _conn(rt)["energy_export_wh"] > 0)  # (the SoC drop: the physics tests)
-                assert _conn(rt)["meter_wh"] == 0.0  # the import register does not move while discharging
+                assert _conn(rt)["meter_wh"] == import_wh  # the import register does not move while discharging
                 assert (await _call(csms, v, "ClearChargingProfile", {"chargingProfileId": 3}))["status"] == \
                     "Accepted"
                 await _until(lambda: _conn(rt)["power_w"] > 0)
