@@ -79,6 +79,8 @@ log = logging.getLogger(__name__)
 
 #: Connector fields pushed as ``values``; the rest of a charger snapshot is ``charger_state``.
 VALUE_KEYS = ("power_w", "meter_wh", "soc_pct")
+#: Measured values only some versions report (OCPP 2.1: the export register); pushed with the values when present.
+OPTIONAL_VALUE_KEYS = ("energy_export_wh",)
 #: Push messages whose loss makes the next push to that subscriber a full one.
 _STATE_TYPES = ("charger_state", "values", "reload")
 
@@ -131,8 +133,9 @@ def _split(snap: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """A charger snapshot without the measured values, and the values per connector."""
     conns, values = [], []
     for c in snap["connectors"]:
-        conns.append({k: v for k, v in c.items() if k not in VALUE_KEYS})
-        values.append({"id": c["id"], **{k: c[k] for k in VALUE_KEYS}})
+        conns.append({k: v for k, v in c.items() if k not in VALUE_KEYS and k not in OPTIONAL_VALUE_KEYS})
+        values.append({"id": c["id"], **{k: c[k] for k in VALUE_KEYS},
+                       **{k: c[k] for k in OPTIONAL_VALUE_KEYS if k in c}})
     return {**snap, "connectors": conns}, values
 
 

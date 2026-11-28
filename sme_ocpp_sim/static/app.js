@@ -335,7 +335,9 @@ function renderVersionParts(c) {
 // The cards and the connector select are rebuilt only when the charger or its connector set changes; otherwise a
 // card is replaced only when its state (status, plug, transaction, error) changed.
 const cardSig = (x) => JSON.stringify([x.status, x.plugged, x.error_code, x.transaction, x.pending_tag,
-  x.reservation]);
+  x.reservation, x.operation_mode, x.priority_charging]);
+// Signed power: OCPP 2.1 V2X discharge is negative (charging.power).
+const powerText = (w) => `${kw(w)} kW${w < 0 ? ` (${t("detail.discharging")})` : ""}`;
 function renderConnectors(c, fresh) {
   const box = $("connectors"), conns = c.connectors || [];
   const sig = JSON.stringify([c.id, conns.map((x) => x.id)]);
@@ -380,8 +382,11 @@ function card(c, x) {
       kv("detail.id_tag", tag || "-"),
       kv("detail.transaction", txId != null ? String(txId) : "-"),
       x.reservation ? kv("detail.reservation", `#${x.reservation.id} ${x.reservation.id_tag}`) : null,
-      kv("detail.power", `${kw(x.power_w)} kW`, "power"),
+      kv("detail.power", powerText(x.power_w), "power"),
       kv("detail.energy", `${kwh(x.meter_wh)} kWh`, "energy"),
+      x.energy_export_wh != null ? kv("detail.energy_export", `${kwh(x.energy_export_wh)} kWh`, "export") : null,
+      x.operation_mode ? kv("detail.operation_mode",
+        x.operation_mode + (x.priority_charging ? ` (${t("detail.priority")})` : "")) : null,
       kv("detail.soc", pct(x.soc_pct), "soc")),
     h("div", { class: "card-ops" },
       btn("op.plug", () => op(id, "plug", { connector: conn }), { disabled: x.plugged }),
@@ -400,8 +405,9 @@ function patchCards(c) {
     const el = document.querySelector(`#connectors .card[data-conn="${CSS.escape(String(x.id))}"]`);
     if (!el) continue;
     const set = (k, v) => { const e = el.querySelector(`[data-k="${k}"]`); if (e) e.textContent = v; };
-    set("power", `${kw(x.power_w)} kW`);
+    set("power", powerText(x.power_w));
     set("energy", `${kwh(x.meter_wh)} kWh`);
+    if (x.energy_export_wh != null) set("export", `${kwh(x.energy_export_wh)} kWh`);
     set("soc", pct(x.soc_pct));
     const bar = el.querySelector('[data-k="socbar"]');
     if (bar) bar.style.width = `${x.soc_pct || 0}%`;
