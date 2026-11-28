@@ -60,6 +60,8 @@ id as `cid`; connector numbers start at 1.
 | `get_traffic` | `GET /api/traffic` | Standing [traffic](traffic.md): state, counters, power |
 | `set_traffic` | `PUT /api/traffic` | Replace the `traffic:` block |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | Start / stop the standing traffic |
+| `get_trace` / `start_trace` / `stop_trace` | `GET /api/trace`, `POST /api/trace/start` / `stop` | [Trace](trace-replay.md) recording |
+| `analyze_frames` | `GET /api/frames/analyze` | Analysis of the frame log |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | The planned arrivals (deterministic for a seed) |
 | `expect_frame` | `POST /api/frames/expect` | Wait for a frame matching filters and payload matchers |
 

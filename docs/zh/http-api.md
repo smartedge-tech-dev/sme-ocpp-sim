@@ -153,6 +153,10 @@ connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_
 
 帧日志只包含 OCPP 帧，不含 HTTP 头和密码。
 
+## Trace { #trace }
+
+`GET /api/trace`、`POST /api/trace/start` / `stop`、`GET /api/trace/files[/{file}[/analyze]]`、`GET /api/frames/analyze`、`GET /api/frames.jsonl?format=v1`：详见 [Trace 录制与分析](trace-replay.md#http-api)。
+
 ## 场景 { #scenarios }
 
 | 方法 | 路径 | 含义 |

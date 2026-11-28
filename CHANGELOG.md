@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mini CSMS: `transaction_limit` is sent in the answer to every 2.1 TransactionEvent `Started`; the tariff, the
   transaction limit and the reported cost of a transaction are kept and shown, and an AvailabilityState NotifyEvent
   updates the connector status. The Web UI shows a 2.1 transaction's limits and running cost (en / ja / zh).
+- Trace format `ocppsim-trace/1` (v0.3.2 M5): JSON Lines with a versioned header (tool version, time scale,
+  chargers with OCPP version and credential-free CSMS URL), frame lines (frame log fields + `sim_t`), event lines
+  (connection lifecycle, operator / scenario actions, clock and charger-list changes) and a footer with the dropped
+  line count. Header-less `frames.jsonl` files are read as version 0.
+- Streaming trace recorder: bounded queue + background writer (never blocks the simulator), size rotation
+  (`trace.rotate_mb`, parts chained by the footer), secrets masked as in the frame log. Record with the config
+  `trace.path`, `--trace FILE`, the frame log's **Record trace** button or `POST /api/trace/start|stop`
+  (`GET /api/trace`, `GET /api/trace/files[/{file}]`); web-started scenarios record their own trace, and
+  `scenario run --trace` now writes format v1.
+- `sme-ocpp-sim analyze TRACE [--json] [--charger ID] [--ocpp-version V]`, `GET /api/frames/analyze` and
+  `GET /api/trace/files/{file}/analyze`: `ocppsim-analysis/1` report (per-action counts, errors, unanswered calls,
+  latency p50 / p95 / max; connections, boots, heartbeat intervals; transactions with Δ meter and 2.0.1 `seqNo`
+  gaps; unpaired / duplicate uids and concurrent CALLs; Smart Charging profile timeline).
+- `GET /api/frames.jsonl?format=v1` (default unchanged); MCP tools `get_trace`, `start_trace`, `stop_trace`,
+  `analyze_frames`. New docs page *Trace recording and analysis* (en / ja / zh).
 
 ### Changed
 
@@ -41,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   operationMode now apply), then with the 2.0.1 RequestStart rules.
 - OCPP 2.1 SetChargingProfile rejects `limit_L2` / `limit_L3` outside a TxProfile or without `limit` with
   `PhaseConflict` (K01.FR.143 - FR.146).
+
+- `scenario run --trace FILE` writes an `ocppsim-trace/1` file (header, typed lines, footer) instead of bare
+  frame log entries.
 
 ## [0.3.1] - 2026-11-28
 

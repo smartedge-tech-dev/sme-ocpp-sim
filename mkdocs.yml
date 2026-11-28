@@ -85,6 +85,7 @@ nav:
       - mini-csms.md
       - scenarios.md
       - traffic.md
+      - trace-replay.md
       - http-api.md
       - mcp.md
       - development.md
