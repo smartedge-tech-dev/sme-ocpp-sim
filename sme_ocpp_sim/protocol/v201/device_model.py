@@ -72,8 +72,13 @@ Interpretations (not defined by the spec)
   OCPPCommCtrlr.ResetRetries (2.1.14)           integer    ReadOnly    fixed: 0 (a Reset never fails)
   SampledDataCtrlr.TxUpdatedInterval            integer s  ReadWrite   periodic Updated interval (0 = none;
                                                                        ``meter_sample_interval_s`` / 60)
-  SampledDataCtrlr.TxEndedInterval (2.7.8)      integer s  ReadOnly    fixed: 0 (only the start and end
-                                                                       readings are sent)
+  SampledDataCtrlr.TxEndedInterval (2.7.8)      integer s  ReadWrite   Ended meterValue sampling interval
+                                                                       from the start (0 = only the start
+                                                                       and end readings; default 0)
+  AlignedDataCtrlr.TxEndedInterval              integer s  ReadWrite   clock-aligned interval of the Ended
+                                                                       meterValue (0 = none; default 0)
+  AlignedDataCtrlr.TxEndedMeasurands            MemberList ReadWrite   readings at those boundaries; also
+                                                                       at the start / end (default empty)
   SampledDataCtrlr.TxStartedMeasurands /        MemberList ReadWrite   readings of Started / Updated /
   TxUpdatedMeasurands / TxEndedMeasurands                              Ended; maxLimit (implementer
   (2.7.9 ..)                                                           defined) = length of the full list
@@ -244,6 +249,9 @@ TX_UPDATED_INTERVAL = (SAMPLED_DATA, "TxUpdatedInterval")
 TX_STARTED_MEASURANDS = (SAMPLED_DATA, "TxStartedMeasurands")
 TX_UPDATED_MEASURANDS = (SAMPLED_DATA, "TxUpdatedMeasurands")
 TX_ENDED_MEASURANDS = (SAMPLED_DATA, "TxEndedMeasurands")
+TX_ENDED_INTERVAL = (SAMPLED_DATA, "TxEndedInterval")
+ALIGNED_TX_ENDED_INTERVAL = (ALIGNED_DATA, "TxEndedInterval")
+ALIGNED_TX_ENDED_MEASURANDS = (ALIGNED_DATA, "TxEndedMeasurands")
 ALIGNED_MEASURANDS = (ALIGNED_DATA, "Measurands")
 EV_CONNECTION_TIMEOUT = (TX, "EVConnectionTimeOut")
 LIMIT_CHANGE_SIGNIFICANCE = (SMART_CHARGING, "LimitChangeSignificance")
@@ -705,11 +713,13 @@ def standard_variables(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_T
         ro((OCPP_COMM, "UnlockOnEVSideDisconnect"), DT.boolean, "true"),
         ro((OCPP_COMM, "ResetRetries"), DT.integer, "0"),
         var(TX_UPDATED_INTERVAL, DT.integer, str(tx_updated_interval_s), unit="s", min_limit=0),
-        ro((SAMPLED_DATA, "TxEndedInterval"), DT.integer, "0", unit="s"),
+        var(TX_ENDED_INTERVAL, DT.integer, "0", unit="s", min_limit=0),
         var(TX_STARTED_MEASURANDS, DT.member_list, ",".join(started), values_list=meas, max_limit=meas_max),
         var(TX_UPDATED_MEASURANDS, DT.member_list, ",".join(updated), values_list=meas, max_limit=meas_max),
         var(TX_ENDED_MEASURANDS, DT.member_list, ",".join(ended), values_list=meas, max_limit=meas_max),
         var(ALIGNED_MEASURANDS, DT.member_list, ",".join(DEFAULT_ALIGNED), values_list=meas, max_limit=meas_max),
+        var(ALIGNED_TX_ENDED_INTERVAL, DT.integer, "0", unit="s", min_limit=0),
+        var(ALIGNED_TX_ENDED_MEASURANDS, DT.member_list, "", values_list=meas, max_limit=meas_max),
         var(AUTH_ENABLED, DT.boolean, _b(mode != "accept_all")),
         var(AUTHORIZE_REMOTE_START, DT.boolean, "false"),
         var(LOCAL_PRE_AUTHORIZE, DT.boolean, _b(local_first)),

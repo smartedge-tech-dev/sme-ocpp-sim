@@ -54,6 +54,15 @@ class ConfigStore:
             if d is None:
                 raise ValueError(f"unknown configuration key {key!r}")
             norm = normalize(d, value)
+            if norm is None and d.type is KeyType.CSL and d.allowed is not None:
+                # A YAML / template / Excel value may list items the simulator does not support (e.g. a measurand
+                # the meter does not report): drop them instead of refusing the whole configuration.
+                # ChangeConfiguration still Rejects them (set()).
+                items = [p.strip() for p in str(value).split(",") if p.strip()]
+                dropped = [p for p in items if p not in d.allowed]
+                if dropped:
+                    log.warning("configuration key %s: unsupported item(s) %s dropped", key, ", ".join(dropped))
+                norm = normalize(d, ",".join(p for p in items if p in d.allowed))
             if norm is None:
                 raise ValueError(f"configuration key {key!r}: {value!r} is not a valid {d.type.value}")
             self._values[key] = norm  # overrides may set readonly keys
@@ -113,6 +122,9 @@ class ConfigStore:
             return ConfigStatus.REJECTED
         norm = normalize(d, value)
         if norm is None:
+            return ConfigStatus.REJECTED
+        limit = self._defs.get(key + "MaxLength")  # e.g. StopTxnSampledDataMaxLength (§9.1.28)
+        if d.type is KeyType.CSL and limit is not None and norm and len(norm.split(",")) > int(self._values[limit.name]):
             return ConfigStatus.REJECTED
         changed = self._values[key] != norm
         self._values[key] = norm

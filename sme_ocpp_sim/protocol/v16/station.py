@@ -28,6 +28,17 @@ sent by ONE worker per session that runs once the boot is accepted:
   StopTransaction are never dropped *by this bound*; they are still dropped after ``TransactionMessageAttempts``
   failed attempts or an internal error.
 
+Transaction meter data (§3.16.1, §9.1.25 / §9.1.27, v0.2.2 B): StopTransaction.req ``transactionData`` holds a
+reading of the StopTxnSampledData measurands every MeterValueSampleInterval from the start of the transaction
+(context ``Sample.Periodic``), one of the StopTxnAlignedData measurands at every ClockAlignedDataInterval
+boundary (``Sample.Clock``), and the StopTxnSampledData reading at the end (``Transaction.End``); both keys empty
+= no meter values at all (§3.16.5). The readings are taken on the tick (``charging.tx_data``); at most
+``meter.tx_data_max_samples`` interval readings are kept. ChangeConfiguration of a measurand key Rejects a
+measurand the meter does not report and a list longer than its ``*MaxLength`` key (§3.16.4). Simulator options
+(``config.MeterOptions``): ``begin_end_messages`` adds MeterValues ``Transaction.Begin`` / ``Transaction.End``
+around the transaction, ``phase_values`` reports Voltage / Current.Import per phase, ``post_tx_delay_s`` holds
+the StopTransaction (and what is queued behind it) for that long after the end.
+
 Power model and smart charging (M4b, design §3.2 / §3.3): the station owns a :class:`ProfileStore`. While a
 transaction is charging (StartTransaction answered), the connector's power model is stepped every ``tick_s`` and
 before every meter reading / StopTransaction: ``composite.limit_at`` (the evaluator that also answers
@@ -152,6 +163,7 @@ from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Option
 
 from ...charging import power
 from ...charging.power import PowerState
+from ...charging.tx_data import TxDataBuffer, TxReading
 from ...rpc import CallError, wait_event
 from ...rpc.transport import derived_security_profile
 from ...runtime.local_auth import AuthCache, LocalAuthList, Reservation
@@ -199,6 +211,8 @@ _INTERVAL_KEYS = (HEARTBEAT_KEY, SAMPLE_KEY)
 CONNECTORS_KEY = "NumberOfConnectors"
 SAMPLED_DATA_KEY = "MeterValuesSampledData"
 STOP_SAMPLED_DATA_KEY = "StopTxnSampledData"
+STOP_ALIGNED_DATA_KEY = "StopTxnAlignedData"
+ALIGNED_INTERVAL_KEY = "ClockAlignedDataInterval"
 ATTEMPTS_KEY = "TransactionMessageAttempts"
 RETRY_INTERVAL_KEY = "TransactionMessageRetryInterval"
 STOP_ON_INVALID_KEY = "StopTransactionOnInvalidId"
@@ -230,6 +244,9 @@ class _Stop:
     timestamp: datetime
     reason: R
     samples: List[d.Sample]
+    readings: List[TxReading]               # transactionData before the end reading
+    end_meter: List[d.Sample]               # meter.begin_end_messages: the Transaction.End MeterValues
+    not_before: Optional[float] = None      # monotonic time the StopTransaction may go out (post_tx_delay_s)
 
 
 @dataclass
@@ -241,6 +258,8 @@ class _Tx:
     ended: Optional[_Stop] = None  # set when the transaction ended (maybe before tx_id arrived)
     profile: Optional[ChargingProfile] = None  # RemoteStart TxProfile, installed once tx_id is known
     reservation_id: Optional[int] = None  # the reservation this transaction used (StartTransaction.req)
+    data: Optional[TxDataBuffer] = None   # readings for transactionData (StopTxnSampledData / AlignedData)
+    begin_sent: bool = False              # meter.begin_end_messages: the Transaction.End MeterValues pairs it
 
 
 @dataclass
@@ -289,6 +308,7 @@ class _OutMsg:
     tx: Optional[_Tx] = None
     result: Optional[asyncio.Future] = None  # StartTransaction: AuthResult for the waiting caller
     failures: int = 0
+    not_before: Optional[float] = None  # monotonic time before which it is not sent (meter.post_tx_delay_s)
 
     @property
     def transactional(self) -> bool:
@@ -507,6 +527,8 @@ class Station16(VersionStation):
                 try:
                     if msg.failures:
                         await asyncio.sleep(self.store.get_int(RETRY_INTERVAL_KEY) * msg.failures)
+                    if msg.not_before is not None:
+                        await asyncio.sleep(max(0.0, msg.not_before - self.host.monotonic()))
                     out = await self._deliver(msg)
                 finally:
                     self._outq_busy = None
@@ -871,12 +893,23 @@ class Station16(VersionStation):
 
     def _samples(self, c: _Conn, measurands: Iterable[str]) -> List[d.Sample]:
         """Readings of the configured measurands (others are skipped; SoC only while an EV charges).
-        Current.Import is the balanced per-phase current, reported once without a phase."""
+        Current.Import is the balanced per-phase current, reported once without a phase unless
+        ``meter.phase_values`` asks for one value per phase (Voltage too)."""
         r = power.meter_reading(c.pw, self.ev, self.supply) if c.pw is not None else None
         watts = r.power_active_import_w if r else 0.0
         amps = r.current_import_a if r else 0.0
+        mode = self.cfg.meter.phase_values
         out: List[d.Sample] = []
         for name in measurands:
+            if mode != "off" and name == VOLTAGE:
+                out += [d.Sample(name, v, "V", phase=p, location=LOCATION)
+                        for p, v in power.phase_voltages(self.supply, mode)]
+                continue
+            if mode != "off" and name == CURRENT:
+                used = r.phases if r else self.supply.phases_used(self.ev)
+                out += [d.Sample(name, round(a, CURRENT_DECIMALS), "A", phase=p, location=LOCATION)
+                        for p, a in power.phase_currents(amps, self.supply, used)]
+                continue
             if name == ENERGY:
                 out.append(d.Sample(name, round(c.meter_wh), "Wh", location=LOCATION))
             elif name == POWER:
@@ -927,6 +960,25 @@ class Station16(VersionStation):
             if c.pw is not None:
                 self._advance(c)
                 self._refresh(c)  # Charging <-> SuspendedEV / SuspendedEVSE
+            self._collect_tx_data(c)
+
+    def _collect_tx_data(self, c: _Conn) -> None:
+        """Take the due transactionData readings of ``c`` (StopTxnSampledData / StopTxnAlignedData)."""
+        tx = c.tx
+        if tx is None or tx.data is None:
+            return
+        data, evicted = tx.data, tx.data.evicted
+        at = data.sampled_due(self.host.monotonic(), self.store.get_int(SAMPLE_KEY))
+        if at is not None:
+            data.add_sampled(TxReading(at, self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)),
+                                       "Sample.Periodic"))
+        at = data.aligned_due(self.host.clock(), self.store.get_int(ALIGNED_INTERVAL_KEY))
+        if at is not None:
+            data.add_aligned(TxReading(at, self._samples(c, self.store.get_csl(STOP_ALIGNED_DATA_KEY)),
+                                       "Sample.Clock"))
+        if data.evicted and not evicted:
+            log.warning("%s: connector %d: transactionData exceeds meter.tx_data_max_samples (%d), oldest readings "
+                        "dropped", self.cfg.id, c.id, data.max_readings)
 
     def _bind_profile(self, c: _Conn, tx: _Tx) -> None:
         """Install the RemoteStart TxProfile for the transaction it started (§5.16.2)."""
@@ -978,6 +1030,7 @@ class Station16(VersionStation):
         self._clear_pending(c)
         tx = c.tx = _Tx(tag, int(round(c.meter_wh)), self.host.clock(), profile=profile,
                         reservation_id=reservation_id)
+        tx.data = TxDataBuffer(self.host.monotonic(), tx.started_at, self.cfg.meter.tx_data_max_samples)
         c.last_mono = self.host.monotonic()
         self._refresh(c)  # Preparing
         ev = d.TxStarted(c.id, tx.id_tag, tx.meter_start_wh, tx.started_at, reservation_id=reservation_id)
@@ -997,7 +1050,8 @@ class Station16(VersionStation):
             # transaction, so its StopTransaction goes out next.
             tx.tx_id = res.tx_id
             if tx.ended is not None:
-                self._outq_push(self._stop_msg(c, tx), front=True)
+                for msg in reversed(self._stop_msgs(c, tx)):
+                    self._outq_push(msg, front=True)
             return A.ACCEPTED
         tx.tx_id = res.tx_id
         if not res.id_token_info.accepted and self.store.get_bool(STOP_ON_INVALID_KEY):
@@ -1010,6 +1064,11 @@ class Station16(VersionStation):
         c.last_mono = None
         self._advance(c)  # zero-length step: initial power and suspension; charging starts now
         self._refresh(c)  # Charging (or Suspended*)
+        if self.cfg.meter.begin_end_messages:
+            begin = d.TxUpdated(c.id, tx.tx_id, self.host.clock(),
+                                self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)), context="Transaction.Begin")
+            self._outq_push(_OutMsg(_Kind.METER, lambda: self._adapter.send_tx_updated(begin), c, tx))
+            tx.begin_sent = True
         self._start_meter(c)
         return A.ACCEPTED
 
@@ -1037,11 +1096,18 @@ class Station16(VersionStation):
 
     def _end_tx_now(self, c: _Conn, reason: R, tx: _Tx) -> None:
         self._advance(c)
+        self._collect_tx_data(c)  # a reading due right now is not lost to the tick
+        delay = self.cfg.meter.post_tx_delay_s
         tx.ended = _Stop(int(round(c.meter_wh)), self.host.clock(), reason,
-                         self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)))
+                         self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)),
+                         tx.data.all() if tx.data is not None else [],
+                         self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)) if tx.begin_sent else [],
+                         self.host.monotonic() + delay if delay > 0 else None)
+        tx.data = None
         if tx.tx_id is not None:
             # TODO(spec): StopTransaction is sent before the Finishing / Available StatusNotification.
-            self._outq_push(self._stop_msg(c, tx))
+            for msg in self._stop_msgs(c, tx):
+                self._outq_push(msg)
         # else: StartTransaction is still queued; its answer queues the StopTransaction (_on_started).
         self._abort_tx(c, tx, finishing=c.plugged)
 
@@ -1065,11 +1131,20 @@ class Station16(VersionStation):
             self._refresh_station()
         self.maint.wake()
 
-    def _stop_msg(self, c: _Conn, tx: _Tx) -> _OutMsg:
+    def _stop_msgs(self, c: _Conn, tx: _Tx) -> List[_OutMsg]:
+        """The end messages of ``tx``: the optional Transaction.End MeterValues, then the StopTransaction; both
+        held until ``not_before`` (meter.post_tx_delay_s)."""
         st = tx.ended
         assert st is not None and tx.tx_id is not None
-        ev = d.TxEnded(c.id, tx.tx_id, st.meter_stop_wh, st.timestamp, st.reason, tx.id_tag, st.samples)
-        return _OutMsg(_Kind.STOP, lambda: self._adapter.send_tx_ended(ev), c, tx)
+        out: List[_OutMsg] = []
+        if st.end_meter:
+            mv = d.TxUpdated(c.id, tx.tx_id, st.timestamp, st.end_meter, context="Transaction.End")
+            out.append(_OutMsg(_Kind.METER, lambda: self._adapter.send_tx_updated(mv), c, tx,
+                               not_before=st.not_before))
+        ev = d.TxEnded(c.id, tx.tx_id, st.meter_stop_wh, st.timestamp, st.reason, tx.id_tag, st.samples,
+                       readings=st.readings)
+        out.append(_OutMsg(_Kind.STOP, lambda: self._adapter.send_tx_ended(ev), c, tx, not_before=st.not_before))
+        return out
 
     # ================================================================== CSMS commands
 

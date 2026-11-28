@@ -138,3 +138,27 @@ UNVERIFIED_SECURITY_KEYS = {"SecurityProfile"}
 def test_keys_table_is_a_tuple_and_verified():
     assert isinstance(KEYS, tuple)
     assert {k.name for k in KEYS if not k.verified} == UNVERIFIED_SECURITY_KEYS
+
+
+def test_measurand_keys_reject_unsupported_measurands_and_too_long_lists():
+    """§3.16.4: a measurand the meter does not report is Rejected; *MaxLength bounds the list (§9.1.16-28)."""
+    store = ConfigStore(KEYS)
+    for key in ("MeterValuesSampledData", "MeterValuesAlignedData", "StopTxnSampledData", "StopTxnAlignedData"):
+        assert store.set(key, "Temperature") == "Rejected"
+        assert store.set(key, "Energy.Active.Import.Register,Voltage") == "Accepted"
+    store = ConfigStore(KEYS, {"StopTxnSampledDataMaxLength": "2"})
+    assert store.set("StopTxnSampledData", "Energy.Active.Import.Register,Voltage,SoC") == "Rejected"
+    assert store.set("StopTxnSampledData", "Energy.Active.Import.Register,SoC") == "Accepted"
+    assert store.set("StopTxnSampledData", "") == "Accepted"
+
+
+def test_load_time_overrides_drop_unsupported_items_with_a_warning(caplog):
+    """YAML / template / Excel config_keys: unsupported measurands are dropped (warning), not a load error."""
+    store = ConfigStore(KEYS, {"StopTxnSampledData": "Energy.Active.Import.Register,Temperature",
+                               "MeterValuesAlignedData": "Frequency"})
+    assert store.get_csl("StopTxnSampledData") == ["Energy.Active.Import.Register"]
+    assert store.get_csl("MeterValuesAlignedData") == []
+    assert "Temperature" in caplog.text and "Frequency" in caplog.text
+    assert store.set("StopTxnSampledData", "Energy.Active.Import.Register,Temperature") == "Rejected"
+    with pytest.raises(ValueError):
+        ConfigStore(KEYS, {"HeartbeatInterval": "x"})  # other invalid values still refuse the configuration

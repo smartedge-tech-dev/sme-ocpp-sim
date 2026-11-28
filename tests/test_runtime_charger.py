@@ -99,7 +99,7 @@ def test_local_transaction_with_meter_values():
         await _until(lambda: s.stops)
         stop = s.stops[0]
         assert stop["reason"] == "Local" and stop["meter_stop"] > s.starts[0]["meter_start"]
-        assert stop["transaction_data"][0]["sampled_value"][0]["context"] == "Transaction.End"
+        assert stop["transaction_data"][-1]["sampled_value"][0]["context"] == "Transaction.End"
         await rt.unplug(1)
         await _until(lambda: len(_statuses(s, 1)) == 5)
         assert _statuses(s, 1) == ["Available", "Preparing", "Charging", "Finishing", "Available"]

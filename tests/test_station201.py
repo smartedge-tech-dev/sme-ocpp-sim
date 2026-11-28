@@ -222,7 +222,7 @@ def test_full_transaction_started_updated_ended():
         assert ended["trigger_reason"] == "StopAuthorized" and ended["id_token"]["id_token"] == "TAG1"
         assert ended["transaction_info"]["stopped_reason"] == "Local"
         assert ended["transaction_info"]["charging_state"] == "EVConnected"
-        end = ended["meter_value"][0]["sampled_value"][0]
+        end = ended["meter_value"][-1]["sampled_value"][0]
         assert end["context"] == "Transaction.End" and end["value"] > begin["value"]
         assert end["value"] == round(rt.snapshot()["connectors"][0]["meter_wh"])
         assert s.authorizes == []  # local_only

@@ -17,15 +17,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - New handshake error kind `client_cert_required`: a TLS connection closed right after the handshake, or an
   nginx HTTP 400 "SSL certificate" page, while no client certificate is configured. It raises no
   FailedToAuthenticateAtCsms security event and triggers no certificate fallback.
+- Charger block `meter:` (simulator options): `begin_end_messages` (1.6 MeterValues `Transaction.Begin` /
+  `Transaction.End`), `phase_values` (`off` / `L-N` / `L-L`: Voltage and Current.Import per phase with
+  `phase`), `post_tx_delay_s` (delay before StopTransaction / `Ended`) and `tx_data_max_samples` (cap of the
+  sampled and of the clock-aligned readings kept for one transaction, default 1000, one warning on overflow).
+- OCPP 2.0.1: `SampledDataCtrlr.TxEndedInterval` is ReadWrite; new `AlignedDataCtrlr.TxEndedInterval` and
+  `AlignedDataCtrlr.TxEndedMeasurands`. `Ended.meterValue` holds the start and end readings plus the sampled
+  and clock-aligned readings of these intervals.
 
 ### Changed
 
+- OCPP 2.0.1: `Ended.meterValue` now starts with a `Transaction.Begin` reading (TxEndedInterval 0 = the start
+  and end values).
 - An nginx HTTP 400 "SSL certificate" page with a client certificate configured is reported as
   `client_cert_rejected` (with `status` 400) instead of `bad_request`; other HTTP 400 answers over wss:// get a
   hint that also names a TLS proxy refusing the client certificate.
 
 ### Fixed
 
+- OCPP 1.6: StopTransaction `transactionData` holds the StopTxnSampledData readings taken every
+  MeterValueSampleInterval from the start of the transaction (not only one reading at the end), and the
+  StopTxnAlignedData readings at every ClockAlignedDataInterval boundary.
+- OCPP 1.6: ChangeConfiguration of `MeterValuesSampledData`, `MeterValuesAlignedData`, `StopTxnSampledData` and
+  `StopTxnAlignedData` rejects measurands the simulated meter does not report and lists longer than the
+  matching `*MaxLength` key. In YAML / template / Excel `config_keys` such measurands are dropped with a
+  warning instead.
+- Docs: the 1.6 MeterValues row no longer claims clock-aligned MeterValues messages (not sent yet).
 - Windows: the asyncio proactor's "Exception in callback ..._call_connection_lost" `ConnectionResetError`
   traceback after a peer reset is no longer printed (logged at debug level).
 

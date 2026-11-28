@@ -149,7 +149,6 @@ REQUIRED = {
     ("OCPPCommCtrlr", "OfflineThreshold", None, None, None): ("integer", "ReadOnly", "s"),
     ("OCPPCommCtrlr", "ResetRetries", None, None, None): ("integer", "ReadOnly", None),
     ("OCPPCommCtrlr", "UnlockOnEVSideDisconnect", None, None, None): ("boolean", "ReadOnly", None),
-    ("SampledDataCtrlr", "TxEndedInterval", None, None, None): ("integer", "ReadOnly", "s"),
     ("TxCtrlr", "StopTxOnEVSideDisconnect", None, None, None): ("boolean", "ReadOnly", None),
     ("SecurityCtrlr", "CertificateEntries", None, None, None): ("integer", "ReadOnly", None),
     ("SmartChargingCtrlr", "Entries", "ChargingProfiles", None, None): ("integer", "ReadOnly", None),
@@ -283,3 +282,18 @@ def test_values_are_reported_with_the_attribute():
     model = dm.build(_cfg())
     entry = dm.report_data(model.lookup("EVSE", "Power", evse_id=1))
     assert entry.variable_characteristics.max_limit == 7400.0 and entry.variable_attribute[0].type is AT.actual
+
+
+def test_tx_ended_intervals_and_aligned_measurands_are_read_write():
+    """2.7.8 / AlignedDataCtrlr: TxEndedInterval (both controllers) and AlignedDataCtrlr.TxEndedMeasurands RW."""
+    model = dm.build(_cfg())
+    for comp in ("SampledDataCtrlr", "AlignedDataCtrlr"):
+        var = model.lookup(comp, "TxEndedInterval")
+        assert (var.data_type.value, var.mutability.value, var.unit, var.value()) == ("integer", "ReadWrite", "s",
+                                                                                      "0")
+        assert _status(_set(model, comp, "TxEndedInterval", "30")) == "Accepted"
+        assert _status(_set(model, comp, "TxEndedInterval", "-1")) == "Rejected"
+    assert model.int_value(dm.TX_ENDED_INTERVAL) == model.int_value(dm.ALIGNED_TX_ENDED_INTERVAL) == 30
+    assert not model.list_value(dm.ALIGNED_TX_ENDED_MEASURANDS)
+    assert _status(_set(model, "AlignedDataCtrlr", "TxEndedMeasurands", "Voltage")) == "Accepted"
+    assert _status(_set(model, "AlignedDataCtrlr", "TxEndedMeasurands", "Temperature")) == "Rejected"

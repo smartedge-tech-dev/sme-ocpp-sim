@@ -430,12 +430,14 @@ class Adapter16(d.VersionAdapter):
         await self._send("MeterValues", _meter_values(ev.evse_id, ev.tx_id, ev.timestamp, ev.samples, ev.context))
 
     async def send_tx_ended(self, ev: d.TxEnded) -> Optional[d.IdTokenInfo]:
-        data = ([m.MeterValue(timestamp=ev.timestamp, sampled_value=_sampled(ev.samples, "Transaction.End"))]
-                if ev.samples else None)
+        data = [m.MeterValue(timestamp=r.timestamp, sampled_value=_sampled(r.samples, r.context))
+                for r in ev.readings if r.samples]
+        if ev.samples:
+            data.append(m.MeterValue(timestamp=ev.timestamp, sampled_value=_sampled(ev.samples, "Transaction.End")))
         resp = await self._send("StopTransaction", m.StopTransactionRequest(
             transaction_id=int(ev.tx_id), timestamp=ev.timestamp, meter_stop=ev.meter_stop_wh,
             id_tag=ev.id_token, reason=_REASON_16[ev.reason] if ev.reason is not None else None,
-            transaction_data=data))
+            transaction_data=data or None))
         return _id_info(resp.id_tag_info) if resp.id_tag_info is not None else None
 
     async def send_meter_sample(self, ev: d.MeterSample) -> None:

@@ -141,3 +141,31 @@ def meter_reading(state: PowerState, ev: EvModel, supply: AcSupply) -> MeterRead
         soc_pct=state.soc_pct,
         phases=n,
     )
+
+
+#: Per-phase reporting of Voltage / Current.Import (simulator option ``meter.phase_values``):
+#: ``off`` = one value without a phase, ``L-N`` = line-to-neutral voltages, ``L-L`` = line-to-line voltages.
+PhaseValues = Literal["off", "L-N", "L-L"]
+
+_PHASES = ("L1", "L2", "L3")
+_LINE_TO_LINE = ("L1-L2", "L2-L3", "L3-L1")
+VOLTAGE_DECIMALS = 1
+
+
+def phase_voltages(supply: AcSupply, mode: PhaseValues) -> list:
+    """``[(phase, volts)]`` for every supply phase (OCPP: all possible phases are reported); ``[]`` when ``mode``
+    is ``off``. ``L-N`` reports ``L1-N`` .. ``Ln-N`` with :meth:`AcSupply.phase_voltage_v`; ``L-L`` on a 3-phase
+    supply reports ``L1-L2`` / ``L2-L3`` / ``L3-L1`` with ``sqrt(3)`` times that voltage. A supply with fewer than
+    3 phases has no line-to-line pair of its own, so ``L-L`` falls back to ``L-N`` there."""
+    if mode == "off":
+        return []
+    v_ln = supply.phase_voltage_v()
+    if mode == "L-L" and supply.phases == 3:
+        return [(p, round(v_ln * math.sqrt(3), VOLTAGE_DECIMALS)) for p in _LINE_TO_LINE]
+    return [(f"{p}-N", round(v_ln, VOLTAGE_DECIMALS)) for p in _PHASES[:supply.phases]]
+
+
+def phase_currents(current_a: float, supply: AcSupply, phases_used: int) -> list:
+    """``[(phase, amps)]`` for every supply phase: the balanced current on the ``phases_used`` phases the EV draws
+    on (from ``L1``), 0 on the others."""
+    return [(p, current_a if i < phases_used else 0.0) for i, p in enumerate(_PHASES[:supply.phases])]
