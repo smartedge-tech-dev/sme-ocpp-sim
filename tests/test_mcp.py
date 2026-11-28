@@ -17,7 +17,7 @@ from sme_ocpp_sim.web import create_app
 DEAD_URL = "ws://127.0.0.1:9/ocpp"  # nothing listens: chargers stay offline
 ACCEPT = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
 TOOLS = {
-    "get_version", "get_state", "export_config", "set_simulation", "get_charger", "get_charger_settings",
+    "get_version", "start_replay", "get_replay", "get_state", "export_config", "set_simulation", "get_charger", "get_charger_settings",
     "get_charging_profiles", "get_composite_schedule", "get_frames", "get_impairments", "connect_charger",
     "disconnect_charger", "plug_in", "unplug", "authorize", "start_transaction", "stop_transaction", "set_fault",
     "clear_fault", "set_external_limit", "set_impairments", "drop_connection", "send_frame", "mini_csms_status",
@@ -134,7 +134,8 @@ MINIMAL = {
     "run_scenario": {"body": "format: x"}, "get_scenario_status": {}, "get_scenario_result": {},
     "abort_scenario": {}, "list_builtin_scenarios": {}, "expect_frame": {"within": 0}, "get_traffic": {}, "set_traffic": {},
     "start_traffic": {}, "stop_traffic": {}, "preview_traffic_plan": {},
-    "analyze_frames": {}, "get_trace": {}, "start_trace": {"file": "x"}, "stop_trace": {},
+    "analyze_frames": {}, "get_trace": {}, "start_trace": {"file": "x"}, "start_replay": {"file": "x.jsonl", "csms_url": "ws://127.0.0.1:1/ocpp"},
+    "get_replay": {"id": "x"}, "stop_trace": {},
 }
 PYDANTIC_MISMATCH = ("Field required", "Extra inputs are not permitted", "Input should be", "unexpected argument")
 

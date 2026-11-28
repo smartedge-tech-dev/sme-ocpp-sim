@@ -44,6 +44,9 @@ plug ... clear-fault, drop, impairments PUT, send - call :mod:`.scenario.ops`, s
   /api/trace/stop`` / ``GET /api/trace/files`` / ``GET /api/trace/files/{name}`` (download) / ``GET
   /api/trace/files/{name}/analyze`` - trace recording (v0.3 M5) into the trace directory
   (``OcppEngine.trace_dir``); the API never writes outside it;
+* ``POST /api/replay`` (body :class:`ReplayBody`) / ``GET /api/replay`` / ``GET /api/replay/{id}`` / ``POST
+  /api/replay/{id}/stop`` - replay a trace file of the trace directory against a CSMS on its own connection (v0.3
+  M6, :mod:`.trace.replay`; not a simulated charger); the run is recorded into ``replay-<id>.jsonl`` there;
 * ``GET|PUT /api/csms-defaults`` - the ``csms_defaults`` block as JSON (PUT replaces the whole block: an omitted
   field is its model default, so a client sends back what GET returned with its changes);
 * ``GET|PATCH /api/chargers/{id}/settings`` - the connection / authorization subset of a charger's config
@@ -119,6 +122,7 @@ the two full pushes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -199,6 +203,27 @@ TRACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,150}\.jsonl")
 class TraceStartBody(BaseModel):
     """``POST /api/trace/start``: ``file`` = file name in the trace directory (default ``trace-<time>.jsonl``)."""
     file: Optional[str] = Field(None, max_length=160)
+
+
+class ReplayBody(BaseModel):
+    """``POST /api/replay``: replay ``file`` (a trace file of the trace directory) against ``csms_url``."""
+
+    model_config = ConfigDict(extra="forbid")
+    file: str = Field(max_length=160)
+    csms_url: str = Field(min_length=1, max_length=2048, description="CSMS URL without the charger id")
+    charger: Optional[str] = Field(None, description="charger of the trace (needed when it has several)")
+    as_id: Optional[str] = Field(None, max_length=48, description="connect with this charger identity")
+    timing: str = Field("original", description="original | scale:N | asap")
+    password: Optional[str] = Field(None, repr=False, description="Basic Auth password (never echoed)")
+    ocpp_version: Optional[Literal["1.6", "2.0.1", "2.1"]] = None
+    unknown_call: Literal["reject", "noreply"] = "reject"
+    tx_suffix: bool = True
+    call_timeout: float = Field(30.0, gt=0, le=3600)
+    verify_tls: bool = True
+
+
+#: Replays kept for GET /api/replay (the oldest finished ones are dropped beyond it).
+MAX_REPLAYS = 20
 
 
 class DataTransferBody(BaseModel):
@@ -793,6 +818,60 @@ def _router(engine: OcppEngine) -> APIRouter:
             raise bad(400, e) from None
         return PlainTextResponse(to_text(report)) if format == "text" else report
 
+    # ---- trace replay (v0.3 M6; trace/replay.py): own connections, never a simulated charger
+
+    replays: Dict[str, Any] = {}
+    replay_tasks: set = set()
+
+    def get_replay_run(rid: str):
+        rp = replays.get(rid)
+        if rp is None:
+            raise bad(404, f"no replay {rid!r}")
+        return rp
+
+    @r.post("/replay", summary="Replay a trace file of the trace directory against a CSMS (ocppsim-replay/1): the "
+            "charger's CALLs are re-sent on a new connection and the answers compared; poll GET /api/replay/{id}")
+    async def replay_start(body: ReplayBody):
+        from .trace.format import TraceError, load
+        from .trace.replay import Replayer, ReplayError
+
+        p = trace_file(body.file)
+        if not p.is_file():
+            raise bad(404, f"no trace file {body.file!r}")
+        try:
+            rp = Replayer(load(p), csms_url=body.csms_url, charger=body.charger, as_id=body.as_id,
+                          timing=body.timing, password=body.password, ocpp_version=body.ocpp_version,
+                          unknown_call=body.unknown_call, tx_suffix=body.tx_suffix,
+                          call_timeout=body.call_timeout, verify_tls=body.verify_tls, trace_name=body.file)
+        except (TraceError, ReplayError, UnicodeDecodeError) as e:
+            raise bad(400, e) from None
+        rp.out_trace = engine.trace_dir() / f"replay-{rp.run_id}.jsonl"
+        try:
+            rp.out_trace.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise bad(500, f"cannot write {rp.out_trace}: {e.strerror or e}") from None
+        done = [k for k, v in replays.items() if v.state == "done"]
+        for k in done[:max(0, len(replays) - MAX_REPLAYS + 1)]:
+            replays.pop(k, None)
+        replays[rp.run_id] = rp
+        task = asyncio.create_task(rp.run())
+        replay_tasks.add(task)
+        task.add_done_callback(replay_tasks.discard)
+        return {"ok": True, **rp.status()}
+
+    @r.get("/replay", summary="The replays of this app run (state and progress, newest last)")
+    def replay_list():
+        return {"replays": [{k: v for k, v in rp.status().items() if k != "report"} for rp in replays.values()]}
+
+    @r.get("/replay/{rid}", summary="State of a replay; report = the ocppsim-replay/1 report once it is done")
+    def replay_get(rid: str):
+        return get_replay_run(rid).status()
+
+    @r.post("/replay/{rid}/stop", summary="Stop a running replay after the CALL in flight")
+    def replay_stop(rid: str):
+        rp = get_replay_run(rid)
+        rp.stop()
+        return {"ok": True, **rp.status()}
 
     # ---- scenarios (v0.3 M3; one at a time, see scenario/runner.py)
 
