@@ -56,7 +56,7 @@
           <button class="btn small" id="dDisconnect" type="button" data-i18n="op.disconnect">Disconnect</button>
           <button class="btn small" id="dDataTransfer" type="button" data-i18n="op.datatransfer">DataTransfer</button>
           <button class="btn small" id="dSettings" type="button" data-i18n="settings.open">Settings</button>
-          <button class="btn small" id="dBlock" type="button" data-i18n="imp.open">Block commands</button>
+          <button class="btn small" id="dImpair" type="button" data-i18n="imp.open">Impairments</button>
         </div>
         <p id="dError" class="err"></p>
         <div id="connectors" class="cards"></div>
@@ -230,14 +230,42 @@
 </dialog>
 <input type="file" id="xlsxFile" accept=".xlsx" hidden>
 
-<!-- Command blocking (impairments.block): CSMS -> CP actions answered with a CALLERROR or not at all. -->
-<dialog id="dlgBlock" class="dialog sh-dialog">
-  <form method="dialog" class="dlgform" id="blockForm">
-    <h3 id="blockTitle"></h3>
+<!-- Impairments (charger impairments block): latency / jitter, drops, command blocking. Applied live. -->
+<dialog id="dlgImpair" class="dialog sh-dialog">
+  <form method="dialog" class="dlgform" id="impairForm">
+    <h3 id="impairTitle"></h3>
+    <p class="muted" data-i18n="imp.hint.all">Applied at once, without a reconnect. Simulated drops never count against the retry limits.</p>
+    <h4 data-i18n="imp.net">Latency</h4>
+    <div class="row2">
+      <label><span data-i18n="imp.latency">Latency (ms)</span> <input id="impLatency" type="number" min="0" step="any"></label>
+      <label><span data-i18n="imp.jitter">Jitter (ms, ±)</span> <input id="impJitter" type="number" min="0" step="any"></label>
+    </div>
+    <div class="row2">
+      <label><span data-i18n="imp.direction">Direction</span> <select id="impDirection">
+        <option value="both" data-i18n="imp.direction.both">Both</option>
+        <option value="tx" data-i18n="imp.direction.tx">Sent (CP → CSMS)</option>
+        <option value="rx" data-i18n="imp.direction.rx">Received (CSMS → CP)</option>
+      </select></label>
+      <label><span data-i18n="imp.seed">Seed (empty = charger id)</span> <input id="impSeed" type="number" step="1"></label>
+    </div>
+    <h4 data-i18n="imp.drops">Disconnects</h4>
+    <div class="row2">
+      <label><span data-i18n="imp.drop_every">Drop every (s, empty = off)</span> <input id="impDropEvery" type="number" min="1" step="any"></label>
+      <label><span data-i18n="imp.drop_jitter">Drop jitter (s, ±)</span> <input id="impDropJitter" type="number" min="0" step="any"></label>
+    </div>
+    <div class="row2">
+      <label><span data-i18n="imp.down">Reconnect after (s)</span> <input id="impDown" type="number" min="0" step="any"></label>
+      <label><span data-i18n="imp.drop_mode">Drop mode</span> <select id="impDropMode">
+        <option value="abort" data-i18n="imp.drop_mode.abort">Cut (no close frame)</option>
+        <option value="close" data-i18n="imp.drop_mode.close">Close (1001)</option>
+      </select></label>
+    </div>
+    <div><button class="btn small" id="impDropNow" type="button" data-i18n="imp.drop_now">Drop now</button></div>
+    <h4 data-i18n="imp.block">Command blocking</h4>
     <p class="muted" data-i18n="imp.hint">Blocked commands are answered with the chosen CALLERROR, or not at all. Applied at once, without a reconnect.</p>
     <table class="tbl"><thead><tr><th data-i18n="imp.action">Action</th><th data-i18n="imp.mode">Answer</th></tr></thead>
       <tbody id="blockRows"></tbody></table>
-    <div class="err" id="blockErr"></div>
+    <div class="err" id="impairErr"></div>
     <div class="dlgbtns">
       <button class="btn" value="cancel" formnovalidate data-i18n="common.dlg.cancel">Cancel</button>
       <button class="btn primary" value="default" data-i18n="imp.save">Apply</button>

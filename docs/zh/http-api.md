@@ -66,7 +66,8 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 | POST | `/api/chargers/{id}/fault` | `{"connector": 1, "error_code": "OtherError"}`——该桩 `fault_codes` 之一（1.6 为 `ChargePointErrorCode`，2.0.1 为 `ReasonEnumType` 中的故障值，否则 `400`）；结束进行中的交易（1.6 原因为 `Other`，2.0.1 的 `stoppedReason` 为该故障码）并上报 `Faulted` |
 | POST | `/api/chargers/{id}/clear-fault` | `{"connector": 1}`——恢复为 Available / Preparing |
 | POST | `/api/chargers/{id}/datatransfer` | `{"vendor_id": "...", "message_id": "...", "data": "..."}`（充电桩 → CSMS） |
-| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}}` — 命令屏蔽，见[下文](#command-blocking-and-frame-injection) |
+| GET / PUT | `/api/chargers/{id}/impairments` | `{"block": {"RemoteStartTransaction": "NotSupported"}, "latency_ms": 200, ...}` — 命令屏蔽、延迟、周期断线，见[下文](#command-blocking-and-frame-injection) |
+| POST | `/api/chargers/{id}/drop` | `{"mode"?: "abort" \| "close", "reconnect_after_s"?}` — 立即断线，见[下文](#network-impairments) |
 | POST | `/api/chargers/{id}/send` | `{"action": "Heartbeat", "payload": {}, "validate": true}` 或 `{"raw": "[2,\"id-1\",\"Heartbeat\",{}]"}` — 帧注入，见[下文](#command-blocking-and-frame-injection) |
 | POST | `/api/chargers/bulk/connect` | `{"ids": ["CP-0001", "CP-0002"]}`、`["CP-0001"]` 或 `{"all": true}` |
 | POST | `/api/chargers/bulk/disconnect` | 同上 |
@@ -81,7 +82,19 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 并由 `POST /api/config/save` 写回文件。被屏蔽的 CSMS → 充电桩 CALL 以 CALLERROR `NotImplemented` / `NotSupported`
 应答（OCPP-J 1.6 与 2.0.1 名称相同），`NoReply` 则完全不应答，CSMS 侧自行超时。帧日志中收到的 CALL 标注
 `blocked: <code>` / `blocked: no reply`，充电桩快照带 `impaired: true`（UI 徽章上显示 `!`）。UI：充电桩详情面板的
-**屏蔽命令**。
+**网络异常**。
+
+### Network impairments
+
+同一个 `impairments` 块还包含延迟（`latency_ms`、`jitter_ms`、`direction`、`seed`）与周期断线（`drop_every_s`、
+`drop_jitter_s`、`drop_mode`、`down_s`），见[配置](configuration.md#chargers)。`PUT` 接收整块（省略的字段取缺省值；
+`jitter_ms` > `latency_ms` 等越界值返回 `400`），不重连即作用于当前连接：下一帧就使用新的延迟。
+
+`POST /api/chargers/{id}/drop` 立即断开连接，返回 `{"ok": true, "mode", "reconnect_after_s"}`。`mode` 缺省为
+`drop_mode`，`reconnect_after_s`（0 – 86400）缺省为 `down_s`；未连接时返回 `409`。充电桩在该等待时间后重连，
+不走 back-off。模拟断线**不算**连接失败：即使在 Boot Accepted 之前，也不计入 `reconnect.max_retries` /
+`boot_max_retries`。交易与待发消息保留。快照在下一次 Boot Accepted 之前 `last_error.kind` 为 `simulated_drop`，
+断线次数见 `drops`，任一异常开启时 `impaired` 为 `true`。UI：充电桩详情面板的 **网络异常**（含 **立即断线**）。
 
 **帧注入**（`POST /api/chargers/{id}/send`）是专家用入口，用于测试 CSMS 如何处理模拟器自己不会发送的消息：
 

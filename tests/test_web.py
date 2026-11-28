@@ -11,7 +11,7 @@ import yaml
 from fastapi.testclient import TestClient
 from peers.ocpp16_peer import CsmsPeer
 
-from sme_ocpp_sim.config import PASSWORD_MASK, SimConfig
+from sme_ocpp_sim.config import PASSWORD_MASK, ImpairmentConfig, SimConfig
 from sme_ocpp_sim.engine import OcppEngine
 from sme_ocpp_sim.rpc.errors import CallError
 from sme_ocpp_sim.web import UNPARSABLE_PLACEHOLDER, create_app, mask_text
@@ -580,19 +580,83 @@ def test_configuration_and_frames_until(setup):
 
 def test_impairments_put_validates_and_saves(setup):
     client, engine, path = setup
-    assert client.get("/api/chargers/CP001/impairments").json() == {"block": {}}
+    assert client.get("/api/chargers/CP001/impairments").json() == ImpairmentConfig().model_dump(mode="json")
     assert "RemoteStartTransaction" in client.get("/api/chargers/CP001").json()["csms_actions"]
     rt = engine.charger("CP001")
     for body in ({"block": {"NoSuchAction": "NoReply"}}, {"block": {"Reset": "Maybe"}}, {"other": 1}):
         assert client.put("/api/chargers/CP001/impairments", json=body).status_code == 400, body
     r = client.put("/api/chargers/CP001/impairments", json={"block": {"Reset": "NotSupported"}})
-    assert r.status_code == 200 and r.json() == {"ok": True, "block": {"Reset": "NotSupported"}}
+    assert r.status_code == 200 and r.json() == {"ok": True, **ImpairmentConfig(block={"Reset": "NotSupported"}).model_dump(mode="json")}
     assert engine.charger("CP001") is rt and rt._block_mode("Reset") == "NotSupported"
     assert client.put("/api/chargers/NOPE/impairments", json={"block": {}}).status_code == 404
     assert client.post("/api/config/save").status_code == 200
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["chargers"][0]["impairments"] == {"block": {"Reset": "NotSupported"}}
 
+
+def test_network_impairments_put_and_drop_validation(setup):
+    client, engine, path = setup
+    rt = engine.charger("CP001")
+    for body in ({"latency_ms": -1}, {"latency_ms": 10, "jitter_ms": 20}, {"direction": "up"},
+                 {"drop_every_s": 0}, {"drop_every_s": 5, "drop_jitter_s": 5}, {"drop_mode": "unplug"}):
+        assert client.put("/api/chargers/CP001/impairments", json=body).status_code == 400, body
+    body = {"latency_ms": 300, "jitter_ms": 50, "direction": "rx", "seed": 3, "drop_every_s": 60,
+            "drop_jitter_s": 10, "down_s": 2, "drop_mode": "close"}
+    r = client.put("/api/chargers/CP001/impairments", json=body)
+    assert r.status_code == 200 and {k: r.json()[k] for k in body} == body and r.json()["block"] == {}
+    assert engine.charger("CP001") is rt and rt.impairments.latency_ms == 300 and rt.impaired
+    assert client.get("/api/chargers/CP001").json()["impaired"] is True
+    assert client.post("/api/config/save").status_code == 200
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert {k: saved["chargers"][0]["impairments"][k] for k in body} == body
+    # /drop: only while connected (409); the body is checked first
+    assert client.post("/api/chargers/CP001/drop").status_code == 409
+    assert client.post("/api/chargers/CP001/drop", json={"mode": "unplug"}).status_code == 400
+    assert client.post("/api/chargers/CP001/drop", json={"reconnect_after_s": -1}).status_code == 400
+    assert client.post("/api/chargers/NOPE/drop").status_code == 404
+
+
+def test_latency_and_drop_live_against_mini_csms():
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    async def main():
+        cfg = SimConfig.model_validate({
+            "csms_defaults": {"url": f"ws://127.0.0.1:{port}/ocpp", "ocpp_version": "1.6", "reconnect": FAST},
+            "chargers": [{"id": "CP", "auth_mode": "accept_all"}],
+            "mini_csms": {"enabled": True, "port": port}})
+        engine = OcppEngine(cfg)
+        await engine.start()
+        rt = engine.charger("CP")
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(engine)),
+                                         base_url="http://t") as c:
+                async with asyncio.timeout(10):
+                    while not rt.online:
+                        await asyncio.sleep(0.02)
+                attempts = rt.connect_attempts
+                r = await c.put("/api/chargers/CP/impairments", json={"latency_ms": 150, "direction": "tx"})
+                assert r.status_code == 200
+                assert rt.connect_attempts == attempts and rt.connected  # applied live: no reconnect
+                t0 = time.monotonic()
+                assert (await c.post("/api/chargers/CP/send", json={"action": "Heartbeat"})).json()["ok"] is True
+                assert time.monotonic() - t0 >= 0.1
+                r = await c.post("/api/chargers/CP/drop", json={"mode": "close", "reconnect_after_s": 0.2})
+                assert r.json() == {"ok": True, "mode": "close", "reconnect_after_s": 0.2}
+                async with asyncio.timeout(5):
+                    while (rt.last_error or {}).get("kind") != "simulated_drop":
+                        await asyncio.sleep(0.01)
+                assert not rt.connected
+                async with asyncio.timeout(10):
+                    while not rt.online:
+                        await asyncio.sleep(0.02)
+                assert rt.connect_attempts == attempts + 1 and rt.drops == 1 and rt.gave_up is None
+        finally:
+            await engine.stop()
+
+    asyncio.run(main())
 
 def test_send_needs_connection_and_valid_input(setup):
     client, _, _ = setup
