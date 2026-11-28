@@ -69,7 +69,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `url` | 无 | CSMS 的 WebSocket URL（`ws://` 或 `wss://`）；充电桩 ID 作为最后一段路径追加。除非每台充电桩都有 `csms_url`，否则必填 |
-| `ocpp_version` | `"1.6"` | `"1.6"` 或 `"2.0.1"`；`"2.1"` 会报错，提示将在 v0.3 支持 |
+| `ocpp_version` | `"1.6"` | `"1.6"`、`"2.0.1"` 或 `"2.1"` |
 | `security_profile` | `0` | `0`、`1`、`2` 或 `3`；每台充电桩都按它检查，见 [安全配置文件](security-profiles.md) |
 | `reconnect.min_s` | `1.0` | 首次重连等待时间（秒） |
 | `reconnect.max_s` | `60.0` | 重连等待时间上限（≥ `min_s`）；等待时间按指数增长 |
@@ -258,7 +258,7 @@ chargers:
 | `enabled` | `false` | 启动 Mini CSMS WebSocket 服务器 |
 | `host` | `"127.0.0.1"` | 监听地址（供其他主机及 Docker 访问时用 `"0.0.0.0"`） |
 | `port` | `9000` | 监听端口 |
-| `versions` | `["1.6", "2.0.1"]` | 接受的 OCPP 版本（子协议协商） |
+| `versions` | `["1.6", "2.0.1", "2.1"]` | 接受的 OCPP 版本（子协议协商） |
 | `boot.status` | `Accepted` | BootNotification 应答：`Accepted`、`Pending` 或 `Rejected` |
 | `boot.interval` | `300` | Heartbeat 间隔（Accepted）或重试间隔（Pending / Rejected），秒 |
 | `auth.basic` | `false` | `true` = Security Profile 1：要求 HTTP Basic 认证 |

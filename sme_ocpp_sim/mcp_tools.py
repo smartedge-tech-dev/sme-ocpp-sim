@@ -19,7 +19,7 @@ from .config import ImpairmentConfig, TrafficConfig
 from .web import MAX_FRAMES, DataTransferBody, ExpectFrameBody, FaultBody
 
 APP_NAME = "sme-ocpp-sim"
-INSTRUCTIONS = ("SME OCPPSim: simulated OCPP 1.6J / 2.0.1 charge points connected to a CSMS. get_state lists the "
+INSTRUCTIONS = ("SME OCPPSim: simulated OCPP 1.6J / 2.0.1 / 2.1 charge points connected to a CSMS. get_state lists the "
                 "chargers (id, connection, connectors, transactions, power); every charger tool takes the charger "
                 "id as 'cid'. Connector numbers start at 1.")
 
@@ -129,7 +129,7 @@ def build_registry(app: Any) -> McpRegistry:
         destructive=False)
     add("clear_fault", "Clear a connector fault (back to Available).",
         "POST", "/api/chargers/{cid}/clear-fault", conn, destructive=False)
-    add("set_external_limit", "OCPP 2.0.1 only: set (limit_w) or remove (no limit_w) an external charging limit, "
+    add("set_external_limit", "OCPP 2.0.1 / 2.1 only (not 1.6): set (limit_w) or remove (no limit_w) an external charging limit, "
         "e.g. from a local EMS; the station reports it to the CSMS.", "POST", "/api/chargers/{cid}/external-limit",
         _obj({"connector": _WHOLE_CHARGER,
               "limit_w": {"type": "number", "minimum": 0, "description": "Limit in W; omit to remove the limit"}}),
@@ -209,7 +209,7 @@ def build_registry(app: Any) -> McpRegistry:
         "mini_csms.enabled is off).", "GET", "/api/csms", no_args)
     add("mini_csms_actions", "Built-in Mini CSMS: the CSMS -> charger actions mini_csms_call can send for an OCPP "
         "version.", "GET", "/api/csms/actions",
-        _obj({"version": {"type": "string", "enum": ["1.6", "2.0.1"]}}, ["version"], cid=False))
+        _obj({"version": {"type": "string", "enum": ["1.6", "2.0.1", "2.1"]}}, ["version"], cid=False))
     add("mini_csms_call", "Built-in Mini CSMS: send a CSMS -> charger CALL (e.g. RemoteStartTransaction, "
         "SetChargingProfile) to a connected station and return its answer.", "POST", "/api/csms/chargers/{cid}/call",
         _obj({"action": {"type": "string", "minLength": 1}, "payload": {"type": "object", "default": {}},

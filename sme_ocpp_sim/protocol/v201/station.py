@@ -469,12 +469,15 @@ class _Out:
 
 class Station201(VersionStation):
     fault_codes = FAULT_CODES
+    #: Message models and adapter class; OCPP 2.1 (``protocol.v21``) swaps in its own (class-attribute injection).
+    models: Any = m
+    adapter_cls: Any = Adapter201
 
     def __init__(self, host: StationHost, *, strict: bool = False) -> None:
         super().__init__(host, strict=strict)
         cfg = self.cfg = host.cfg
         self.ev, self.supply = host.ev, host.supply
-        self._adapter = Adapter201(strict=strict)
+        self._adapter = self.adapter_cls(strict=strict)
         self.evses: Dict[int, _Evse] = {i: _Evse(i) for i in range(1, cfg.connectors + 1)}
         self._meter_faults: Dict[int, MeterFaults] = {}  # impairments.meter per EVSE
         #: Local Authorization List / Authorization Cache / reservations by id (M6).
@@ -491,6 +494,7 @@ class Station201(VersionStation):
                            power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()),
                            list_entries=lambda: len(self.local_list),
                            certificate_entries=lambda: self.security.certificate_entries)
+        self.dm.models = self.models
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
         self.dm.on_change(dm.TX_UPDATED_INTERVAL, lambda v: self._restart_meters())
@@ -519,30 +523,30 @@ class Station201(VersionStation):
             hold_changed=self._refresh_all,
             reboot=functools.partial(self._do_reset, reason=BootReasonEnumType.firmware_update))
         self._remote: Dict[type, Callable[[Any], m.OcppModel]] = {
-            m.RequestStartTransactionRequest: self._request_start,
-            m.RequestStopTransactionRequest: self._request_stop,
-            m.UnlockConnectorRequest: self._unlock,
-            m.ResetRequest: self._reset,
-            m.ChangeAvailabilityRequest: self._change_availability,
-            m.TriggerMessageRequest: self._trigger,
-            m.GetVariablesRequest: self._get_variables,
-            m.SetVariablesRequest: self._set_variables,
-            m.GetBaseReportRequest: self._get_base_report,
-            m.SetChargingProfileRequest: self._set_charging_profile,
-            m.ClearChargingProfileRequest: self._clear_charging_profile,
-            m.GetCompositeScheduleRequest: self._get_composite_schedule,
-            m.GetChargingProfilesRequest: self._get_charging_profiles,
-            m.SendLocalListRequest: self._send_local_list,
-            m.GetLocalListVersionRequest: self._get_local_list_version,
-            m.ClearCacheRequest: self._clear_cache,
-            m.ReserveNowRequest: self._reserve_now,
-            m.CancelReservationRequest: self._cancel_reservation,
-            m.UpdateFirmwareRequest: self._update_firmware,
-            m.GetLogRequest: self._get_log,
-            m.CertificateSignedRequest: self._certificate_signed,
-            m.InstallCertificateRequest: self._install_certificate,
-            m.DeleteCertificateRequest: self._delete_certificate,
-            m.GetInstalledCertificateIdsRequest: self._get_installed_certificate_ids,
+            self.models.RequestStartTransactionRequest: self._request_start,
+            self.models.RequestStopTransactionRequest: self._request_stop,
+            self.models.UnlockConnectorRequest: self._unlock,
+            self.models.ResetRequest: self._reset,
+            self.models.ChangeAvailabilityRequest: self._change_availability,
+            self.models.TriggerMessageRequest: self._trigger,
+            self.models.GetVariablesRequest: self._get_variables,
+            self.models.SetVariablesRequest: self._set_variables,
+            self.models.GetBaseReportRequest: self._get_base_report,
+            self.models.SetChargingProfileRequest: self._set_charging_profile,
+            self.models.ClearChargingProfileRequest: self._clear_charging_profile,
+            self.models.GetCompositeScheduleRequest: self._get_composite_schedule,
+            self.models.GetChargingProfilesRequest: self._get_charging_profiles,
+            self.models.SendLocalListRequest: self._send_local_list,
+            self.models.GetLocalListVersionRequest: self._get_local_list_version,
+            self.models.ClearCacheRequest: self._clear_cache,
+            self.models.ReserveNowRequest: self._reserve_now,
+            self.models.CancelReservationRequest: self._cancel_reservation,
+            self.models.UpdateFirmwareRequest: self._update_firmware,
+            self.models.GetLogRequest: self._get_log,
+            self.models.CertificateSignedRequest: self._certificate_signed,
+            self.models.InstallCertificateRequest: self._install_certificate,
+            self.models.DeleteCertificateRequest: self._delete_certificate,
+            self.models.GetInstalledCertificateIdsRequest: self._get_installed_certificate_ids,
         }
 
     # ================================================================== session (called by the shell)
@@ -711,7 +715,7 @@ class Station201(VersionStation):
     def _apply_answer(self, item: _Out, res: Any) -> bool:
         """Apply a TransactionEvent answer; on a local bug end the session and return False."""
         try:
-            if isinstance(res, m.TransactionEventResponse):
+            if isinstance(res, self.models.TransactionEventResponse):
                 self._on_tx_answer(item, res)
             return True
         except Exception as e:  # noqa: BLE001 - fail loudly, restart the session
@@ -917,7 +921,7 @@ class Station201(VersionStation):
         if state != tx.charging_state:
             tx.charging_state = state
             self._queue_event(e, tx, TransactionEventEnumType.updated, T.charging_state_changed,
-                              m.TransactionType(transaction_id=tx.tx_id, charging_state=state))
+                              self.models.TransactionType(transaction_id=tx.tx_id, charging_state=state))
 
     # ================================================================== transaction events
 
@@ -931,14 +935,14 @@ class Station201(VersionStation):
         only build it (its ``seqNo`` is taken) and return it."""
         now = self.host.clock()
         if readings is not None:
-            values = [meter_value(r.timestamp, r.samples, r.context) for r in readings if r.samples] or None
+            values = [meter_value(r.timestamp, r.samples, r.context, models=self.models) for r in readings if r.samples] or None
         else:
-            values = [meter_value(now, samples, context.value)] if samples and context else None
-        req = m.TransactionEventRequest(
+            values = [meter_value(now, samples, context.value, models=self.models)] if samples and context else None
+        req = self.models.TransactionEventRequest(
             event_type=event, timestamp=now, trigger_reason=trigger, seq_no=tx.seq(),
             offline=True if not self.host.connected else None, transaction_info=info,
-            evse=None if tx.evse_sent else m.EVSEType(id=e.id, connector_id=CONNECTOR_ID),
-            id_token=id_token(token, token_type) if token is not None else None, reservation_id=reservation_id,
+            evse=None if tx.evse_sent else self.models.EVSEType(id=e.id, connector_id=CONNECTOR_ID),
+            id_token=id_token(token, token_type, models=self.models) if token is not None else None, reservation_id=reservation_id,
             meter_value=values)
         tx.evse_sent = True
         out = _Out(f"TransactionEvent {event.value}", lambda: self._adapter.send_transaction_event(req),
@@ -971,7 +975,7 @@ class Station201(VersionStation):
                                                ReadingContextEnumType.transaction_begin.value))
         tx.charging_state = self._charging_state(e)
         self._queue_event(e, tx, TransactionEventEnumType.started, trigger,
-                          m.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state,
+                          self.models.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state,
                                             remote_start_id=remote_start_id),
                           samples=self._samples(e, self.dm.list_value(dm.TX_STARTED_MEASURANDS)),
                           context=ReadingContextEnumType.transaction_begin,
@@ -1005,12 +1009,12 @@ class Station201(VersionStation):
         e.tx, e.pw, e.vehicle, e.last_mono, e.finishing = None, None, None, None, e.plugged
         self.profiles.end_transaction(e.id)
         self._queue_event(e, tx, TransactionEventEnumType.ended, trigger,
-                          m.TransactionType(transaction_id=tx.tx_id, charging_state=self._charging_state(e),
+                          self.models.TransactionType(transaction_id=tx.tx_id, charging_state=self._charging_state(e),
                                             stopped_reason=reason),
                           readings=readings, token=token, not_before=not_before)
         if late:  # impairments.meter.end_after_stop: the last reading arrives after the Ended event
             self._queue_event(e, tx, TransactionEventEnumType.updated, T.meter_value_periodic,
-                              m.TransactionType(transaction_id=tx.tx_id), samples=late,
+                              self.models.TransactionType(transaction_id=tx.tx_id), samples=late,
                               context=ReadingContextEnumType.sample_periodic, not_before=not_before)
         if e.pending_operative is not None:  # a Scheduled ChangeAvailability takes effect now
             self._set_operative(e, e.pending_operative)
@@ -1049,7 +1053,7 @@ class Station201(VersionStation):
                          self.cfg.id, seq, e.id)
                 continue
             out = self._queue_event(e, tx, TransactionEventEnumType.updated, T.meter_value_periodic,
-                                    m.TransactionType(transaction_id=tx.tx_id), samples=samples,
+                                    self.models.TransactionType(transaction_id=tx.tx_id), samples=samples,
                                     context=ReadingContextEnumType.sample_periodic, droppable=True, push=False)
             for o in faults.hold(out):
                 self._push_held(o)
@@ -1223,7 +1227,7 @@ class Station201(VersionStation):
         r.cancel_timer()
         log.info("%s: reservation %d ended (%s)", self.cfg.id, r.id, update.value if update else "cancelled")
         if update is not None and self.host.online:
-            req = m.ReservationStatusUpdateRequest(reservation_id=r.id, reservation_update_status=update)
+            req = self.models.ReservationStatusUpdateRequest(reservation_id=r.id, reservation_update_status=update)
             self._push(_Out("ReservationStatusUpdate", lambda: self._adapter.send_reservation_status_update(req)))
         self._refresh_all()
 
@@ -1241,7 +1245,7 @@ class Station201(VersionStation):
         RS = ReserveNowStatusEnumType
 
         def answer(status: ReserveNowStatusEnumType, code: Optional[str] = None) -> m.ReserveNowResponse:
-            return m.ReserveNowResponse(status=status, status_info=self._info(code))
+            return self.models.ReserveNowResponse(status=status, status_info=self._info(code))
 
         if not self.dm.bool_value(dm.RESERVATION_ENABLED):
             return answer(RS.rejected, REASON_DISABLED)  # H01.FR.01
@@ -1293,16 +1297,16 @@ class Station201(VersionStation):
     def _cancel_reservation(self, req: m.CancelReservationRequest) -> m.CancelReservationResponse:
         r = self.reservations.pop(req.reservation_id, None)
         if r is None:
-            return m.CancelReservationResponse(status=CancelReservationStatusEnumType.rejected)  # H02.FR.01
+            return self.models.CancelReservationResponse(status=CancelReservationStatusEnumType.rejected)  # H02.FR.01
         r.cancel_timer()
         self.host.after_reply(self._refresh_all)  # H02.FR.04: Available after the answer
-        return m.CancelReservationResponse(status=CancelReservationStatusEnumType.accepted)
+        return self.models.CancelReservationResponse(status=CancelReservationStatusEnumType.accepted)
 
     # ================================================================== local authorization list / cache (M6)
 
     def _send_local_list(self, req: m.SendLocalListRequest) -> m.SendLocalListResponse:
         def failed(code: str) -> m.SendLocalListResponse:
-            return m.SendLocalListResponse(status=SendLocalListStatusEnumType.failed, status_info=self._info(code))
+            return self.models.SendLocalListResponse(status=SendLocalListStatusEnumType.failed, status_info=self._info(code))
 
         if req.version_number < 1:  # D01.FR.18
             raise CallError(self._adapter.error_codes.property_constraint_violation,
@@ -1317,18 +1321,18 @@ class Station201(VersionStation):
         res = self.local_list.update(req.version_number, req.update_type is UpdateEnumType.full, entries)
         if res is ListUpdate.FAILED:
             return failed(REASON_INVALID_LIST)
-        return m.SendLocalListResponse(status=SendLocalListStatusEnumType(res.value))
+        return self.models.SendLocalListResponse(status=SendLocalListStatusEnumType(res.value))
 
     def _get_local_list_version(self, req: m.GetLocalListVersionRequest) -> m.GetLocalListVersionResponse:
         enabled = self.dm.bool_value(dm.LOCAL_LIST_ENABLED)
-        return m.GetLocalListVersionResponse(version_number=self.local_list.version if enabled else 0)  # D02
+        return self.models.GetLocalListVersionResponse(version_number=self.local_list.version if enabled else 0)  # D02
 
     def _clear_cache(self, req: m.ClearCacheRequest) -> m.ClearCacheResponse:
         if not self.dm.bool_value(dm.AUTH_CACHE_ENABLED):
-            return m.ClearCacheResponse(status=ClearCacheStatusEnumType.rejected,
+            return self.models.ClearCacheResponse(status=ClearCacheStatusEnumType.rejected,
                                         status_info=self._info(REASON_DISABLED))  # C11.FR.04
         self.cache.clear()
-        return m.ClearCacheResponse(status=ClearCacheStatusEnumType.accepted)  # C11.FR.03
+        return self.models.ClearCacheResponse(status=ClearCacheStatusEnumType.accepted)  # C11.FR.03
 
     # ================================================================== CSMS commands
 
@@ -1350,9 +1354,8 @@ class Station201(VersionStation):
 
     # ================================================================== remote control (M3)
 
-    @staticmethod
-    def _info(code: Optional[str]) -> Optional[m.StatusInfoType]:
-        return m.StatusInfoType(reason_code=code) if code else None
+    def _info(self, code: Optional[str]) -> Optional[m.StatusInfoType]:
+        return self.models.StatusInfoType(reason_code=code) if code else None
 
     def _addressed(self, evse: Optional[m.EVSEType]) -> Optional[List[_Evse]]:
         """EVSEs an optional ``evse`` field addresses: no ``evse`` or EVSE id 0 = every EVSE. ``None`` when it is
@@ -1412,7 +1415,7 @@ class Station201(VersionStation):
 
     def _request_start(self, req: m.RequestStartTransactionRequest) -> m.RequestStartTransactionResponse:
         def rejected(code: str) -> m.RequestStartTransactionResponse:
-            return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
+            return self.models.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
                                                      status_info=self._info(code))
 
         if self.host.registration == _PENDING:  # B02.FR.05, before every other check
@@ -1420,7 +1423,7 @@ class Station201(VersionStation):
         if impairments_of(self.host).remote_start == "accept_no_tx":
             log.info("%s: RequestStartTransaction accepted without a transaction (impairments.remote_start)",
                      self.cfg.id)
-            return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
+            return self.models.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
         wire = req.charging_profile
         profile = charging_profile(wire) if wire is not None else None
         # Without evseId the EVSE is not known yet: checked as for EVSE 1 (every EVSE has the same rules).
@@ -1454,7 +1457,7 @@ class Station201(VersionStation):
                                  and req.id_token.type not in NOT_AUTHORIZED_TYPES)
         self._arm_connection_timeout(e)
         self.host.after_reply(functools.partial(self._remote_start_go, e, req.remote_start_id))
-        return m.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
+        return self.models.RequestStartTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
 
     def _remote_start_go(self, e: _Evse, remote_start_id: int) -> None:
         if e.pending_remote_id != remote_start_id or e.pending_tag is None or e.tx is not None:
@@ -1494,13 +1497,13 @@ class Station201(VersionStation):
 
     def _request_stop(self, req: m.RequestStopTransactionRequest) -> m.RequestStopTransactionResponse:
         if self.host.registration == _PENDING:  # B02.FR.05
-            return m.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
+            return self.models.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
                                                     status_info=self._info(REASON_NOT_REGISTERED))
         for e in self.evses.values():
             if e.tx is not None and e.tx.tx_id == req.transaction_id:
                 self.host.after_reply(functools.partial(self._remote_stop, e, e.tx))
-                return m.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
-        return m.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
+                return self.models.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.accepted)
+        return self.models.RequestStopTransactionResponse(status=RequestStartStopStatusEnumType.rejected,
                                                 status_info=self._info(REASON_UNKNOWN_TX))
 
     def _remote_stop(self, e: _Evse, tx: _Tx) -> None:
@@ -1510,23 +1513,23 @@ class Station201(VersionStation):
     def _unlock(self, req: m.UnlockConnectorRequest) -> m.UnlockConnectorResponse:
         e = self.evses.get(req.evse_id)
         if e is None or req.connector_id != CONNECTOR_ID:
-            return m.UnlockConnectorResponse(status=UnlockStatusEnumType.unknown_connector,
+            return self.models.UnlockConnectorResponse(status=UnlockStatusEnumType.unknown_connector,
                                              status_info=self._info(REASON_UNKNOWN_EVSE))
         if e.tx is not None:
-            return m.UnlockConnectorResponse(status=UnlockStatusEnumType.ongoing_authorized_transaction)
+            return self.models.UnlockConnectorResponse(status=UnlockStatusEnumType.ongoing_authorized_transaction)
         if self.unlock_fails:
-            return m.UnlockConnectorResponse(status=UnlockStatusEnumType.unlock_failed)
-        return m.UnlockConnectorResponse(status=UnlockStatusEnumType.unlocked)
+            return self.models.UnlockConnectorResponse(status=UnlockStatusEnumType.unlock_failed)
+        return self.models.UnlockConnectorResponse(status=UnlockStatusEnumType.unlocked)
 
     def _reset(self, req: m.ResetRequest) -> m.ResetResponse:
         if req.evse_id is not None:
-            return m.ResetResponse(status=ResetStatusEnumType.rejected, status_info=self._info(REASON_NOT_SUPPORTED))
+            return self.models.ResetResponse(status=ResetStatusEnumType.rejected, status_info=self._info(REASON_NOT_SUPPORTED))
         if req.type is ResetEnumType.on_idle and any(e.tx is not None for e in self.evses.values()):
             self._reset_scheduled = True
-            return m.ResetResponse(status=ResetStatusEnumType.scheduled)
+            return self.models.ResetResponse(status=ResetStatusEnumType.scheduled)
         self._reset_scheduled = False
         self.host.after_reply(self._do_reset)
-        return m.ResetResponse(status=ResetStatusEnumType.accepted)
+        return self.models.ResetResponse(status=ResetStatusEnumType.accepted)
 
     def _maybe_idle_reset(self) -> None:
         """Run a scheduled OnIdle Reset once no transaction is left (when connected; else at the next session)."""
@@ -1570,7 +1573,7 @@ class Station201(VersionStation):
     def _change_availability(self, req: m.ChangeAvailabilityRequest) -> m.ChangeAvailabilityResponse:
         targets = self._addressed(req.evse)
         if targets is None:
-            return m.ChangeAvailabilityResponse(status=ChangeAvailabilityStatusEnumType.rejected,
+            return self.models.ChangeAvailabilityResponse(status=ChangeAvailabilityStatusEnumType.rejected,
                                                 status_info=self._info(REASON_UNKNOWN_EVSE))
         operative = req.operational_status is OperationalStatusEnumType.operative
         scheduled = False
@@ -1593,7 +1596,7 @@ class Station201(VersionStation):
                 self._drop_reservations_of, [e for e in targets if not self._operative(e)],
                 station=req.evse is None or req.evse.id == 0))
         self.host.after_reply(functools.partial(self._refresh_targets, targets))
-        return m.ChangeAvailabilityResponse(status=ChangeAvailabilityStatusEnumType.scheduled if scheduled
+        return self.models.ChangeAvailabilityResponse(status=ChangeAvailabilityStatusEnumType.scheduled if scheduled
                                             else ChangeAvailabilityStatusEnumType.accepted)
 
     def _refresh_targets(self, targets: Sequence[_Evse]) -> None:
@@ -1602,7 +1605,7 @@ class Station201(VersionStation):
 
     def _trigger(self, req: m.TriggerMessageRequest) -> m.TriggerMessageResponse:
         def answer(status: TriggerMessageStatusEnumType, code: Optional[str] = None) -> m.TriggerMessageResponse:
-            return m.TriggerMessageResponse(status=status, status_info=self._info(code))
+            return self.models.TriggerMessageResponse(status=status, status_info=self._info(code))
 
         what = req.requested_message
         if what not in TRIGGERABLE:
@@ -1650,15 +1653,15 @@ class Station201(VersionStation):
         """A02.FR.02 / FR.03: a new key pair and its CSR in a SignCertificateRequest; Rejected drops the key (a
         timeout or CALLERROR keeps it: the CSMS may still send the CertificateSigned)."""
         csr = self.security.new_csr(self.cfg.serial or self.cfg.id, self.dm.value(dm.ORGANIZATION_NAME) or None)
-        req = m.SignCertificateRequest(csr=csr, certificate_type=CertificateSigningUseEnumType.charging_station_certificate)
+        req = self.models.SignCertificateRequest(csr=csr, certificate_type=CertificateSigningUseEnumType.charging_station_certificate)
         res = await self.host.safe(self._adapter.send_sign_certificate(req), "SignCertificate")
         if res is not None and res.status is not GenericStatusEnumType.accepted:
             self.security.drop_csr(csr)
 
     def _certificate_signed(self, req: m.CertificateSignedRequest) -> m.CertificateSignedResponse:
         def rejected(code: str, why: str) -> m.CertificateSignedResponse:
-            return m.CertificateSignedResponse(status=CertificateSignedStatusEnumType.rejected,
-                                               status_info=m.StatusInfoType(reason_code=code, additional_info=why))
+            return self.models.CertificateSignedResponse(status=CertificateSignedStatusEnumType.rejected,
+                                               status_info=self.models.StatusInfoType(reason_code=code, additional_info=why))
 
         if req.certificate_type is CertificateSigningUseEnumType.v2g_certificate:
             return rejected(REASON_NOT_SUPPORTED, "ISO 15118 certificates are not supported")
@@ -1671,13 +1674,13 @@ class Station201(VersionStation):
         if self.cfg.client_cert_file is not None:  # profile 3: switch by reconnecting (A02.FR.08)
             self.host.use_client_certificate(self.security.client_cert_file, self.security.client_key_file,
                                              reconnect=True)
-        return m.CertificateSignedResponse(status=CertificateSignedStatusEnumType.accepted)
+        return self.models.CertificateSignedResponse(status=CertificateSignedStatusEnumType.accepted)
 
     def _install_certificate(self, req: m.InstallCertificateRequest) -> m.InstallCertificateResponse:
         st = self.security.install(d.CertUse(req.certificate_type.value), req.certificate)
         if st is d.CertStatus.ACCEPTED:
             self.host.set_trusted_roots(self.security.trusted_pem())
-        return m.InstallCertificateResponse(status=InstallCertificateStatusEnumType(st.value))
+        return self.models.InstallCertificateResponse(status=InstallCertificateStatusEnumType(st.value))
 
     def _delete_certificate(self, req: m.DeleteCertificateRequest) -> m.DeleteCertificateResponse:
         h = req.certificate_hash_data
@@ -1685,7 +1688,7 @@ class Station201(VersionStation):
                                                         h.serial_number))
         if st is d.CertStatus.ACCEPTED:
             self.host.set_trusted_roots(self.security.trusted_pem())
-        return m.DeleteCertificateResponse(status=DeleteCertificateStatusEnumType(st.value))
+        return self.models.DeleteCertificateResponse(status=DeleteCertificateStatusEnumType(st.value))
 
     def _get_installed_certificate_ids(
             self, req: m.GetInstalledCertificateIdsRequest) -> m.GetInstalledCertificateIdsResponse:
@@ -1696,14 +1699,14 @@ class Station201(VersionStation):
             found = []
         else:
             found = self.security.installed(uses)
-        chain = [m.CertificateHashDataChainType(
+        chain = [self.models.CertificateHashDataChainType(
             certificate_type=GetCertificateIdUseEnumType(use.value),
-            certificate_hash_data=m.CertificateHashDataType(
+            certificate_hash_data=self.models.CertificateHashDataType(
                 hash_algorithm=HashAlgorithmEnumType(h.hash_algorithm), issuer_name_hash=h.issuer_name_hash,
                 issuer_key_hash=h.issuer_key_hash, serial_number=h.serial_number)) for use, h in found]
         if not chain:  # M03.FR.02
-            return m.GetInstalledCertificateIdsResponse(status=GetInstalledCertificateStatusEnumType.not_found)
-        return m.GetInstalledCertificateIdsResponse(status=GetInstalledCertificateStatusEnumType.accepted,
+            return self.models.GetInstalledCertificateIdsResponse(status=GetInstalledCertificateStatusEnumType.not_found)
+        return self.models.GetInstalledCertificateIdsResponse(status=GetInstalledCertificateStatusEnumType.accepted,
                                                     certificate_hash_data_chain=chain)
 
     # ================================================================== firmware / log (M7)
@@ -1712,7 +1715,7 @@ class Station201(VersionStation):
         """Progress needs an accepted boot; a triggered one may also go out while Pending (B02.FR.02)."""
         if ev.status is d.FirmwareState.INSTALLED and not triggered:
             self.security.record(SE.FIRMWARE_UPDATED, connected=self.host.connected)
-        req = m.FirmwareStatusNotificationRequest(status=FirmwareStatusEnumType(ev.status.value),
+        req = self.models.FirmwareStatusNotificationRequest(status=FirmwareStatusEnumType(ev.status.value),
                                                   request_id=ev.request_id)
         if self.host.connected if triggered else self.host.online:
             await self.host.safe(self._adapter.send_firmware_status_notification(req), "FirmwareStatusNotification")
@@ -1722,7 +1725,7 @@ class Station201(VersionStation):
     async def _send_log_status(self, ev: d.LogStatus, *, triggered: bool = False) -> None:
         status = (UploadLogStatusEnumType.upload_failure if ev.status is d.LogState.UPLOAD_FAILED
                   else UploadLogStatusEnumType(ev.status.value))
-        req = m.LogStatusNotificationRequest(status=status, request_id=ev.request_id)
+        req = self.models.LogStatusNotificationRequest(status=status, request_id=ev.request_id)
         if self.host.connected if triggered else self.host.online:
             await self.host.safe(self._adapter.send_log_status_notification(req), "LogStatusNotification")
         else:
@@ -1730,7 +1733,7 @@ class Station201(VersionStation):
 
     def _update_firmware(self, req: m.UpdateFirmwareRequest) -> m.UpdateFirmwareResponse:
         if self.maint.installing:  # L02.FR.18: the installation cannot be cancelled
-            return m.UpdateFirmwareResponse(status=UpdateFirmwareStatusEnumType.rejected,
+            return self.models.UpdateFirmwareResponse(status=UpdateFirmwareStatusEnumType.rejected,
                                             status_info=self._info(REASON_INSTALLING))
         fw = req.firmware
         job = FirmwareJob(fw.location, _aware(fw.retrieve_date_time), install_at=_aware(fw.install_date_time),
@@ -1738,7 +1741,7 @@ class Station201(VersionStation):
                           signed=fw.signature is not None)
         canceled = self.maint.cancel_firmware()  # L02.FR.15
         self.host.after_reply(functools.partial(self.maint.start_firmware, job))
-        return m.UpdateFirmwareResponse(status=UpdateFirmwareStatusEnumType.accepted_canceled if canceled
+        return self.models.UpdateFirmwareResponse(status=UpdateFirmwareStatusEnumType.accepted_canceled if canceled
                                         else UpdateFirmwareStatusEnumType.accepted)
 
     def _get_log(self, req: m.GetLogRequest) -> m.GetLogResponse:
@@ -1754,7 +1757,7 @@ class Station201(VersionStation):
             self.maint.start_log(job)
 
         self.host.after_reply(go)
-        return m.GetLogResponse(status=LogStatusEnumType.accepted_canceled if canceled else LogStatusEnumType.accepted,
+        return self.models.GetLogResponse(status=LogStatusEnumType.accepted_canceled if canceled else LogStatusEnumType.accepted,
                                 filename=name)
 
     async def _trigger_send(self, what: str, send: Callable[[], Awaitable[Any]]) -> None:
@@ -1790,7 +1793,7 @@ class Station201(VersionStation):
             self._advance(e)
             tx.charging_state = self._charging_state(e)
             self._queue_event(e, tx, TransactionEventEnumType.updated, T.trigger,
-                              m.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state),
+                              self.models.TransactionType(transaction_id=tx.tx_id, charging_state=tx.charging_state),
                               samples=self._samples(e, self.dm.list_value(dm.TX_UPDATED_MEASURANDS)),
                               context=ReadingContextEnumType.trigger)
 
@@ -1804,11 +1807,11 @@ class Station201(VersionStation):
 
     def _get_variables(self, req: m.GetVariablesRequest) -> m.GetVariablesResponse:
         self._check_items(len(req.get_variable_data), dm.INSTANCE_GET_VARIABLES)
-        return m.GetVariablesResponse(get_variable_result=[self.dm.get(x) for x in req.get_variable_data])
+        return self.models.GetVariablesResponse(get_variable_result=[self.dm.get(x) for x in req.get_variable_data])
 
     def _set_variables(self, req: m.SetVariablesRequest) -> m.SetVariablesResponse:
         self._check_items(len(req.set_variable_data), dm.INSTANCE_SET_VARIABLES)
-        return m.SetVariablesResponse(set_variable_result=[self.dm.set(x) for x in req.set_variable_data])
+        return self.models.SetVariablesResponse(set_variable_result=[self.dm.set(x) for x in req.set_variable_data])
 
     def _get_base_report(self, req: m.GetBaseReportRequest) -> m.GetBaseReportResponse:
         data = self.dm.report(req.report_base)
@@ -1816,7 +1819,7 @@ class Station201(VersionStation):
         # B07 has no EmptyResultSet: an empty report is Accepted and sent as one part without reportData.
         parts = [data[i:i + per] for i in range(0, len(data), per)] or [[]]
         self.host.after_reply(functools.partial(self._send_report, req.request_id, parts, self.host.clock()))
-        return m.GetBaseReportResponse(status=GenericDeviceModelStatusEnumType.accepted)
+        return self.models.GetBaseReportResponse(status=GenericDeviceModelStatusEnumType.accepted)
 
     def _password_changed(self, password: str) -> None:
         """BasicAuthPassword was set (A01): the shell uses it at once and reconnects after the answer went out."""
@@ -1830,7 +1833,7 @@ class Station201(VersionStation):
                            generated_at: datetime) -> None:
         """NotifyReport parts ``seqNo`` 0.. with ``tbc`` on all but the last; stops at the first failed part."""
         for seq, part in enumerate(parts):
-            req = m.NotifyReportRequest(request_id=request_id, generated_at=generated_at, seq_no=seq,
+            req = self.models.NotifyReportRequest(request_id=request_id, generated_at=generated_at, seq_no=seq,
                                         report_data=list(part) or None,
                                         tbc=True if seq < len(parts) - 1 else None)
             if await self.host.safe(self._adapter.send_notify_report(req), "NotifyReport") is None:
@@ -1876,10 +1879,10 @@ class Station201(VersionStation):
         self.settle()
         reason = self._install(req.evse_id, charging_profile(req.charging_profile), req.charging_profile)
         if reason is not None:
-            return m.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.rejected,
+            return self.models.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.rejected,
                                                 status_info=self._info(reason))
         self.host.after_reply(self.tick)
-        return m.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.accepted)
+        return self.models.SetChargingProfileResponse(status=ChargingProfileStatusEnumType.accepted)
 
     def _clear_charging_profile(self, req: m.ClearChargingProfileRequest) -> m.ClearChargingProfileResponse:
         self.settle()
@@ -1888,9 +1891,9 @@ class Station201(VersionStation):
                                  purpose=c.charging_profile_purpose if c else None,
                                  stack_level=c.stack_level if c else None)
         if st is not ClearStatus.ACCEPTED:
-            return m.ClearChargingProfileResponse(status=ClearChargingProfileStatusEnumType.unknown)
+            return self.models.ClearChargingProfileResponse(status=ClearChargingProfileStatusEnumType.unknown)
         self.host.after_reply(self.tick)
-        return m.ClearChargingProfileResponse(status=ClearChargingProfileStatusEnumType.accepted)
+        return self.models.ClearChargingProfileResponse(status=ClearChargingProfileStatusEnumType.accepted)
 
     def _composite(self, evse_id: int, duration: int,
                    unit: Optional[ChargingRateUnitEnumType]) -> d.GetCompositeResult:
@@ -1916,15 +1919,15 @@ class Station201(VersionStation):
     def _get_composite_schedule(self, req: m.GetCompositeScheduleRequest) -> m.GetCompositeScheduleResponse:
         unit = req.charging_rate_unit
         if unit is not None and unit.value not in self.dm.list_value(dm.RATE_UNIT):  # K08.FR.07
-            return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
+            return self.models.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
                                                   status_info=self._info(REASON_UNSUPPORTED_RATE_UNIT))
         res = self._composite(req.evse_id, req.duration, unit)
         if res.schedule is None:
             code = REASON_UNKNOWN_EVSE if not 0 <= req.evse_id <= self.connector_count else REASON_INVALID_DURATION
-            return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
+            return self.models.GetCompositeScheduleResponse(status=GenericStatusEnumType.rejected,
                                                   status_info=self._info(code))
-        return m.GetCompositeScheduleResponse(status=GenericStatusEnumType.accepted,
-                                              schedule=composite_schedule_type(res.schedule))
+        return self.models.GetCompositeScheduleResponse(status=GenericStatusEnumType.accepted,
+                                              schedule=composite_schedule_type(res.schedule, models=self.models))
 
     @staticmethod
     def _source(ip: InstalledProfile) -> ChargingLimitSourceEnumType:
@@ -1946,14 +1949,14 @@ class Station201(VersionStation):
         for ip in sorted((x for x in self.profiles.profiles() if matches(x)), key=lambda x: x.evse_id):
             groups.setdefault((ip.evse_id, self._source(ip)), []).append(ip.wire)
         if not groups:
-            return m.GetChargingProfilesResponse(status=GetChargingProfileStatusEnumType.no_profiles)
+            return self.models.GetChargingProfilesResponse(status=GetChargingProfileStatusEnumType.no_profiles)
         last = len(groups) - 1
-        parts = [m.ReportChargingProfilesRequest(request_id=req.request_id, evse_id=evse_id,
+        parts = [self.models.ReportChargingProfilesRequest(request_id=req.request_id, evse_id=evse_id,
                                                  charging_limit_source=source, charging_profile=wires,
                                                  tbc=True if i < last else None)
                  for i, ((evse_id, source), wires) in enumerate(groups.items())]
         self.host.after_reply(functools.partial(self._send_profile_reports, parts))
-        return m.GetChargingProfilesResponse(status=GetChargingProfileStatusEnumType.accepted)
+        return self.models.GetChargingProfilesResponse(status=GetChargingProfileStatusEnumType.accepted)
 
     async def _send_profile_reports(self, parts: Sequence[m.ReportChargingProfilesRequest]) -> None:
         """ReportChargingProfiles parts in order; stops at the first one that fails."""
@@ -2097,7 +2100,7 @@ class Station201(VersionStation):
         before = self._rates()
         if limit_w is None:
             if self.profiles.clear_external(connector):
-                self._notify(lambda: self._adapter.send_cleared_charging_limit(m.ClearedChargingLimitRequest(
+                self._notify(lambda: self._adapter.send_cleared_charging_limit(self.models.ClearedChargingLimitRequest(
                     charging_limit_source=EXTERNAL_LIMIT_SOURCE, evse_id=connector or None)), "ClearedChargingLimit")
         else:
             sched = ChargingSchedule(id=1, unit=W, periods=(SchedulePeriod(0, float(limit_w)),),
@@ -2105,13 +2108,13 @@ class Station201(VersionStation):
             profile = ChargingProfile(profile_id=external_profile_id(connector), stack_level=0,
                                       purpose=PURPOSE.charging_station_external_constraints,
                                       kind=ChargingProfileKindEnumType.absolute, schedule=sched)
-            st = self.profiles.install(connector, profile, external=True, wire=charging_profile_type(profile))
+            st = self.profiles.install(connector, profile, external=True, wire=charging_profile_type(profile, models=self.models))
             if st is not ProfileStatus.ACCEPTED:  # a fixed, valid profile: a local bug
                 raise RuntimeError(f"external constraints not installed ({st.value})")
-            req = m.NotifyChargingLimitRequest(
-                charging_limit=m.ChargingLimitType(charging_limit_source=EXTERNAL_LIMIT_SOURCE),
+            req = self.models.NotifyChargingLimitRequest(
+                charging_limit=self.models.ChargingLimitType(charging_limit_source=EXTERNAL_LIMIT_SOURCE),
                 evse_id=connector or None,
-                charging_schedule=([charging_schedule_type(sched)]
+                charging_schedule=([charging_schedule_type(sched, models=self.models)]
                                    if self.dm.bool_value(dm.NOTIFY_CHARGING_LIMIT_WITH_SCHEDULES) else None))
             self._notify(lambda: self._adapter.send_notify_charging_limit(req), "NotifyChargingLimit")
         self._report_rate_changes(before)
@@ -2138,7 +2141,7 @@ class Station201(VersionStation):
             if old != 0 and abs(new - old) / old * 100 <= significance:
                 continue
             self._queue_event(e, e.tx, TransactionEventEnumType.updated, T.charging_rate_changed,
-                              m.TransactionType(transaction_id=e.tx.tx_id))
+                              self.models.TransactionType(transaction_id=e.tx.tx_id))
 
     def external_limit(self, connector: int) -> Optional[float]:
         """The operator external limit in W of EVSE ``connector`` (0 = the station), ``None`` = none."""

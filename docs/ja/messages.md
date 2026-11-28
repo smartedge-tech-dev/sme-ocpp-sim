@@ -150,10 +150,51 @@ Boot 受理後に再送します（CSMS は `transactionId` + `seqNo` で重複�
 | UnpublishFirmware | Not supported |  |
 | UpdateFirmware | 対応 | 模擬のみ（ダウンロードも検証もしません）。DownloadScheduled（`retrieveDateTime` が未来）→ Downloading → Downloaded → SignatureVerified（`signature` があるとき）→ InstallScheduled（`installDateTime` が未来）→ トランザクションのない EVSE はトランザクションがなくなるまで `Unavailable` → Installing → InstallRebooting → 再起動（BootNotification reason `FirmwareUpdate`）→ Installed。ダウンロード失敗時は `retries` / `retryInterval`。インストール前の更新を取り消したときは `AcceptedCanceled`、インストール中は `Rejected`。時間と失敗注入は充電器ごとの `maintenance` |
 
+## OCPP 2.1 { #ocpp-21 }
+
+OCPP 2.1 は `ocpp_version: "2.1"`（サブプロトコル `ocpp2.1`）で利用できます。2.1 のステーションは 2.0.1 と同じ動作
+（上のメッセージ表）に、次の点が加わります。
+
+- **フレーミング。** OCPP-J 2.1 の SEND（`[6, ...]`、片方向で応答なし）と CALLRESULTERROR（`[5, ...]`、相手が
+  CALLRESULT を不正と判断した場合）を送受信します。未知の MessageTypeId のフレームは 2.1 では無視され、
+  CALLERROR は返しません。
+- **緩和されたフィールド。** 生成された 2.1 モデルは任意フィールドを追加し、2.0.1 の一部のフィールドを緩和して
+  いますが、2.0.1 のペイロードも引き続き有効です。構造・必須フィールド・enum・文字列／配列の長さ制限は検証しますが、
+  数値の範囲やパターンは検証しません（2.0.1 と同じ緩さ）。送信フレームは、テストで公式の 2.1 スキーマに対して検証
+  しています。
+- **Reset。** `ImmediateAndResume` は受け付け、`Immediate` として処理します。再起動後のトランザクション再開は
+  シミュレートしません。
+- **TriggerMessage。** `CustomTrigger` は `NotImplemented` を返します。
+
+CSMS からステーションへの新しいメッセージ:
+
+| メッセージ | 状態 | 動作 |
+|---|---|---|
+| AFRRSignal | 保存して応答 | 保存（最後の信号を保持）、`Accepted` |
+| NotifyAllowedEnergyTransfer | 保存して応答 | トランザクションごとに保存、`Accepted`。トランザクションが不明なら `Rejected` |
+| SetDefaultTariff | 保存して応答 | EVSE ごとに保存（0 は全 EVSE）。`Accepted`、`DuplicateTariffId`、不明な EVSE は `Rejected` |
+| GetTariffs | 保存して応答 | 料金の割り当てを読み返す。なければ `NoTariff` |
+| ClearTariffs | 保存して応答 | 料金ごとの結果 `Accepted` / `NoTariff` |
+| ChangeTransactionTariff | 保存して応答 | 進行中のトランザクションなら `Accepted`、それ以外は `TxNotFound` |
+| SetDERControl | 保存して応答 | `controlId` ごとに保存、`Accepted` |
+| GetDERControl | 保存して応答 | `NotFound`、または `Accepted` の後に ReportDERControl を 1 件 |
+| ClearDERControl | 保存して応答 | `Accepted` / `NotFound` |
+| UpdateDynamicSchedule、UsePriorityCharging | 未対応 | CALLERROR `NotImplemented`（v0.3.x の後続で対応予定） |
+| GetPeriodicEventStream、AdjustPeriodicEventStream | 未対応 | CALLERROR `NotImplemented`（v0.4 で対応予定） |
+| RequestBatterySwap、NotifyWebPaymentStarted | 未対応 | CALLERROR `NotImplemented` |
+
+「保存して応答」は、リクエストをメモリに保持してスキーマに適合した応答を返すだけで、それに基づく動作（ローカルでの
+料金計算や DER の動作）はしません。
+
+ステーションから CSMS への新しい 12 メッセージ（BatterySwap、ClosePeriodicEventStream、GetCertificateChainStatus、
+NotifyDERAlarm、NotifyDERStartStop、NotifyPeriodicEventStream（SEND）、NotifyPriorityCharging、NotifySettlement、
+OpenPeriodicEventStream、PullDynamicScheduleUpdate、ReportDERControl、VatNumberValidation）は、ステーションから
+自発的には送信しません（ReportDERControl は GetDERControl への応答としてのみ）。Mini CSMS はこれらに最小限の応答を返します。
+
 ## 未対応の機能
 
 | 機能 | 状況 |
 |---|---|
-| OCPP 2.1 | v0.3 で対応予定（UI ではグレー表示） |
+| OCPP 2.1: UpdateDynamicSchedule、UsePriorityCharging、定期イベントストリーム、バッテリー交換、Web 決済 | 未対応（CALLERROR `NotImplemented`）。[OCPP 2.1](#ocpp-21) を参照 |
 | 1.6 Security Whitepaper の SignedUpdateFirmware、GetLog、LogStatusNotification、SignedFirmwareStatusNotification | 未対応（CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 非対応（有償規格のため） |

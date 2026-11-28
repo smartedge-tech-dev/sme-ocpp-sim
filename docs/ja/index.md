@@ -13,7 +13,7 @@ AC 充電器を模擬し、仮想 EV の接続、トランザクションの開�
   `ocpp1.6` または `ocpp2.0.1`。充電器ごとに選べるので 1 プロセスで混在サイトも構成できます）です。Boot、
   Heartbeat、StatusNotification、トランザクション（1.6 は StartTransaction / StopTransaction、2.0.1 は
   TransactionEvent）、MeterValues を送信し、[OCPP メッセージ](messages.md) に挙げた CSMS からの要求に応答します。
-  OCPP 2.1 は v0.3 で対応予定で、UI ではグレー表示になっています。
+  OCPP 2.1（`ocpp2.1`）にも対応しています（[OCPP 2.1](messages.md#ocpp-21) を参照）。
 - **OCPP 2.0.1 の Device Model と外部制限値。** 最小限の標準変数とユーザー定義変数（YAML の `variables:`）に対する
   GetVariables / SetVariables / GetBaseReport。Web UI では参照のみで表示します。EVSE またはステーション単位の
   外部（EMS）制限値を NotifyChargingLimit / ClearedChargingLimit 付きで設定できます。

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,14 @@ class ErrorCodes:
     bad_call_frame: Optional[str] = None
     max_message_id_length: Optional[int] = None
     max_error_description_length: Optional[int] = None
+    #: OCPP-J 2.1 framing (Part 4 §4.2.3 / §4.2.4): CALLRESULTERROR (5) and SEND (6) are sent and understood.
+    supports_send: bool = False
+    #: Actions that may arrive as a SEND (OCPP 2.1: only NotifyPeriodicEventStream). A SEND for any other action is
+    #: logged and dropped without running a handler.
+    send_actions: Tuple[str, ...] = ()
+    #: OCPP-J 2.1 (Part 4 §4.1.3): a frame with an unknown MessageTypeId is ignored (no CALLERROR; 2.1 deprecates
+    #: MessageTypeNotSupported). ``False`` = answered with ``message_type_not_supported`` / ``protocol_error``.
+    ignore_unknown_type: bool = False
 
 
 # OCPP-J 1.6 §4.2.3 misspells two codes; the 1.6 errata keeps the misspellings on the
@@ -76,7 +84,18 @@ OCPP201_ERRORS = ErrorCodes(
     max_message_id_length=36,
     max_error_description_length=255,
 )
-OCPP21_ERRORS = ErrorCodes(rpc_framework_error="RpcFrameworkError")
+# OCPP-J 2.1: the 2.0.1 table (same codes, same limits) with the 2.1 framing; MessageTypeNotSupported is
+# deprecated (an unknown MessageTypeId is ignored, Part 4 §4.1.3), so it is never sent.
+OCPP21_ERRORS = ErrorCodes(
+    rpc_framework_error="RpcFrameworkError",
+    bad_frame_reply="-1",
+    bad_call_frame="RpcFrameworkError",
+    max_message_id_length=36,
+    max_error_description_length=255,
+    supports_send=True,
+    send_actions=("NotifyPeriodicEventStream",),
+    ignore_unknown_type=True,
+)
 
 #: Command blocking (simulator-only, v0.2.2 A): what a blocked inbound CALL gets. ``NotImplemented`` /
 #: ``NotSupported`` are answered with the version's ``not_implemented`` / ``not_supported`` code (the wire names are

@@ -482,6 +482,9 @@ Listener = Callable[[str], None]
 class DeviceModel:
     """The variables of one station (see the module docstring)."""
 
+    #: Message models of the result / report types (OCPP 2.1 swaps in ``protocol.v21.models``).
+    models: Any = m
+
     def __init__(self, variables: Iterable[Variable] = ()) -> None:
         self._vars: Dict[Key, Variable] = {}
         self._components: Dict[ComponentKey, int] = {}
@@ -555,9 +558,9 @@ class DeviceModel:
 
         def result(status: GetVariableStatusEnumType, value: Optional[str] = None,
                    reason: Optional[str] = None) -> m.GetVariableResultType:
-            return m.GetVariableResultType(
+            return self.models.GetVariableResultType(
                 attribute_status=status, attribute_type=item.attribute_type, attribute_value=value,
-                attribute_status_info=m.StatusInfoType(reason_code=reason) if reason else None,
+                attribute_status_info=self.models.StatusInfoType(reason_code=reason) if reason else None,
                 component=item.component, variable=item.variable)
 
         missing, var = self._find(item.component, item.variable)
@@ -575,9 +578,9 @@ class DeviceModel:
 
         def result(status: SetVariableStatusEnumType, reason: Optional[str] = None,
                    info: Optional[str] = None) -> m.SetVariableResultType:
-            return m.SetVariableResultType(
+            return self.models.SetVariableResultType(
                 attribute_status=status, attribute_type=item.attribute_type,
-                attribute_status_info=m.StatusInfoType(reason_code=reason, additional_info=info[:512] if info
+                attribute_status_info=self.models.StatusInfoType(reason_code=reason, additional_info=info[:512] if info
                                                        else None) if reason else None,
                 component=item.component, variable=item.variable)
 
@@ -612,7 +615,7 @@ class DeviceModel:
             chosen = [v for v in self._vars.values() if v.mutability is not MU.read_only]
         else:
             chosen = [v for v in self._vars.values() if v.summary]
-        return [report_data(v) for v in chosen]
+        return [report_data(v, models=self.models) for v in chosen]
 
     def view(self) -> List[Dict[str, Any]]:
         """JSON view for the Web API (``WriteOnly`` values are left out)."""
@@ -630,20 +633,20 @@ class DeviceModel:
         return out
 
 
-def component_type(var: Variable) -> m.ComponentType:
-    evse = m.EVSEType(id=var.evse_id, connector_id=var.connector_id) if var.evse_id is not None else None
-    return m.ComponentType(name=var.component, instance=var.component_instance, evse=evse)
+def component_type(var: Variable, models: Any = m) -> m.ComponentType:
+    evse = models.EVSEType(id=var.evse_id, connector_id=var.connector_id) if var.evse_id is not None else None
+    return models.ComponentType(name=var.component, instance=var.component_instance, evse=evse)
 
 
-def report_data(var: Variable) -> m.ReportDataType:
-    attrs = [m.VariableAttributeType(type=a, value=None if var.mutability is MU.write_only else var.value(a),
+def report_data(var: Variable, models: Any = m) -> m.ReportDataType:
+    attrs = [models.VariableAttributeType(type=a, value=None if var.mutability is MU.write_only else var.value(a),
                                      mutability=var.mutability, persistent=var.persistent, constant=var.constant)
              for a in ATTRIBUTE_ORDER if var.value(a) is not None]
-    chars = m.VariableCharacteristicsType(
+    chars = models.VariableCharacteristicsType(
         unit=var.unit, data_type=var.data_type, min_limit=var.min_limit, max_limit=var.max_limit,
         values_list=",".join(var.values_list) if var.values_list is not None else None, supports_monitoring=False)
-    return m.ReportDataType(component=component_type(var),
-                            variable=m.VariableType(name=var.variable, instance=var.variable_instance),
+    return models.ReportDataType(component=component_type(var, models=models),
+                            variable=models.VariableType(name=var.variable, instance=var.variable_instance),
                             variable_attribute=attrs, variable_characteristics=chars)
 
 

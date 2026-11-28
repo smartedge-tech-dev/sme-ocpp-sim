@@ -15,7 +15,7 @@
 一个免费开源、带实时 Web UI 的 OCPP 充电桩模拟器（仿真软件），支持 Windows、Linux 和 Docker。可以模拟几十到几百台 AC 充电桩，插入虚拟 EV、启动和停止交易，并在浏览器中观察充电功率如何跟随 CSMS（SteVe、你自己的 CSMS、EMS……）下发的 Smart Charging profile 变化。
 
 - **OCPP 1.6J 充电桩。** Boot、Heartbeat、状态、Authorize、交易和 MeterValues；远程启动 / 停止、配置、复位、TriggerMessage、可用性、解锁和 DataTransfer。
-- **OCPP 2.0.1 充电站**，可与 1.6 充电桩任意混合：带离线队列的 TransactionEvent、RequestStart / StopTransaction、Reset、ChangeAvailability、TriggerMessage、UnlockConnector、Device Model（GetVariables / SetVariables / GetBaseReport，UI 中只读显示），以及带外部（EMS）限值的 2.0.1 Smart Charging。OCPP 2.1 计划在 v0.3 支持。
+- **OCPP 2.0.1 充电站**，可与 1.6 充电桩任意混合：带离线队列的 TransactionEvent、RequestStart / StopTransaction、Reset、ChangeAvailability、TriggerMessage、UnlockConnector、Device Model（GetVariables / SetVariables / GetBaseReport，UI 中只读显示），以及带外部（EMS）限值的 2.0.1 Smart Charging。也支持 OCPP 2.1 核心（SEND / CALLRESULTERROR 帧格式，新增 2.1 消息的存储与应答），2.1 Smart Charging 的新增内容将在后续支持。
 - **功率闭环的 Smart Charging。** 支持 SetChargingProfile、ClearChargingProfile 和 GetCompositeSchedule。功率限值与应答 GetCompositeSchedule 的是同一个函数，计划与 MeterValues 不会不一致。规范未明确之处的解释全部写在文档中。
 - **EV 与功率模型。** 电池、SoC、充电曲线、相数、爬坡，以及日本 200 V 单相和三相三角形接法供电；Charging / SuspendedEV / SuspendedEVSE 由模型决定。
 - **单进程 200 台以上**，可单独或批量连接。

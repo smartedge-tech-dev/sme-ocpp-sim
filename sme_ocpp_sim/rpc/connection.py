@@ -147,17 +147,14 @@ class RpcConnection:
             raise ConnectionError("connection closed")
         mtype = uid = action = None
         try:
-            frame = framer.decode(raw)
+            frame = framer.decode(raw, self.codes.supports_send)
         except framer.BadFrame:
             pass
         else:
             uid = frame.uid
             if uid in self._pending:
                 raise ValueError(f"uniqueId {uid!r} is that of a pending outbound CALL")
-            if isinstance(frame, framer.Call):
-                mtype, action = framer.CALL, frame.action
-            else:
-                mtype = framer.CALLRESULT if isinstance(frame, framer.CallResult) else framer.CALLERROR
+            mtype, action = _mtype(frame), getattr(frame, "action", None)
         try:
             await self._send_raw(raw, FrameInfo("tx", raw, mtype, uid, action, "injected (raw)"))
         except ConnectionClosed as e:
@@ -174,7 +171,31 @@ class RpcConnection:
         except ConnectionClosed:
             pass
 
+    async def send_result_error(self, uid: str, code: str, desc: str = "", details: Optional[dict] = None) -> None:
+        """OCPP-J 2.1 CALLRESULTERROR for the CALLRESULT ``uid`` (the peer's answer to our CALL was invalid)."""
+        if not self.codes.supports_send:
+            raise RuntimeError("CALLRESULTERROR needs OCPP-J 2.1")
+        cap = self.codes.max_error_description_length
+        raw = framer.encode_result_error(uid, code, desc[:cap] if cap is not None else desc, details)
+        try:
+            await self._send_raw(raw, FrameInfo("tx", raw, framer.CALLRESULTERROR, uid, None))
+        except ConnectionClosed:
+            pass
+
     # ------------------------------------------------------------------ tx
+    async def send(self, action: str, payload: dict, *, note: str = "") -> None:
+        """OCPP-J 2.1 SEND: a one-way message, not answered and not serialised with the pending CALL (§4.2.4)."""
+        if not self.codes.supports_send:
+            raise RuntimeError("SEND needs OCPP-J 2.1")
+        if self.closed.is_set() or self._stopping:
+            raise ConnectionError("connection closed")
+        uid = self._uid_factory()
+        raw = framer.encode_send(uid, action, payload)
+        try:
+            await self._send_raw(raw, FrameInfo("tx", raw, framer.SEND, uid, action, note or None))
+        except ConnectionClosed as e:
+            raise ConnectionError("connection closed") from e
+
     async def call(self, action: str, payload: dict, timeout: Optional[float] = None, *, note: str = "") -> dict:
         """Send a CALL and return the CALLRESULT payload (``note`` goes into the tx frame log entry).
 
@@ -227,9 +248,30 @@ class RpcConnection:
 
     async def _dispatch(self, raw: str) -> None:
         try:
-            frame = framer.decode(raw)
+            frame = framer.decode(raw, self.codes.supports_send)
         except framer.BadFrame as e:
             await self._on_bad_frame(raw, e)
+            return
+
+        if isinstance(frame, framer.Send):
+            # Never answered (Part 4 §4.2.4): the handler's result and errors are dropped.
+            if frame.action not in self.codes.send_actions:
+                self._emit(FrameInfo("rx", raw, framer.SEND, frame.uid, frame.action, "not a SEND action: ignored"))
+                log.warning("%s: SEND %s is not a SEND action: ignored", self.name, frame.action)
+                return
+            handler = self.handlers.get(frame.action)
+            self._emit(FrameInfo("rx", raw, framer.SEND, frame.uid, frame.action,
+                                 None if handler else "no handler: ignored"))
+            if handler is not None:
+                t = asyncio.create_task(self._run_send(frame, handler))
+                self._tasks.add(t)
+                t.add_done_callback(self._tasks.discard)
+            return
+        if isinstance(frame, framer.CallResultErrorFrame):
+            # The peer rejects one of our CALLRESULTs; nothing is pending for it, so it is only logged.
+            self._emit(FrameInfo("rx", raw, framer.CALLRESULTERROR, frame.uid, None,
+                                 f"CALLRESULTERROR {frame.code}: {frame.description}"))
+            log.warning("%s: CALLRESULTERROR for %s: %s %s", self.name, frame.uid, frame.code, frame.description)
             return
 
         if isinstance(frame, framer.Call):
@@ -255,7 +297,7 @@ class RpcConnection:
             t.add_done_callback(self._tasks.discard)
             return
 
-        mtype = framer.CALLRESULT if isinstance(frame, framer.CallResult) else framer.CALLERROR
+        mtype = _mtype(frame)
         entry = self._pending.get(frame.uid)
         if entry is None or entry[0].done():
             note = "late or unsolicited response dropped"
@@ -269,8 +311,21 @@ class RpcConnection:
         else:
             fut.set_exception(CallError(frame.code, frame.description, frame.details))
 
+    async def _run_send(self, frame: framer.Send, handler: Handler) -> None:
+        try:
+            await handler(frame.payload)
+        except Exception as e:  # noqa: BLE001 - a SEND is never answered, not even with an error
+            log.warning("%s: SEND %s failed: %s", self.name, frame.action, e)
+
     async def _on_bad_frame(self, raw: str, e: framer.BadFrame) -> None:
         mtype = e.message_type if isinstance(e.message_type, int) else None
+        if mtype in (framer.SEND, framer.CALLRESULTERROR) and self.codes.supports_send:
+            # A SEND is never answered (Part 4 §4.2.4), also not when malformed; a malformed CALLRESULTERROR
+            # (an answer to one of our CALLRESULTs) never touches a pending CALL. Logged and dropped.
+            self._emit(FrameInfo("rx", raw, mtype, e.uid, None, f"dropped: {e.reason}"))
+            log.warning("%s: malformed %s dropped (%s): %.200s", self.name,
+                        "SEND" if mtype == framer.SEND else "CALLRESULTERROR", e.reason, raw)
+            return
         if e.kind == framer.NO_UID:
             # The answer to a frame without a usable uniqueId is the version's choice
             # (ErrorCodes.bad_frame_reply); 1.6J defines none, so 1.6 logs and drops it.
@@ -288,6 +343,13 @@ class RpcConnection:
             self._emit(FrameInfo("rx", raw, mtype, e.uid, action, e.reason))
             if entry and not entry[0].done():
                 entry[0].set_exception(CallError(self.codes.format_violation, e.reason))
+                if mtype == framer.CALLRESULT and self.codes.supports_send:
+                    # OCPP-J 2.1 §4.2.3: tell the peer its CALLRESULT was malformed.
+                    await self.send_result_error(e.uid, self.codes.format_violation, e.reason)
+            return
+        if e.kind == framer.UNKNOWN_TYPE and self.codes.ignore_unknown_type:
+            # OCPP-J 2.1 §4.1.3: ignored, not answered (MessageTypeNotSupported is deprecated).
+            self._emit(FrameInfo("rx", raw, mtype, e.uid, None, f"{e.reason}: ignored"))
             return
         self._emit(FrameInfo("rx", raw, mtype, e.uid, None, e.reason))
         if e.kind == framer.BAD_CALL:
@@ -362,3 +424,8 @@ class RpcConnection:
             await self._send_raw(raw, FrameInfo("tx", raw, framer.CALLRESULT, frame.uid, frame.action))
         except ConnectionClosed:
             pass
+
+
+def _mtype(frame: framer.Frame) -> int:
+    return {framer.Call: framer.CALL, framer.CallResult: framer.CALLRESULT, framer.CallErrorFrame: framer.CALLERROR,
+            framer.Send: framer.SEND, framer.CallResultErrorFrame: framer.CALLRESULTERROR}[type(frame)]

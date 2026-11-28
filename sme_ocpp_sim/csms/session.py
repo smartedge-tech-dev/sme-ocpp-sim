@@ -1,7 +1,7 @@
 """Mini CSMS: what is recorded per connected charging station (one :class:`CpSession` per WebSocket connection).
 
 Recorded: the handshake (version, remote address, whether Basic Auth was sent), the last BootNotification and its
-answer, heartbeats, the last status per connector (1.6 key ``"<connectorId>"``, 2.0.1 ``"<evseId>/<connectorId>"``),
+answer, heartbeats, the last status per connector (1.6 key ``"<connectorId>"``, 2.0.1 / 2.1 ``"<evseId>/<connectorId>"``),
 the transactions (bounded, finished ones evicted first), the newest meter values (bounded), a count and the last payload per inbound action,
 payload warnings (tolerant mode) and the CALLs the CSMS sent (manual and plan). All payloads are kept in wire form
 (camelCase JSON). Times are wall-clock seconds since the epoch.

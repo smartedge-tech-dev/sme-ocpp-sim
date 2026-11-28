@@ -1,4 +1,4 @@
-"""Mini CSMS (plan M9): a simple OCPP 1.6J / 2.0.1 CSMS in the simulator process.
+"""Mini CSMS (plan M9): a simple OCPP 1.6J / 2.0.1 / 2.1 CSMS in the simulator process.
 
 :class:`MiniCsms` listens on ``mini_csms.host:port`` (``rpc.OcppServer``), negotiates the subprotocol among
 ``mini_csms.versions`` (the first one the station offers that is enabled; none -> the connection is closed),

@@ -2,11 +2,11 @@
 
 <h1 align="center">SME OCPPSim</h1>
 
-<p align="center"><strong>Simulate a car park full of EV chargers on your laptop.</strong> OCPP 1.6J and 2.0.1 chargers with Smart Charging,<br>for CSMS and EMS testing, with a live web UI.</p>
+<p align="center"><strong>Simulate a car park full of EV chargers on your laptop.</strong> OCPP 1.6J and 2.0.1 chargers with Smart Charging (plus OCPP 2.1 core),<br>for CSMS and EMS testing, with a live web UI.</p>
 
 <p align="center"><a href="https://smartedge-tech.com/open-source/#ocpp-sim"><b>Website</b></a> · <a href="https://smartedge-tech-dev.github.io/sme-ocpp-sim/"><b>Docs</b></a> · <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><b>Download</b></a></p>
 
-<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J%20%7C%202.0.1-2e8b57" alt="OCPP 1.6J | 2.0.1"></p>
+<p align="center"><a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml"><img src="https://github.com/smartedge-tech-dev/sme-ocpp-sim/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/releases/latest"><img src="https://img.shields.io/github/v/release/smartedge-tech-dev/sme-ocpp-sim" alt="release"></a> <a href="https://github.com/smartedge-tech-dev/sme-ocpp-sim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-5b5bd6" alt="license MIT"></a> <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-0a7bbb" alt="platform"> <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="python 3.11+"> <img src="https://img.shields.io/badge/OCPP-1.6J%20%7C%202.0.1%20%7C%202.1-2e8b57" alt="OCPP 1.6J | 2.0.1 | 2.1"></p>
 
 <p align="center"><strong>English</strong> | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简体中文</a></p>
 
@@ -22,7 +22,7 @@ CSMS (SteVe, your own CSMS, an EMS...) sends.
 - **OCPP 2.0.1 charging stations**, mixed freely with 1.6 chargers: TransactionEvent with offline queueing,
   RequestStart / StopTransaction, Reset, ChangeAvailability, TriggerMessage, UnlockConnector, the Device Model
   (GetVariables / SetVariables / GetBaseReport, shown read-only in the UI) and 2.0.1 Smart Charging with an
-  external (EMS) limit. OCPP 2.1 is planned for v0.3.
+  external (EMS) limit. OCPP 2.1 core is supported too (SEND / CALLRESULTERROR framing, the new 2.1 messages stored and acknowledged); the 2.1 Smart Charging additions come later.
 - **Smart Charging with a closed power loop (1.6 and 2.0.1).** SetChargingProfile, ClearChargingProfile and
   GetCompositeSchedule. The power limit is computed by the same function that answers GetCompositeSchedule,
   so the schedule and the meter values cannot diverge. Every point the specification leaves open is documented.

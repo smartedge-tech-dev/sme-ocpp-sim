@@ -52,7 +52,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from ...rpc.errors import OCPP201_ERRORS
 from .. import base as d
 from . import models as m
-from .codec import dump, parse
+from . import codec as codec201
+from .codec import dump
 from .composite import CompositeSchedule
 from .profiles import ChargingProfile, ChargingSchedule, SchedulePeriod
 from .enums import (AuthorizationStatusEnumType, BootReasonEnumType, ConnectorStatusEnumType,
@@ -98,8 +99,8 @@ def connector_status(status: d.DomainStatus) -> ConnectorStatusEnumType:
     return _CONNECTOR_STATUS[status]
 
 
-def id_token(token: str, token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE) -> m.IdTokenType:
-    return m.IdTokenType(id_token=token, type=token_type)
+def id_token(token: str, token_type: IdTokenEnumType = LOCAL_TOKEN_TYPE, models: Any = m) -> m.IdTokenType:
+    return models.IdTokenType(id_token=token, type=token_type)
 
 
 def auth_result(status: AuthorizationStatusEnumType) -> d.AuthResult:
@@ -113,16 +114,16 @@ def id_token_info(info: m.IdTokenInfoType) -> d.IdTokenInfo:
                          parent_id_token=group)
 
 
-def sampled_values(samples: Sequence[d.Sample], context: str) -> List[m.SampledValueType]:
-    return [m.SampledValueType(value=s.value, context=context, measurand=s.measurand, phase=s.phase,
+def sampled_values(samples: Sequence[d.Sample], context: str, models: Any = m) -> List[m.SampledValueType]:
+    return [models.SampledValueType(value=s.value, context=context, measurand=s.measurand, phase=s.phase,
                                location=s.location,
-                               unit_of_measure=m.UnitOfMeasureType(unit=s.unit) if s.unit else None)
+                               unit_of_measure=models.UnitOfMeasureType(unit=s.unit) if s.unit else None)
             for s in samples]
 
 
-def meter_value(ts: datetime, samples: Sequence[d.Sample], context: str) -> m.MeterValueType:
+def meter_value(ts: datetime, samples: Sequence[d.Sample], context: str, models: Any = m) -> m.MeterValueType:
     """One ``MeterValueType``; ``samples`` must not be empty (``sampledValue`` has ``minItems`` 1)."""
-    return m.MeterValueType(timestamp=ts, sampled_value=sampled_values(samples, context))
+    return models.MeterValueType(timestamp=ts, sampled_value=sampled_values(samples, context, models=models))
 
 
 def charging_schedule(wire: m.ChargingScheduleType) -> ChargingSchedule:
@@ -144,31 +145,31 @@ def charging_profile(wire: m.ChargingProfileType) -> ChargingProfile:
         other_schedules=tuple(others))
 
 
-def charging_schedule_type(sched: ChargingSchedule) -> m.ChargingScheduleType:
-    return m.ChargingScheduleType(
+def charging_schedule_type(sched: ChargingSchedule, models: Any = m) -> m.ChargingScheduleType:
+    return models.ChargingScheduleType(
         id=sched.id, start_schedule=sched.start_schedule, duration=sched.duration, charging_rate_unit=sched.unit,
         min_charging_rate=sched.min_charging_rate,
-        charging_schedule_period=[m.ChargingSchedulePeriodType(start_period=p.start_period, limit=p.limit,
+        charging_schedule_period=[models.ChargingSchedulePeriodType(start_period=p.start_period, limit=p.limit,
                                                                number_phases=p.number_phases,
                                                                phase_to_use=p.phase_to_use)
                                   for p in sched.periods])
 
 
-def charging_profile_type(profile: ChargingProfile) -> m.ChargingProfileType:
+def charging_profile_type(profile: ChargingProfile, models: Any = m) -> m.ChargingProfileType:
     """The 2.0.1 wire model of a domain profile (used for the operator's external constraints)."""
-    return m.ChargingProfileType(
+    return models.ChargingProfileType(
         id=profile.profile_id, stack_level=profile.stack_level, charging_profile_purpose=profile.purpose,
         charging_profile_kind=profile.kind, recurrency_kind=profile.recurrency_kind,
         valid_from=profile.valid_from, valid_to=profile.valid_to, transaction_id=profile.transaction_id,
-        charging_schedule=[charging_schedule_type(s) for s in (profile.schedule, *profile.other_schedules)])
+        charging_schedule=[charging_schedule_type(s, models=models) for s in (profile.schedule, *profile.other_schedules)])
 
 
-def composite_schedule_type(sched: CompositeSchedule) -> m.CompositeScheduleType:
+def composite_schedule_type(sched: CompositeSchedule, models: Any = m) -> m.CompositeScheduleType:
     """Every period must have a limit (the station fills unconstrained intervals with the hardware maximum)."""
-    return m.CompositeScheduleType(
+    return models.CompositeScheduleType(
         evse_id=sched.evse_id, duration=sched.duration, schedule_start=sched.start,
         charging_rate_unit=sched.unit,
-        charging_schedule_period=[m.ChargingSchedulePeriodType(start_period=p.start_period,
+        charging_schedule_period=[models.ChargingSchedulePeriodType(start_period=p.start_period,
                                                                limit=float(p.limit or 0.0),
                                                                number_phases=p.number_phases)
                                   for p in sched.periods])
@@ -179,6 +180,11 @@ class Adapter201(d.VersionAdapter):
     subprotocol = "ocpp2.0.1"
     error_codes = OCPP201_ERRORS
     config_keys = ()  # 2.0.1 has a Device Model instead of a key table (``device_model``)
+    #: Message models and codec; OCPP 2.1 (``protocol.v21``) swaps in its own (class-attribute injection).
+    models: Any = m
+    codec: Any = codec201.CODEC
+    #: CSMS -> CS actions answered by the station (``_remote``).
+    remote_actions: Sequence[str] = REMOTE_ACTIONS
 
     def __init__(self, *, strict: bool = False) -> None:
         super().__init__(strict=strict)
@@ -191,7 +197,7 @@ class Adapter201(d.VersionAdapter):
         self._boot_reason_once = reason
 
     def _parse(self, action: str, payload: Any, kind: str = "request") -> Any:
-        model, ignored = parse(action, payload, kind, strict=self.strict)  # type: ignore[arg-type]
+        model, ignored = self.codec.parse(action, payload, kind, strict=self.strict)  # type: ignore[arg-type]
         if ignored:
             log.info("%s %s: ignored unknown fields %s", action, kind, ignored)
         return model
@@ -200,14 +206,14 @@ class Adapter201(d.VersionAdapter):
 
     def handlers(self, runtime: d.CommandSink) -> Dict[str, d.Handler]:
         table: Dict[str, Any] = {"DataTransfer": self._data_transfer}
-        for action in REMOTE_ACTIONS:
+        for action in self.remote_actions:
             table[action] = functools.partial(self._remote, action)
         return {a: functools.partial(h, runtime) for a, h in table.items()}
 
     async def _remote(self, action: str, runtime: d.CommandSink, payload: dict) -> dict:
         """A remote-control CALL: the station gets the request model and returns the response model."""
         res = await runtime.handle(self._parse(action, payload))
-        if not isinstance(res, m.RESPONSES[action]):
+        if not isinstance(res, self.codec.responses[action]):
             raise TypeError(f"{action}: the station answered {type(res).__name__}")
         return dump(res)
 
@@ -215,7 +221,7 @@ class Adapter201(d.VersionAdapter):
         req: m.DataTransferRequest = self._parse("DataTransfer", payload)
         # ``data`` is any JSON in 2.0.1; the domain carries it unchanged.
         res: d.DataTransferResult = await runtime.handle(d.DataTransfer(req.vendor_id, req.message_id, req.data))
-        return dump(m.DataTransferResponse(status=DataTransferStatusEnumType(res.status.value), data=res.data))
+        return dump(self.models.DataTransferResponse(status=DataTransferStatusEnumType(res.status.value), data=res.data))
 
     # ------------------------------------------------------------------ outbound
 
@@ -226,25 +232,25 @@ class Adapter201(d.VersionAdapter):
         return self._parse(action, payload, "response")
 
     async def send_booting(self, ev: d.Booting) -> d.BootResult:
-        cs = m.ChargingStationType(vendor_name=ev.vendor, model=ev.model, serial_number=ev.serial,
+        cs = self.models.ChargingStationType(vendor_name=ev.vendor, model=ev.model, serial_number=ev.serial,
                                    firmware_version=ev.firmware)
         reason, self._boot_reason_once = self._boot_reason_once or self.boot_reason, None
         res: m.BootNotificationResponse = await self._send(
-            "BootNotification", m.BootNotificationRequest(charging_station=cs, reason=reason))
+            "BootNotification", self.models.BootNotificationRequest(charging_station=cs, reason=reason))
         return d.BootResult(d.BootStatus(res.status.value), res.interval, res.current_time)
 
     async def send_heartbeat(self, ev: d.Heartbeat) -> Optional[datetime]:
-        res: m.HeartbeatResponse = await self._send("Heartbeat", m.HeartbeatRequest())
+        res: m.HeartbeatResponse = await self._send("Heartbeat", self.models.HeartbeatRequest())
         return res.current_time
 
     async def send_connector_status(self, ev: d.ConnectorStatus) -> None:
         """``ev.error_code`` / ``info`` are not part of a 2.0.1 StatusNotification and are not sent."""
-        await self._send("StatusNotification", m.StatusNotificationRequest(
+        await self._send("StatusNotification", self.models.StatusNotificationRequest(
             timestamp=ev.timestamp or datetime.now(timezone.utc), connector_status=connector_status(ev.status), evse_id=ev.evse_id,
             connector_id=ev.connector_id))
 
     async def send_authorize(self, ev: d.AuthorizeRequest) -> d.IdTokenInfo:
-        res: m.AuthorizeResponse = await self._send("Authorize", m.AuthorizeRequest(id_token=id_token(ev.id_token)))
+        res: m.AuthorizeResponse = await self._send("Authorize", self.models.AuthorizeRequest(id_token=id_token(ev.id_token, models=self.models)))
         return id_token_info(res.id_token_info)
 
     async def send_transaction_event(self, req: m.TransactionEventRequest) -> m.TransactionEventResponse:
@@ -252,8 +258,8 @@ class Adapter201(d.VersionAdapter):
 
     async def send_meter_sample(self, ev: d.MeterSample) -> None:
         """MeterValues outside the transaction flow (2.0.1 sends transaction readings in TransactionEvent)."""
-        await self._send("MeterValues", m.MeterValuesRequest(
-            evse_id=ev.evse_id, meter_value=[meter_value(ev.timestamp, ev.samples, ev.context)]))
+        await self._send("MeterValues", self.models.MeterValuesRequest(
+            evse_id=ev.evse_id, meter_value=[meter_value(ev.timestamp, ev.samples, ev.context, models=self.models)]))
 
     async def send_notify_report(self, req: m.NotifyReportRequest) -> m.NotifyReportResponse:
         """One NotifyReport part of a GetBaseReport (built by ``Station201``)."""
@@ -283,7 +289,7 @@ class Adapter201(d.VersionAdapter):
         return await self._send("SignCertificate", req)
 
     async def send_security_event(self, ev: d.SecurityEvent) -> None:
-        await self._send("SecurityEventNotification", m.SecurityEventNotificationRequest(
+        await self._send("SecurityEventNotification", self.models.SecurityEventNotificationRequest(
             type=ev.kind.value, timestamp=ev.timestamp, tech_info=ev.tech_info))
 
     async def send_reservation_status_update(
@@ -292,7 +298,7 @@ class Adapter201(d.VersionAdapter):
 
     async def send_data_transfer(self, cmd: d.DataTransfer) -> d.DataTransferResult:
         res: m.DataTransferResponse = await self._send(
-            "DataTransfer", m.DataTransferRequest(vendor_id=cmd.vendor_id, message_id=cmd.message_id, data=cmd.data))
+            "DataTransfer", self.models.DataTransferRequest(vendor_id=cmd.vendor_id, message_id=cmd.message_id, data=cmd.data))
         return d.DataTransferResult(d.DataTransferStatus(res.status.value), res.data)
 
     # ------------------------------------------------------------------ 1.6-shaped transaction calls

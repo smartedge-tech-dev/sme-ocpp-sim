@@ -9,19 +9,18 @@ def test_versions_listed():
     vs = {v.version: v for v in registry.list_versions()}
     assert vs["1.6"].available
     assert vs["2.0.1"].available
-    assert not vs["2.1"].available and vs["2.1"].note == "coming in v0.3"
+    assert vs["2.1"].available
 
 
 def test_check_version():
     assert registry.check_version("1.6") == "1.6"
     assert registry.check_version("2.0.1") == "2.0.1"
-    with pytest.raises(ValueError, match="coming in v0.3"):
-        registry.check_version("2.1")
+    assert registry.check_version("2.1") == "2.1"
     with pytest.raises(ValueError, match="unknown OCPP version"):
         registry.check_version("1.5")
 
 
-@pytest.mark.parametrize("version,msg", [("2.1", "coming in v0.3")])
+@pytest.mark.parametrize("version,msg", [("1.5", "unknown OCPP version")])
 def test_get_adapter_class_unavailable(version, msg):
     with pytest.raises(ValueError, match=msg):
         registry.get_adapter_class(version)

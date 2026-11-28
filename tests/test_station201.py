@@ -6,6 +6,7 @@ The peer schema-validates every message the charger sends; wire assertions use t
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import uuid
 
@@ -22,6 +23,9 @@ from sme_ocpp_sim.protocol.base import AuthResult
 from sme_ocpp_sim.protocol.v201.station import Station201
 from sme_ocpp_sim.runtime.charger import ChargerRuntime
 
+#: OCPP version the 2.0.1 station suites run as: ``OCPPSIM_V201_SUITE=2.1`` runs them against Station21 (2.1 is
+#: a superset of 2.0.1; CI runs both, see .github/workflows/ci.yml). The peer speaks the same subprotocol.
+V201 = os.environ.get("OCPPSIM_V201_SUITE", "2.0.1")
 CP = "CS1"
 FAST = ReconnectConfig(min_s=0.05, max_s=0.2, jitter=0)
 
@@ -36,7 +40,7 @@ def _scenario(body, peer_kw=None, cfg_kw=None, rt_kw=None):
     async def main():
         peer = CsmsPeer201(**{"hb_interval": 30, **(peer_kw or {})})
         await peer.start()
-        rt = ChargerRuntime(ChargerConfig(id=CP, **(cfg_kw or {})), peer.url, "2.0.1", reconnect=FAST,
+        rt = ChargerRuntime(ChargerConfig(id=CP, **(cfg_kw or {})), peer.url, V201, reconnect=FAST,
                             frame_log=FrameLog(), call_timeout=5, **(rt_kw or {}))
         stop = asyncio.Event()
         task = asyncio.create_task(rt.run(stop))
@@ -77,26 +81,26 @@ def _events(s, tx_id=None):
 
 
 def test_station201_is_hosted_and_speaks_ocpp201():
-    rt = ChargerRuntime(ChargerConfig(id=CP, connectors=3), "ws://127.0.0.1:9/ocpp", "2.0.1")
+    rt = ChargerRuntime(ChargerConfig(id=CP, connectors=3), "ws://127.0.0.1:9/ocpp", V201)
     assert isinstance(rt.station, Station201) and rt.connector_count == 3
-    assert rt.transport.subprotocol == "ocpp2.0.1" and rt.adapter.version == "2.0.1"
+    assert rt.transport.subprotocol == f"ocpp{V201}" and rt.adapter.version == V201
     assert rt.fault_codes == Station201.fault_codes and "GroundFault" in rt.fault_codes
     snap = rt.snapshot()
-    assert snap["ocpp_version"] == "2.0.1" and snap["tx_queue"] == 0
+    assert snap["ocpp_version"] == V201 and snap["tx_queue"] == 0
     assert [(c["evse_id"], c["connector_id"], c["status"]) for c in snap["connectors"]] == [
         (1, 1, "Available"), (2, 1, "Available"), (3, 1, "Available")]
 
 
 def test_config_accepts_201():
-    cfg = SimConfig.model_validate({"csms_defaults": {"url": "ws://h/ocpp", "ocpp_version": "2.0.1"},
+    cfg = SimConfig.model_validate({"csms_defaults": {"url": "ws://h/ocpp", "ocpp_version": V201},
                                     "chargers": [{"id": "A"}]})
-    assert cfg.resolve_csms(cfg.chargers[0]) == ("ws://h/ocpp", "2.0.1")
+    assert cfg.resolve_csms(cfg.chargers[0]) == ("ws://h/ocpp", V201)
 
 
 def test_boot_accepted_heartbeats_and_status_per_evse():
     async def body(peer, rt):
         s = await _online(peer, rt)
-        assert s.subprotocol == "ocpp2.0.1"
+        assert s.subprotocol == f"ocpp{V201}"
         assert s.statuses == [(1, 1, "Available"), (2, 1, "Available")]  # one connector per EVSE, no EVSE 0
         boot = s.boot_requests[0]
         assert boot["reason"] == "PowerUp"
@@ -298,7 +302,7 @@ def test_events_raised_offline_are_queued_and_resent_with_offline_flag():
         peer = CsmsPeer201(hb_interval=30)
         port = await peer.start()
         rt = ChargerRuntime(ChargerConfig(id=CP, connectors=2, auth_mode="accept_all", meter_sample_interval_s=0),
-                            peer.url, "2.0.1", reconnect=FAST, call_timeout=5)
+                            peer.url, V201, reconnect=FAST, call_timeout=5)
         stop = asyncio.Event()
         task = asyncio.create_task(rt.run(stop))
         try:
@@ -339,7 +343,7 @@ def test_lost_answer_keeps_event_queued_and_resends_it():
         peer = CsmsPeer201(hb_interval=30)
         await peer.start()
         rt = ChargerRuntime(ChargerConfig(id=CP, auth_mode="accept_all", meter_sample_interval_s=0), peer.url,
-                            "2.0.1", reconnect=FAST, call_timeout=5)
+                            V201, reconnect=FAST, call_timeout=5)
         stop = asyncio.Event()
         task = asyncio.create_task(rt.run(stop))
         try:
@@ -394,7 +398,7 @@ def test_version_switch_reconnects_only_that_charger_and_clears_its_transactions
         p16, p201 = CsmsPeer(hb_interval=30), CsmsPeer201(hb_interval=30)
         await p16.start()
         await p201.start()
-        urls = {"1.6": p16.url, "2.0.1": p201.url}
+        urls = {"1.6": p16.url, V201: p201.url}
         engine = OcppEngine(_engine_config(urls, {"A": "1.6", "B": "1.6"}))
         await engine.start()
         try:
@@ -402,9 +406,9 @@ def test_version_switch_reconnects_only_that_charger_and_clears_its_transactions
             await engine.charger("A").plug(1)
             assert await engine.charger("A").swipe(1, "T") == "Accepted"
             b = engine.charger("B")
-            await engine.reload(_engine_config(urls, {"A": "2.0.1", "B": "1.6"}))
+            await engine.reload(_engine_config(urls, {"A": V201, "B": "1.6"}))
             a = engine.charger("A")
-            assert a.adapter.version == "2.0.1" and not a.has_transaction(1)
+            assert a.adapter.version == V201 and not a.has_transaction(1)
             await _until(lambda: a.online and "A" in p201.sessions)
             assert engine.charger("B") is b and b.online and len([h for h in p16.history if h.cp_id == "B"]) == 1
             await engine.reload(_engine_config(urls, {"A": "1.6", "B": "1.6"}))
@@ -425,16 +429,16 @@ def test_web_api_serves_a_201_charger(tmp_path):
 
     from sme_ocpp_sim.web import FAULT_CODES, create_app
 
-    cfg = SimConfig.model_validate({"csms_defaults": {"url": "ws://127.0.0.1:9/ocpp", "ocpp_version": "2.0.1"},
+    cfg = SimConfig.model_validate({"csms_defaults": {"url": "ws://127.0.0.1:9/ocpp", "ocpp_version": V201},
                                     "chargers": [{"id": "CP1", "connectors": 2}]})
     with TestClient(create_app(OcppEngine(cfg), tmp_path / "sim.yaml")) as client:
         detail = client.get("/api/chargers/CP1").json()
-        assert detail["ocpp_version"] == "2.0.1" and detail["fault_codes"] == list(Station201.fault_codes)
+        assert detail["ocpp_version"] == V201 and detail["fault_codes"] == list(Station201.fault_codes)
         assert set(Station201.fault_codes) <= set(FAULT_CODES)
         assert [c["connector_status"] for c in detail["connectors"]] == ["Available", "Available"]
         assert client.get("/api/chargers/CP1/profiles").json() == {"profiles": []}
         conf = client.get("/api/chargers/CP1/configuration").json()
-        assert conf["keys"] == [] and conf["ocpp_version"] == "2.0.1"
+        assert conf["keys"] == [] and conf["ocpp_version"] == V201
         hb = next(v for v in conf["variables"] if v["variable"] == "HeartbeatInterval")
         assert hb["component"] == "OCPPCommCtrlr" and hb["attributes"] == {"Actual": "300"}
         assert client.get("/api/chargers/CP1/composite?connector=1").json()["periods"] == [

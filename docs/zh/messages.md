@@ -146,10 +146,45 @@ TransactionEvent 应答中拒绝令牌（`TxCtrlr.StopTxOnInvalidId` 为 true �
 | UnpublishFirmware | Not supported |  |
 | UpdateFirmware | 支持 | 仅模拟（不下载也不校验）：DownloadScheduled（`retrieveDateTime` 在未来）→ Downloading → Downloaded → SignatureVerified（带 `signature` 时）→ InstallScheduled（`installDateTime` 在未来）→ 没有交易的 EVSE 在交易全部结束前为 `Unavailable` → Installing → InstallRebooting → 重启（BootNotification reason `FirmwareUpdate`）→ Installed。下载失败时按 `retries` / `retryInterval` 重试；取消尚未安装的更新时为 `AcceptedCanceled`，安装中为 `Rejected`。时长与失败注入：每台充电桩的 `maintenance` |
 
+## OCPP 2.1 { #ocpp-21 }
+
+OCPP 2.1 通过 `ocpp_version: "2.1"`（子协议 `ocpp2.1`）使用。2.1 充电站的行为与 2.0.1 相同（见上方消息表），
+并增加以下内容。
+
+- **帧格式。** OCPP-J 2.1 新增 SEND（`[6, ...]`，单向，不应答）和 CALLRESULTERROR（`[5, ...]`，对端认为
+  CALLRESULT 无效），两者均可收发。2.1 下 MessageTypeId 未知的帧会被忽略（不回复 CALLERROR）。
+- **放宽的字段。** 生成的 2.1 模型增加了可选字段并放宽了部分 2.0.1 字段，2.0.1 的负载仍然有效。模型会强制校验结构、必填字段、枚举以及字符串/数组的长度限制，但不校验数值范围和正则（与 2.0.1 同样宽松）；出站帧在测试中会按官方 2.1 schema 校验。
+- **Reset。** `ImmediateAndResume` 会被接受并按 `Immediate` 处理，重启后恢复交易的过程不做模拟。
+- **TriggerMessage。** `CustomTrigger` 返回 `NotImplemented`。
+
+CSMS 到充电站的新消息：
+
+| 消息 | 状态 | 行为 |
+|---|---|---|
+| AFRRSignal | 存储并应答 | 存储（保留最后一次信号），`Accepted` |
+| NotifyAllowedEnergyTransfer | 存储并应答 | 按交易存储，`Accepted`；交易未知则 `Rejected` |
+| SetDefaultTariff | 存储并应答 | 按 EVSE 存储（0 表示全部 EVSE）：`Accepted`、`DuplicateTariffId`，EVSE 未知则 `Rejected` |
+| GetTariffs | 存储并应答 | 读回资费分配，没有则 `NoTariff` |
+| ClearTariffs | 存储并应答 | 每个资费一个结果：`Accepted` / `NoTariff` |
+| ChangeTransactionTariff | 存储并应答 | 进行中的交易为 `Accepted`，否则 `TxNotFound` |
+| SetDERControl | 存储并应答 | 按 `controlId` 存储，`Accepted` |
+| GetDERControl | 存储并应答 | `NotFound`，或 `Accepted` 后跟一条 ReportDERControl |
+| ClearDERControl | 存储并应答 | `Accepted` / `NotFound` |
+| UpdateDynamicSchedule、UsePriorityCharging | 不支持 | CALLERROR `NotImplemented`（计划在后续 v0.3.x 支持） |
+| GetPeriodicEventStream、AdjustPeriodicEventStream | 不支持 | CALLERROR `NotImplemented`（计划在 v0.4 支持） |
+| RequestBatterySwap、NotifyWebPaymentStarted | 不支持 | CALLERROR `NotImplemented` |
+
+“存储并应答”指请求保存在内存中并返回符合 schema 的应答，不会据此执行任何动作（不做本地费用计算，也没有 DER 行为）。
+
+12 条新的充电站到 CSMS 消息（BatterySwap、ClosePeriodicEventStream、GetCertificateChainStatus、NotifyDERAlarm、
+NotifyDERStartStop、NotifyPeriodicEventStream（SEND）、NotifyPriorityCharging、NotifySettlement、
+OpenPeriodicEventStream、PullDynamicScheduleUpdate、ReportDERControl、VatNumberValidation）充电站不会主动发送
+（ReportDERControl 仅作为 GetDERControl 的应答发送）。Mini CSMS 对它们做最简应答。
+
 ## 尚不支持
 
 | 功能 | 状态 |
 |---|---|
-| OCPP 2.1 | 计划在 v0.3 支持（UI 中灰色显示） |
+| OCPP 2.1：UpdateDynamicSchedule、UsePriorityCharging、周期事件流、换电、Web 支付 | 不支持（CALLERROR `NotImplemented`），见 [OCPP 2.1](#ocpp-21) |
 | 1.6 Security Whitepaper 的 SignedUpdateFirmware、GetLog、LogStatusNotification、SignedFirmwareStatusNotification | 不支持（CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 不支持（付费标准） |

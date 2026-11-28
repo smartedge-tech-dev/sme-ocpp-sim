@@ -22,7 +22,7 @@ Windows / Linux / Docker で動作します。数十〜数百台の AC 充電器
 - **OCPP 2.0.1 の充電器**（1.6 の充電器と自由に混在可能）。オフラインキュー付きの TransactionEvent、
   RequestStart / StopTransaction、Reset、ChangeAvailability、TriggerMessage、UnlockConnector、Device Model
   （GetVariables / SetVariables / GetBaseReport。UI では参照のみ）、外部（EMS）制限値付きの 2.0.1 Smart Charging。
-  OCPP 2.1 は v0.3 で対応予定です。
+  OCPP 2.1 のコアにも対応しています（SEND / CALLRESULTERROR のフレーミング、新しい 2.1 メッセージの保存と応答）。2.1 の Smart Charging 追加分は今後対応します。
 - **電力の閉ループを持つ Smart Charging（1.6 と 2.0.1）。** SetChargingProfile、ClearChargingProfile、GetCompositeSchedule に対応します。
   電力の制限値は GetCompositeSchedule に応答するのと同じ関数で計算するため、計画と MeterValues が食い違いません。
   仕様が定めていない点の解釈はすべてドキュメントに記載しています。

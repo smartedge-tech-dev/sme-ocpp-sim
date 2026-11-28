@@ -532,7 +532,7 @@ def _router(engine: OcppEngine) -> APIRouter:
             raise bad(400, f"composite schedule rejected ({res.status.value})")
         return {"connector": cid_, "schedule_start": res.schedule_start, **jsonable_encoder(res.schedule)}
 
-    @r.post("/chargers/{cid}/external-limit", summary="Set or remove an external charging limit (OCPP 2.0.1)")
+    @r.post("/chargers/{cid}/external-limit", summary="Set or remove an external charging limit (OCPP 2.0.1 / 2.1)")
     async def external_limit(cid: str, body: ExternalLimitBody = Body(default_factory=ExternalLimitBody)):
         rt = runtime(cid)
         try:  # the station checks the connector, after the version (1.6: not supported)

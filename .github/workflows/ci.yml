@@ -24,6 +24,10 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       # The sme-sim-common pytest plugin (asyncio timeout + hang dump) is activated automatically.
       - run: python -m pytest -q
+      # The 2.0.1 station suites again as OCPP 2.1 (Station21 inherits Station201; 2.1 is a superset of 2.0.1).
+      - run: python -m pytest -q tests/test_station201.py tests/test_station201_remote.py tests/test_station201_device_model.py tests/test_station201_smart_charging.py tests/test_station201_spec_rules.py
+        env:
+          OCPPSIM_V201_SUITE: "2.1"
 
   # The built wheel (not the source tree) must start and carry static/ and configs/ (plan M8).
   wheel:
@@ -63,6 +67,7 @@ jobs:
           assert pkg.joinpath("configs", "demo-site.yaml").is_file(), "configs/demo-site.yaml missing from the wheel"
           assert pkg.joinpath("static", "index.html").is_file(), "static/index.html missing from the wheel"
           assert pkg.joinpath("scenarios", "plug-charge-unplug.yaml").is_file(), "scenarios/ missing from the wheel"
+          assert pkg.joinpath("schemas", "ocpp2.1", "BootNotificationRequest.json").is_file(), "schemas/ocpp2.1 missing from the wheel"
           from sme_ocpp_sim.config import load_file
           load_file(str(pkg.joinpath("configs", "demo-site.yaml")))
           print("wheel OK")

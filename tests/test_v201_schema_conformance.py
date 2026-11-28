@@ -238,5 +238,8 @@ def test_no_official_schema_files_in_the_repository():
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("not a git checkout")
     names = {f"{a}{k}.json" for a in m.ACTIONS for k in ("Request", "Response")}
-    hits = [p for p in tracked.splitlines() if p.rsplit("/", 1)[-1] in names or p.startswith(".oca-schemas/")]
+    # sme_ocpp_sim/schemas/ocpp2.1/ is the deliberately shipped OCPP 2.1 reference copy (CC BY-ND, THIRD-PARTY-NOTICES).
+    hits = [p for p in tracked.splitlines()
+            if (p.rsplit("/", 1)[-1] in names and not p.startswith("sme_ocpp_sim/schemas/ocpp2.1/"))
+            or p.startswith(".oca-schemas/")]
     assert hits == []
