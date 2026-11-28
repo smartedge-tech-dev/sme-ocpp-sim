@@ -313,6 +313,35 @@ class MeterOptions(StrictModel):
     tx_data_max_samples: int = Field(1000, ge=1, le=10000)
 
 
+class MeterImpairment(StrictModel):
+    """Meter value impairments of ``impairments.meter`` (v0.3 M2, simulator-only; applied live).
+
+    - ``drop_ratio``: this share of the periodic meter messages (1.6 MeterValues ``Sample.Periodic``, 2.0.1
+      TransactionEvent ``Updated`` / ``MeterValuePeriodic``) is not sent; a dropped 2.0.1 event still takes its
+      ``seqNo``, so the CSMS sees a gap.
+    - ``reorder_window``: periodic meter messages are held until this many are collected, then sent in a random
+      order (their timestamps and 2.0.1 ``seqNo`` keep their values); 0 / 1 = off. The held ones go out before the
+      transaction's end messages.
+    - ``end_after_stop``: the transaction's last meter reading goes out right after the StopTransaction / Ended
+      TransactionEvent (SAP ``outOfOrderEndMeterValues``): 1.6 moves the ``Transaction.End`` MeterValues there
+      (``meter.begin_end_messages``) or sends a ``Sample.Periodic`` one taken at the stop; 2.0.1 sends an
+      ``Updated`` event (``seqNo`` after the Ended one).
+    - ``voltage_noise_v``: every reported Voltage gets a uniform +- this many volts of noise.
+
+    The random draws come from ``impairments.seed`` (None: a CRC32 of the charger id), one stream per connector.
+    """
+
+    drop_ratio: float = Field(0.0, ge=0, le=1)
+    reorder_window: int = Field(0, ge=0, le=100)
+    end_after_stop: bool = False
+    voltage_noise_v: float = Field(0.0, ge=0, le=100)
+
+    @property
+    def active(self) -> bool:
+        return (self.drop_ratio > 0 or self.reorder_window > 1 or self.end_after_stop
+                or self.voltage_noise_v > 0)
+
+
 class ImpairmentConfig(StrictModel):
     """Simulator-only fault injection on the OCPP-J connection (v0.2.2 A).
 
@@ -328,6 +357,13 @@ class ImpairmentConfig(StrictModel):
       cable), ``close`` closes with code 1001. ``down_s``: the pause before reconnecting after such a drop (also
       the default of a forced drop). Simulated drops never count against ``reconnect.max_retries`` /
       ``boot_max_retries`` and use no back-off.
+    - ``remote_start`` (v0.3 M2): ``accept_no_tx`` answers every RemoteStartTransaction (1.6) /
+      RequestStartTransaction (2.0.1) with ``Accepted`` but starts nothing: no StartTransaction / TransactionEvent
+      Started, the connector state stays as it is. ``normal`` = off.
+    - ``meter``: meter value impairments, see :class:`MeterImpairment`.
+    - ``response_delay_ms``: CSMS -> CP action -> ms; the answer (CALLRESULT or CALLERROR) to that inbound CALL
+      is held that long (other frames are not delayed; longer than the CSMS's timeout = a slow charger). Checked
+      against the charger's OCPP version like ``block``.
 
     Not part of the charger's restart key: a change is applied to the running charger without a reconnect.
     """
@@ -342,6 +378,10 @@ class ImpairmentConfig(StrictModel):
     drop_jitter_s: float = Field(0.0, ge=0)
     down_s: float = Field(5.0, ge=0, le=86_400)
     drop_mode: Literal["abort", "close"] = "abort"
+    remote_start: Literal["normal", "accept_no_tx"] = "normal"
+    meter: MeterImpairment = Field(default_factory=MeterImpairment)
+    response_delay_ms: Dict[Annotated[str, Field(min_length=1)], Annotated[float, Field(ge=0, le=600_000)]] = Field(
+        default_factory=dict)
 
     @model_validator(mode="after")
     def _check_ranges(self) -> "ImpairmentConfig":
@@ -359,7 +399,8 @@ class ImpairmentConfig(StrictModel):
     @property
     def active(self) -> bool:
         """True when any impairment is on (the snapshot's ``impaired``)."""
-        return bool(self.block) or self.delays or self.drop_every_s is not None
+        return (bool(self.block) or self.delays or self.drop_every_s is not None or self.remote_start != "normal"
+                or self.meter.active or any(v > 0 for v in self.response_delay_ms.values()))
 
 
 #: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.

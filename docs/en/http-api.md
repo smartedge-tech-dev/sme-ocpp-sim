@@ -91,6 +91,27 @@ into its own timeout. The frame log marks the received CALL with `blocked: <code
 charger snapshot has `impaired: true` (the UI shows `!` on the badge). In the UI: **Impairments** in the
 charger detail panel.
 
+### Transaction and response anomalies
+
+Also in the `impairments` block and applied live (v0.3): `remote_start: accept_no_tx` (the remote start is
+`Accepted`, but no transaction follows and the connector state does not change), `meter` (`drop_ratio`,
+`reorder_window`, `end_after_stop`, `voltage_noise_v`) and `response_delay_ms` (action → ms the answer is held),
+see [Configuration](configuration.md#chargers). What the CSMS sees:
+
+- `accept_no_tx`: an accepted RemoteStartTransaction / RequestStartTransaction and then nothing — no
+  StartTransaction / TransactionEvent `Started`, no StatusNotification.
+- `drop_ratio`: missing periodic MeterValues (1.6) / `Updated` events (2.0.1); in 2.0.1 the `seqNo` of the
+  transaction has gaps.
+- `reorder_window`: periodic meter messages arrive in bursts in a shuffled order; timestamps (and 2.0.1 `seqNo`)
+  are not monotonic.
+- `end_after_stop`: a meter message of the transaction after its StopTransaction / Ended event.
+- `voltage_noise_v`: Voltage values that jitter around the nominal supply voltage.
+- `response_delay_ms`: the answer to that action arrives late (or after the CSMS's timeout); other traffic of
+  the charger, including heartbeats, is not delayed.
+
+The random draws (drops, order, noise) use `seed` (default: a CRC32 of the charger id), one stream per connector,
+so a run is reproducible.
+
 ### Network impairments
 
 The same `impairments` block also holds the latency (`latency_ms`, `jitter_ms`, `direction`, `seed`) and the

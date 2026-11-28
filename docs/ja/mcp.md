@@ -46,7 +46,7 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `data_transfer` | `POST /api/chargers/{id}/datatransfer` | CSMS へ DataTransfer を送信 |
 | `set_fault` / `clear_fault` | `POST /api/chargers/{id}/fault` / `clear-fault` | コネクタの故障 |
 | `set_external_limit` | `POST /api/chargers/{id}/external-limit` | 外部充電制限（2.0.1） |
-| `set_impairments` | `PUT /api/chargers/{id}/impairments` | コマンドブロック、遅延、定期切断 |
+| `set_impairments` | `PUT /api/chargers/{id}/impairments` | コマンドブロック、遅延、定期切断、リモート開始・メーター値・応答遅延の異常 |
 | `drop_connection` | `POST /api/chargers/{id}/drop` | 接続を今すぐ切断 |
 | `send_frame` | `POST /api/chargers/{id}/send` | CALL または生フレームの注入（上級者向け） |
 | `mini_csms_status` | `GET /api/csms` | 内蔵 [Mini CSMS](mini-csms.md) の状態 |

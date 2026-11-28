@@ -84,6 +84,22 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 `blocked: <code>` / `blocked: no reply`，充电桩快照带 `impaired: true`（UI 徽章上显示 `!`）。UI：充电桩详情面板的
 **网络异常**。
 
+### Transaction and response anomalies
+
+同样在 `impairments` 块里、即时生效（v0.3）：`remote_start: accept_no_tx`（远程启动回 `Accepted`，但不会有交易，
+connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_after_stop`、`voltage_noise_v`）以及
+`response_delay_ms`（action → 应答延迟的 ms），见 [配置](configuration.md#chargers)。CSMS 会看到：
+
+- `accept_no_tx`：一个被接受的 RemoteStartTransaction / RequestStartTransaction，之后什么都没有（没有 StartTransaction /
+  TransactionEvent `Started`，也没有 StatusNotification）。
+- `drop_ratio`：周期 MeterValues（1.6）/ `Updated` event（2.0.1）缺失；2.0.1 交易的 `seqNo` 出现缺口。
+- `reorder_window`：周期计量消息成批、乱序到达（时间戳与 2.0.1 `seqNo` 不单调）。
+- `end_after_stop`：交易的 StopTransaction / Ended event 之后还来一条计量消息。
+- `voltage_noise_v`：围绕额定电压抖动的 Voltage。
+- `response_delay_ms`：对该 action 的应答迟到（或在 CSMS 超时之后才到）；心跳等其它通信不受影响。
+
+随机抽取（丢弃、顺序、噪声）使用 `seed`（默认：充电桩 id 的 CRC32），每个 connector 一条独立序列，可复现。
+
 ### Network impairments
 
 同一个 `impairments` 块还包含延迟（`latency_ms`、`jitter_ms`、`direction`、`seed`）与周期断线（`drop_every_s`、

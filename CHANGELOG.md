@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Three more abstract presets: `suv-90kwh`, `phev-12kwh`, `van-75kwh` (vehicle classes, not real models).
 - Excel `ev_models` sheet: columns `weight`, `initial_soc_dist` / `_min` / `_max` / `_mean` / `_sd` and the
   same five for `target_soc`.
+- More anomaly switches in the charger's `impairments` block (v0.3 M2, OCPP 1.6 and 2.0.1, applied live without a
+  reconnect): `remote_start: accept_no_tx` (RemoteStartTransaction / RequestStartTransaction `Accepted`, but no
+  transaction and no state change); `meter.drop_ratio` (periodic meter messages not sent; a dropped 2.0.1
+  `Updated` event still takes its `seqNo`), `meter.reorder_window` (sent in shuffled batches),
+  `meter.end_after_stop` (the last meter reading after the StopTransaction / Ended event) and
+  `meter.voltage_noise_v` (± noise on Voltage), drawn per connector from `impairments.seed`; and
+  `response_delay_ms` (action → ms the answer to that inbound CALL is held). The **Impairments** dialog,
+  `PUT /api/chargers/{id}/impairments` and the MCP `set_impairments` schema (the nested `meter` block is inlined)
+  cover them.
 
 ## [0.2.2] - 2026-11-28
 

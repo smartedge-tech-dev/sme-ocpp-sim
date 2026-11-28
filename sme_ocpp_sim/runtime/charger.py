@@ -176,10 +176,11 @@ class ChargerRuntime:
 
     def validate_impairments(self, imp: ImpairmentConfig) -> None:
         """``ValueError`` when ``imp`` names an action this charger's OCPP version does not receive."""
-        unknown = sorted(set(imp.block) - set(self.csms_actions))
-        if unknown:
-            raise ValueError(f"charger {self.cfg.id}: impairments.block: {unknown} are not CSMS -> CP actions of "
-                             f"OCPP {self.adapter.version} (known: {', '.join(self.csms_actions)})")
+        for field, names in (("block", imp.block), ("response_delay_ms", imp.response_delay_ms)):
+            unknown = sorted(set(names) - set(self.csms_actions))
+            if unknown:
+                raise ValueError(f"charger {self.cfg.id}: impairments.{field}: {unknown} are not CSMS -> CP actions "
+                                 f"of OCPP {self.adapter.version} (known: {', '.join(self.csms_actions)})")
 
     def set_impairments(self, imp: ImpairmentConfig) -> None:
         """Apply ``imp`` to the running charger (no reconnect); the next inbound CALL already sees it."""
@@ -191,6 +192,10 @@ class ChargerRuntime:
 
     def _block_mode(self, action: str) -> Optional[str]:
         return self.impairments.block.get(action)
+
+    def _reply_delay(self, action: str) -> float:
+        """Seconds the answer to an inbound ``action`` CALL is held (``impairments.response_delay_ms``, live)."""
+        return self.impairments.response_delay_ms.get(action, 0.0) / 1000.0
 
     @property
     def impaired(self) -> bool:
@@ -347,7 +352,8 @@ class ChargerRuntime:
         sock = ImpairedSocket(ws, lambda: self.impairments, impairment_seed(self.impairments.seed, self.cfg.id))
         rpc = RpcConnection(sock, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
                             call_timeout=self.call_timeout, on_frame=self._frame_cb, name=self.cfg.id,
-                            call_guard=self.station.check_call, block=self._block_mode)
+                            call_guard=self.station.check_call, block=self._block_mode,
+                            reply_delay=self._reply_delay)
         self._rpc = rpc
         self.adapter.bind(rpc.call)
         self.connected = True

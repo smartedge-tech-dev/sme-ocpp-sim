@@ -261,9 +261,22 @@
       </select></label>
     </div>
     <div><button class="btn small" id="impDropNow" type="button" data-i18n="imp.drop_now">Drop now</button></div>
+    <h4 data-i18n="imp.anom">Transaction anomalies</h4>
+    <div class="row2">
+      <label><span data-i18n="imp.remote_start">Remote start</span> <select id="impRemoteStart">
+        <option value="normal" data-i18n="imp.remote_start.normal">Normal</option>
+        <option value="accept_no_tx" data-i18n="imp.remote_start.accept_no_tx">Accepted, no transaction</option>
+      </select></label>
+      <label><span data-i18n="imp.meter_drop">Drop meter values (share 0–1)</span> <input id="impMeterDrop" type="number" min="0" max="1" step="any"></label>
+    </div>
+    <div class="row2">
+      <label><span data-i18n="imp.meter_reorder">Reorder window (messages, 0 = off)</span> <input id="impMeterReorder" type="number" min="0" max="100" step="1"></label>
+      <label><span data-i18n="imp.voltage_noise">Voltage noise (V, ±)</span> <input id="impVoltNoise" type="number" min="0" max="100" step="any"></label>
+    </div>
+    <label class="chk"><input type="checkbox" id="impEndAfterStop"> <span data-i18n="imp.end_after_stop">Last meter value after the Stop</span></label>
     <h4 data-i18n="imp.block">Command blocking</h4>
     <p class="muted" data-i18n="imp.hint">Blocked commands are answered with the chosen CALLERROR, or not at all. Applied at once, without a reconnect.</p>
-    <table class="tbl"><thead><tr><th data-i18n="imp.action">Action</th><th data-i18n="imp.mode">Answer</th></tr></thead>
+    <table class="tbl"><thead><tr><th data-i18n="imp.action">Action</th><th data-i18n="imp.mode">Answer</th><th data-i18n="imp.delay">Answer delay (ms)</th></tr></thead>
       <tbody id="blockRows"></tbody></table>
     <div class="err" id="impairErr"></div>
     <div class="dlgbtns">

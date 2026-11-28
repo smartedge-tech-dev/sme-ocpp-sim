@@ -174,6 +174,7 @@ from .. import base as d
 from ..base import AuthResult as A
 from ..base import DomainStatus as S
 from ..base import StopReason as R
+from ..meter_faults import MeterFaults, impairments_of, meter_faults
 from ..station import StationHost, VersionStation
 from .adapter import Adapter16
 from .composite import ActiveTransaction, CompositePeriod, composite_schedule, convert, limit_at
@@ -248,6 +249,7 @@ class _Stop:
     readings: List[TxReading]               # transactionData before the end reading
     end_meter: List[d.Sample]               # meter.begin_end_messages: the Transaction.End MeterValues
     not_before: Optional[float] = None      # monotonic time the StopTransaction may go out (post_tx_delay_s)
+    late: bool = False                      # impairments.meter.end_after_stop: end_meter goes after the Stop
 
 
 @dataclass
@@ -371,6 +373,7 @@ class Station16(VersionStation):
         self._outq_idle = asyncio.Event()
         self._outq_idle.set()
         self._outq_busy: Optional[_OutMsg] = None  # head item the worker is waiting for / sending
+        self._meter_faults: Dict[int, MeterFaults] = {}  # impairments.meter per connector
 
         # One event per interval key, replaced on every change (broadcast wake-up for all waiting loops).
         self._wake: Dict[str, asyncio.Event] = {k: asyncio.Event() for k in _INTERVAL_KEYS}
@@ -922,7 +925,10 @@ class Station16(VersionStation):
                 out.append(d.Sample(name, self.supply.voltage_v, "V", location=LOCATION))
             elif name == SOC and r is not None:
                 out.append(d.Sample(name, round(r.soc_pct, SOC_DECIMALS), "Percent", location=SOC_LOCATION))
-        return out
+        return self._faults(c).noisy(out)
+
+    def _faults(self, c: _Conn) -> MeterFaults:
+        return meter_faults(self._meter_faults, self.host, self.cfg.id, c.id)
 
     # ================================================================== power model / smart charging
 
@@ -1092,8 +1098,13 @@ class Station16(VersionStation):
             if tx is None or tx.tx_id is None:
                 continue
             self._advance(c)
+            faults = self._faults(c)
+            if faults.drop():
+                log.info("%s: MeterValues of connector %d dropped (impairments.meter.drop_ratio)", self.cfg.id, c.id)
+                continue
             ev = d.TxUpdated(c.id, tx.tx_id, self.host.clock(), self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)))
-            self._outq_push(_OutMsg(_Kind.METER, lambda ev=ev: self._adapter.send_tx_updated(ev), c, tx))
+            for msg in faults.hold(_OutMsg(_Kind.METER, lambda ev=ev: self._adapter.send_tx_updated(ev), c, tx)):
+                self._outq_push(msg)
 
     def _end_tx(self, c: _Conn, reason: R, *, tx: Optional[_Tx] = None) -> None:
         """End the running transaction (only if it is ``tx`` when given). Never waits for the CSMS."""
@@ -1105,11 +1116,12 @@ class Station16(VersionStation):
         self._advance(c)
         self._collect_tx_data(c)  # a reading due right now is not lost to the tick
         delay = self.cfg.meter.post_tx_delay_s
+        late = self._faults(c).cfg.end_after_stop
         tx.ended = _Stop(int(round(c.meter_wh)), self.host.clock(), reason,
                          self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)),
                          tx.data.all() if tx.data is not None else [],
-                         self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)) if tx.begin_sent else [],
-                         self.host.monotonic() + delay if delay > 0 else None)
+                         self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)) if tx.begin_sent or late else [],
+                         self.host.monotonic() + delay if delay > 0 else None, late)
         tx.data = None
         if tx.tx_id is not None:
             # TODO(spec): StopTransaction is sent before the Finishing / Available StatusNotification.
@@ -1139,19 +1151,23 @@ class Station16(VersionStation):
         self.maint.wake()
 
     def _stop_msgs(self, c: _Conn, tx: _Tx) -> List[_OutMsg]:
-        """The end messages of ``tx``: the optional Transaction.End MeterValues, then the StopTransaction; both
-        held until ``not_before`` (meter.post_tx_delay_s)."""
+        """The end messages of ``tx``: the periodic MeterValues still held by ``impairments.meter.reorder_window``,
+        the optional Transaction.End MeterValues, then the StopTransaction; the last two held until ``not_before``
+        (meter.post_tx_delay_s). ``impairments.meter.end_after_stop`` sends the end reading after the Stop."""
         st = tx.ended
         assert st is not None and tx.tx_id is not None
-        out: List[_OutMsg] = []
-        if st.end_meter:
-            mv = d.TxUpdated(c.id, tx.tx_id, st.timestamp, st.end_meter, context="Transaction.End")
-            out.append(_OutMsg(_Kind.METER, lambda: self._adapter.send_tx_updated(mv), c, tx,
-                               not_before=st.not_before))
+        out: List[_OutMsg] = self._faults(c).flush()
         ev = d.TxEnded(c.id, tx.tx_id, st.meter_stop_wh, st.timestamp, st.reason, tx.id_tag, st.samples,
                        readings=st.readings)
-        out.append(_OutMsg(_Kind.STOP, lambda: self._adapter.send_tx_ended(ev), c, tx, not_before=st.not_before))
-        return out
+        stop = _OutMsg(_Kind.STOP, lambda: self._adapter.send_tx_ended(ev), c, tx, not_before=st.not_before)
+        end: List[_OutMsg] = []
+        if st.end_meter:
+            # Transaction.End with meter.begin_end_messages; else (end_after_stop) a periodic reading at the stop.
+            mv = d.TxUpdated(c.id, tx.tx_id, st.timestamp, st.end_meter,
+                             context="Transaction.End" if tx.begin_sent else "Sample.Periodic")
+            end.append(_OutMsg(_Kind.METER, lambda: self._adapter.send_tx_updated(mv), c, tx,
+                               not_before=st.not_before))
+        return out + ([stop] + end if st.late else end + [stop])
 
     # ================================================================== CSMS commands
 
@@ -1238,6 +1254,10 @@ class Station16(VersionStation):
     def _remote_start(self, cmd: d.RequestStart) -> d.CommandStatus:
         if not self.host.online:
             return d.CommandStatus.REJECTED  # TODO(spec): RemoteStart before an accepted boot is rejected
+        if impairments_of(self.host).remote_start == "accept_no_tx":
+            log.info("%s: RemoteStartTransaction accepted without a transaction (impairments.remote_start)",
+                     self.cfg.id)
+            return d.CommandStatus.ACCEPTED
 
         def free(c: _Conn) -> bool:
             return (c.tx is None and self._usable(c) and not c.fault and c.pending_tag is None

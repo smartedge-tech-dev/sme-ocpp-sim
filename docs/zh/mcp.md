@@ -41,7 +41,7 @@ Web UI 中的按钮相同。充电桩相关工具通过 `cid` 接收充电桩 ID
 | `data_transfer` | `POST /api/chargers/{id}/datatransfer` | 向 CSMS 发送 DataTransfer |
 | `set_fault` / `clear_fault` | `POST /api/chargers/{id}/fault` / `clear-fault` | 连接器故障 |
 | `set_external_limit` | `POST /api/chargers/{id}/external-limit` | 外部充电限制（2.0.1） |
-| `set_impairments` | `PUT /api/chargers/{id}/impairments` | 命令屏蔽、延迟、周期断线 |
+| `set_impairments` | `PUT /api/chargers/{id}/impairments` | 命令屏蔽、延迟、周期断线、远程启动 / 计量值 / 慢响应异常 |
 | `drop_connection` | `POST /api/chargers/{id}/drop` | 立即断开连接 |
 | `send_frame` | `POST /api/chargers/{id}/send` | 注入 CALL 或原始帧（专家用途） |
 | `mini_csms_status` | `GET /api/csms` | 内置 [Mini CSMS](mini-csms.md) 的状态 |
