@@ -16,6 +16,11 @@ Steps (port of the spike's steve_check.py onto the real runtime):
       connects, wrong password is refused (HTTP 401)
   f. DB rows of the transaction / meter values; every frame is written to --frames (JSONL)
 
+With ``--profile3 <cert-dir>`` (output of scripts/mtls_certs.py, nginx front started with
+scripts/steve-mtls.compose.yml) only the Security Profile 3 check runs: charge box SME-SIM-3 connects through the
+nginx mTLS proxy (``wss://<host>:8543/...``; SteVe itself does not check client certificates) with a trusted client
+certificate and does Boot, Heartbeat and a transaction; no client certificate and an untrusted one are refused.
+
 The SteVe defaults (admin/1234 web user, steve/changeme DB user) are its public test defaults.
 """
 
@@ -39,12 +44,15 @@ from sme_ocpp_sim.config import ChargerConfig, ReconnectConfig  # noqa: E402
 from sme_ocpp_sim.framelog import FrameLog  # noqa: E402
 from sme_ocpp_sim.runtime.charger import ChargerRuntime  # noqa: E402
 
+import mtls_certs  # noqa: E402  (scripts/)
+
 CP_ID = "SME-SIM-1"
 UNREG_ID = "SME-SIM-UNREGISTERED"
 KNOWN_TAG = "SMETAG1"
 UNKNOWN_TAG = "NOSUCHTAG9"
 SP1_ID = "SME-SIM-SP1"
 SP1_PASSWORD = "sim-sp1-pass-0123456"  # SteVe requires 16-20 characters
+SP3_ID = "SME-SIM-3"
 
 results: dict = {}
 
@@ -266,12 +274,64 @@ async def sp1_flow(base: str, http: str, log: FrameLog) -> None:
             await asyncio.wait_for(task, 10)
 
 
+async def sp3_flow(base: str, certs: Path, log: FrameLog) -> None:
+    """Security Profile 3 through the nginx mTLS front: trusted certificate -> Boot, Heartbeat, a transaction;
+    no certificate / an untrusted one -> refused."""
+    cfg = ChargerConfig(id=SP3_ID, vendor="SME", model="OCPPSim", auth_mode="csms_only", max_power_w=7400,
+                        config_keys={"MeterValueSampleInterval": "5"},
+                        **mtls_certs.tls_fields(certs, SP3_ID, "good"))
+    rt = ChargerRuntime(cfg, base, frame_log=log, call_timeout=15)
+    stop = asyncio.Event()
+    task = asyncio.create_task(rt.run(stop))
+    try:
+        results["sp3_online"] = await _until(lambda: rt.online, 20)
+        results["sp3_last_error"] = rt.last_error
+        boot = [e for e in log.since(0, charger=SP3_ID, action="BootNotification") if e.message_type == "CALLRESULT"]
+        results["sp3_boot_status"] = json.loads(boot[-1].raw)[2].get("status") if boot else None
+        results["sp3_status_notifications"] = _count(log, SP3_ID, "StatusNotification")
+        rt.station.store.set("HeartbeatInterval", "2")
+        results["sp3_heartbeat"] = await _until(lambda: rt.last_heartbeat is not None, 5)
+        await rt.plug(1)
+        results["sp3_swipe_known"] = await rt.swipe(1, KNOWN_TAG)
+        results["sp3_start_tx"] = await _until(lambda: _count(log, SP3_ID, "StartTransaction") >= 1, 10)
+        results["sp3_meter_values"] = await _until(lambda: _count(log, SP3_ID, "MeterValues") >= 2, 15)
+        results["sp3_stop"] = await rt.stop_tx(1)
+        results["sp3_stop_tx"] = await _until(lambda: _count(log, SP3_ID, "StopTransaction") >= 1, 10)
+        await rt.unplug(1)
+        results["sp3_snapshot_profile"] = rt.snapshot().get("security_profile")
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 10)
+    results["sp3_rejections"] = await mtls_certs.sp3_rejections(lambda kind: ChargerRuntime(
+        ChargerConfig(id=SP3_ID, **mtls_certs.tls_fields(certs, SP3_ID, kind)), base, frame_log=log,
+        reconnect=ReconnectConfig(min_s=1, max_s=2)))
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--compose-dir", required=True)
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--frames", default="steve_frames.jsonl")
+    ap.add_argument("--profile3", metavar="CERT_DIR", help="Security Profile 3 run only (scripts/mtls_certs.py output)")
+    ap.add_argument("--mtls-port", type=int, default=8543, help="host port of the nginx mTLS front")
     args = ap.parse_args()
+    if args.profile3:
+        sql(args.compose_dir, f"INSERT IGNORE INTO charge_box (charge_box_id) VALUES ('{SP3_ID}');"
+                              f"INSERT IGNORE INTO ocpp_tag (id_tag) VALUES ('{KNOWN_TAG}');")
+        sql(args.compose_dir, "INSERT INTO transaction_stop (transaction_pk, event_actor, stop_value, stop_reason) "
+                              "SELECT t.transaction_pk, 'manual', '0', 'Local' FROM `transaction` t "
+                              "JOIN evse e ON t.evse_pk = e.evse_pk "
+                              f"WHERE e.charge_box_id = '{SP3_ID}' AND t.stop_value IS NULL;")
+        log = FrameLog()
+        await sp3_flow(f"wss://{args.host}:{args.mtls_port}/steve/websocket/CentralSystemService",
+                       Path(args.profile3), log)
+        results["sp3_db_transactions"] = sql(
+            args.compose_dir, "SELECT t.transaction_pk, t.id_tag, t.start_value, t.stop_value, t.stop_reason "
+                              "FROM `transaction` t JOIN evse e ON t.evse_pk = e.evse_pk "
+                              f"WHERE e.charge_box_id = '{SP3_ID}' ORDER BY t.transaction_pk DESC LIMIT 2;")
+        Path(args.frames).write_text(log.to_jsonl(), encoding="utf-8")
+        print(json.dumps(results, indent=1, default=str))
+        return
     base = f"ws://{args.host}:8180/steve/websocket/CentralSystemService"
     http = f"http://{args.host}:8180/steve"
 

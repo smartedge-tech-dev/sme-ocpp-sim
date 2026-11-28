@@ -81,3 +81,46 @@ Observations that are not simulator bugs (CitrineOS side):
 | CALLERRORs in either direction | none (with hex tokens) |
 
 Not exercised: Security Profile 1/2, SetChargingProfile through REST, a `Pending` boot (GetBaseReport).
+
+## Security Profile 3 (mTLS)
+
+CitrineOS ships an SP3 server entry in `apps/ocpp-server/src/assets/websocket-servers.json` (id `3`, port 8444,
+`requestCert` / `rejectUnauthorized` on, client certificates verified against `rootCACertificateFilePath`).
+Two things must be changed for a run, both through `scripts/citrineos-mtls.compose.yml` (bind mounts, no rebuild):
+- the shipped sample certificates under `dist/assets/certificates/` expired on 2026-09-15 and the server
+  certificate has CN `host.docker.internal` without a SAN, so they are replaced by a fresh test PKI;
+- the SP3 entry has `allowUnknownChargingStations: false`, so `scripts/citrineos-websocket-servers.json` (the
+  shipped file with only that flag set to `true` for id `3`) is mounted over it; the station row is then created
+  at the first connect as on SP0.
+
+```sh
+# 1. test PKI (root CA, server cert for localhost, charger sub-CA, client certs, an untrusted root).
+#    Keep it outside the repo: it contains unencrypted private keys and must never be committed.
+.venv/Scripts/python scripts/mtls_certs.py <cert-dir>
+
+# 2. recreate only the citrine container with the override (no pull: pull_policy is "always" in the base file)
+cd <citrineos-dir>
+MTLS_CERT_DIR=<cert-dir, absolute> OCPPSIM_SCRIPTS=<repo>/scripts \
+  docker compose -f docker-compose.yml -f <repo>/scripts/citrineos-mtls.compose.yml up -d --pull never citrine
+
+# 3. run (station SME-SIM-203, wss://localhost:8444, client cert client-SME-SIM-203.pem, CA root.pem)
+.venv/Scripts/python scripts/e2e_citrineos.py --compose-dir <citrineos-dir> --profile3 <cert-dir>
+```
+
+The run does the whole SP0 flow above over mTLS (no Basic Auth header; OCPP 2.0.1 A00.FR.401), then two connects
+that must never come online: no client certificate, and a client certificate with the same CN from an untrusted
+root (`sp3_rejections` in the output). To go back to the shipped setup, `docker compose up -d --pull never citrine`
+without the override. The SteVe stack also publishes 8443, so stop one stack before starting the other.
+
+Run record 2026-11-28 (same CitrineOS build as above, main @ da8b62d):
+
+| Step | Result |
+|---|---|
+| `openssl s_client` to 8444 with `-CAfile root.pem` | server certificate verified; no client cert -> TLS 1.3 alert `certificate required` |
+| BootNotification over mTLS | `Accepted` |
+| StatusNotification, Heartbeat | answered |
+| Authorize unknown / known, TransactionEvent Started / Updated / Ended (local stop) | as on SP0, rows in the DB |
+| REST GetVariables, RequestStart / RequestStopTransaction | served, `Started` (RemoteStart) / `Ended` (RemoteStop) |
+| No client certificate | refused; simulator `last_error` kind `handshake` (the server closes after the TLS handshake; on Windows the TLS alert is not surfaced to Python) |
+| Client certificate from an untrusted CA | refused; `last_error` kind `client_cert_rejected` |
+| CALLERRORs | none |

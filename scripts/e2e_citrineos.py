@@ -13,6 +13,11 @@ Steps:
   d. CSMS-initiated GetVariables and RequestStartTransaction / RequestStopTransaction through the REST
      message API (port 8080)
   e. the transaction rows in the CitrineOS DB; every frame is written to --frames (JSONL)
+
+With ``--profile3 <cert-dir>`` (output of scripts/mtls_certs.py, CitrineOS started with
+scripts/citrineos-mtls.compose.yml) the same flow runs as station SME-SIM-203 over the Security Profile 3 server
+(``wss://<host>:8444``, TLS client certificate, no Basic Auth), followed by two connects that must be refused:
+no client certificate and a client certificate from an untrusted CA.
 """
 
 from __future__ import annotations
@@ -28,17 +33,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sme_ocpp_sim.config import ChargerConfig  # noqa: E402
+from sme_ocpp_sim.config import ChargerConfig, ReconnectConfig  # noqa: E402
 from sme_ocpp_sim.framelog import FrameLog  # noqa: E402
 from sme_ocpp_sim.runtime.charger import ChargerRuntime  # noqa: E402
 
+import mtls_certs  # noqa: E402  (scripts/)
+
 CP_ID = "SME-SIM-201"
+SP3_ID = "SME-SIM-203"
 # ISO14443 tokens: CitrineOS enforces the 2.0.1 IdTokenEnumType note (a 4 or 7 byte UID = 8 or 14 hex digits).
 KNOWN_TOKEN = "5AE1C201"
 UNKNOWN_TOKEN = "0BADC0DE"
 TENANT = 1
 # Transactions."stationId" is the integer key of ChargingStations, not the OCPP identity.
-STATION_PK = f"SELECT id FROM \"ChargingStations\" WHERE \"ocppConnectionName\" = '{CP_ID}'"
+def _station_pk() -> str:
+    return f"SELECT id FROM \"ChargingStations\" WHERE \"ocppConnectionName\" = '{CP_ID}'"
 
 results: dict = {}
 
@@ -105,9 +114,9 @@ def _message_api() -> str:
     return f"?identifier={CP_ID}&tenantId={TENANT}"
 
 
-async def flow(base: str, http: str, log: FrameLog) -> None:
+async def flow(base: str, http: str, log: FrameLog, tls: dict) -> None:
     cfg = ChargerConfig(id=CP_ID, vendor="SME", model="OCPPSim", auth_mode="csms_only", max_power_w=7400,
-                        meter_sample_interval_s=5)
+                        meter_sample_interval_s=5, **tls)
     rt = ChargerRuntime(cfg, base, "2.0.1", frame_log=log, call_timeout=20)
     stop = asyncio.Event()
     task = asyncio.create_task(rt.run(stop))
@@ -192,8 +201,14 @@ async def main() -> None:
     ap.add_argument("--compose-dir", required=True)
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--frames", default="citrineos_frames.jsonl")
+    ap.add_argument("--profile3", metavar="CERT_DIR", help="Security Profile 3 run (scripts/mtls_certs.py output)")
     args = ap.parse_args()
+    global CP_ID
     base = f"ws://{args.host}:8081"
+    tls: dict = {}
+    if args.profile3:
+        CP_ID, base = SP3_ID, f"wss://{args.host}:8444"
+        tls = mtls_certs.tls_fields(Path(args.profile3), SP3_ID, "good")
     http = f"http://{args.host}:8080"
 
     sql(args.compose_dir,
@@ -203,7 +218,11 @@ async def main() -> None:
         f"WHERE NOT EXISTS (SELECT 1 FROM \"Authorizations\" WHERE \"idToken\" = '{KNOWN_TOKEN}');")
     log = FrameLog()
     try:
-        await flow(base, http, log)
+        await flow(base, http, log, tls)
+        if args.profile3:
+            results["sp3_rejections"] = await mtls_certs.sp3_rejections(lambda kind: ChargerRuntime(
+                ChargerConfig(id=SP3_ID, **mtls_certs.tls_fields(Path(args.profile3), SP3_ID, kind)), base, "2.0.1",
+                frame_log=log, reconnect=ReconnectConfig(min_s=1, max_s=2)))
     finally:
         Path(args.frames).write_text(log.to_jsonl(), encoding="utf-8")
         print(json.dumps(results, indent=1, default=str), flush=True)
@@ -211,16 +230,16 @@ async def main() -> None:
         "db_transactions": sql(
             args.compose_dir,
             'SELECT "transactionId", "evseId", "isActive", "chargingState", "totalKwh", "stoppedReason", '
-            f"\"remoteStartId\" FROM \"Transactions\" WHERE \"stationId\" = ({STATION_PK}) ORDER BY id DESC LIMIT 3;"),
+            f"\"remoteStartId\" FROM \"Transactions\" WHERE \"stationId\" = ({_station_pk()}) ORDER BY id DESC LIMIT 3;"),
         "db_transaction_events": sql(
             args.compose_dir,
             'SELECT t."transactionId", e."eventType", e."triggerReason", e."seqNo", e."idTokenValue" '
             'FROM "TransactionEvents" e JOIN "Transactions" t ON t.id = e."transactionDatabaseId" '
-            f"WHERE t.\"stationId\" = ({STATION_PK}) ORDER BY e.id DESC LIMIT 10;"),
+            f"WHERE t.\"stationId\" = ({_station_pk()}) ORDER BY e.id DESC LIMIT 10;"),
         "db_meter_values": sql(
             args.compose_dir,
             'SELECT count(*) FROM "MeterValues" m JOIN "Transactions" t ON t.id = m."transactionDatabaseId" '
-            f"WHERE t.\"stationId\" = ({STATION_PK});"),
+            f"WHERE t.\"stationId\" = ({_station_pk()});"),
     }
     print(json.dumps(db, indent=1, default=str))
 
