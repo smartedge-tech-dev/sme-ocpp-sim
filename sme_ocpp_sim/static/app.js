@@ -335,7 +335,12 @@ function renderVersionParts(c) {
 // The cards and the connector select are rebuilt only when the charger or its connector set changes; otherwise a
 // card is replaced only when its state (status, plug, transaction, error) changed.
 const cardSig = (x) => JSON.stringify([x.status, x.plugged, x.error_code, x.transaction, x.pending_tag,
-  x.reservation, x.operation_mode, x.priority_charging]);
+  x.reservation, x.operation_mode, x.priority_charging, x.tx_limit, x.limit_reached, x.tariff_id]);
+// OCPP 2.1 transaction limits (E16) and cost (I12).
+const LIMIT_TEXT = { max_energy: (v) => `${kwh(v)} kWh`, max_time: (v) => `${Math.round(v / 60)} min`,
+  max_cost: (v) => String(v), max_so_c: (v) => `${v} %` };
+const limitText = (l) => Object.entries(l).map(([k, v]) => (LIMIT_TEXT[k] ? LIMIT_TEXT[k](v) : `${k} ${v}`)).join(", ");
+const costText = (c) => `${c.amount} ${c.currency}`;
 // Signed power: OCPP 2.1 V2X discharge is negative (charging.power).
 const powerText = (w) => `${kw(w)} kW${w < 0 ? ` (${t("detail.discharging")})` : ""}`;
 function renderConnectors(c, fresh) {
@@ -387,6 +392,9 @@ function card(c, x) {
       x.energy_export_wh != null ? kv("detail.energy_export", `${kwh(x.energy_export_wh)} kWh`, "export") : null,
       x.operation_mode ? kv("detail.operation_mode",
         x.operation_mode + (x.priority_charging ? ` (${t("detail.priority")})` : "")) : null,
+      x.tx_limit ? kv("detail.tx_limit", limitText(x.tx_limit)
+        + (x.limit_reached ? ` (${t("detail.limit_reached")}: ${x.limit_reached})` : "")) : null,
+      x.cost ? kv("detail.cost", costText(x.cost) + (x.tariff_id ? ` [${x.tariff_id}]` : ""), "cost") : null,
       kv("detail.soc", pct(x.soc_pct), "soc")),
     h("div", { class: "card-ops" },
       btn("op.plug", () => op(id, "plug", { connector: conn }), { disabled: x.plugged }),
@@ -408,6 +416,7 @@ function patchCards(c) {
     set("power", powerText(x.power_w));
     set("energy", `${kwh(x.meter_wh)} kWh`);
     if (x.energy_export_wh != null) set("export", `${kwh(x.energy_export_wh)} kWh`);
+    if (x.cost) set("cost", costText(x.cost) + (x.tariff_id ? ` [${x.tariff_id}]` : ""));
     set("soc", pct(x.soc_pct));
     const bar = el.querySelector('[data-k="socbar"]');
     if (bar) bar.style.width = `${x.soc_pct || 0}%`;
