@@ -441,6 +441,9 @@ def test_web_api_serves_a_201_charger(tmp_path):
         assert conf["keys"] == [] and conf["ocpp_version"] == V201
         hb = next(v for v in conf["variables"] if v["variable"] == "HeartbeatInterval")
         assert hb["component"] == "OCPPCommCtrlr" and hb["attributes"] == {"Actual": "300"}
-        assert client.get("/api/chargers/CP1/composite?connector=1").json()["periods"] == [
+        periods = client.get("/api/chargers/CP1/composite?connector=1").json()["periods"]
+        # 2.1 adds discharge_limit / setpoint / operation_mode (all None here)
+        assert [{k: p[k] for k in ("start_period", "limit", "number_phases")} for p in periods] == [
             {"start_period": 0, "limit": 6000.0, "number_phases": None}]
+        assert all(v is None for p in periods for k, v in p.items() if k not in ("start_period", "limit"))
         assert client.post("/api/chargers/CP1/fault", json={"error_code": "GroundFault", "connector": 1}).status_code == 200

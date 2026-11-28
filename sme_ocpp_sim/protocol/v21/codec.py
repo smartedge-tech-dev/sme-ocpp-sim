@@ -12,9 +12,13 @@ NEW_ACTIONS = (
     "AFRRSignal", "NotifyAllowedEnergyTransfer",
     "SetDefaultTariff", "GetTariffs", "ClearTariffs", "ChangeTransactionTariff",
     "SetDERControl", "GetDERControl", "ClearDERControl",
-    # CS -> CSMS: the answer to GetDERControl
-    "ReportDERControl",
+    # CSMS -> CS, smart charging / V2X (2.1-M2)
+    "UpdateDynamicSchedule", "UsePriorityCharging",
+    # CS -> CSMS: the answer to GetDERControl, dynamic-schedule pulls and priority-charging notices
+    "ReportDERControl", "PullDynamicScheduleUpdate", "NotifyPriorityCharging",
 )
+#: CS -> CSMS actions among :data:`NEW_ACTIONS` (not answered by the station).
+CS_ACTIONS = ("ReportDERControl", "PullDynamicScheduleUpdate", "NotifyPriorityCharging")
 ACTIONS = tuple(m201.ACTIONS) + NEW_ACTIONS
 
 REQUESTS = {a: getattr(m, f"{a}Request") for a in ACTIONS}
@@ -24,4 +28,4 @@ CODEC = Codec(REQUESTS, RESPONSES)
 model_for = CODEC.model_for
 parse = CODEC.parse
 
-__all__ = ["ACTIONS", "CODEC", "NEW_ACTIONS", "REQUESTS", "RESPONSES", "dump", "model_for", "parse"]
+__all__ = ["ACTIONS", "CODEC", "CS_ACTIONS", "NEW_ACTIONS", "REQUESTS", "RESPONSES", "dump", "model_for", "parse"]

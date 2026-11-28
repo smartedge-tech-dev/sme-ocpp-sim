@@ -861,12 +861,14 @@ def build(cfg: Any, *, message_timeout_s: float = DEFAULT_MESSAGE_TIMEOUT_S, url
           availability: Optional[Callable[[int], str]] = None, power_w: Optional[Callable[[int], float]] = None,
           profile_count: Optional[Callable[[], int]] = None,
           list_entries: Optional[Callable[[], int]] = None,
-          certificate_entries: Optional[Callable[[], int]] = None) -> DeviceModel:
-    """The Device Model of the charger config ``cfg``: the standard set plus its ``variables``."""
-    model = DeviceModel(standard_variables(cfg, message_timeout_s=message_timeout_s, url=url,
-                                           availability=availability, power_w=power_w,
-                                           profile_count=profile_count, list_entries=list_entries,
-                                           certificate_entries=certificate_entries))
+          certificate_entries: Optional[Callable[[], int]] = None,
+          extra: Iterable[Variable] = ()) -> DeviceModel:
+    """The Device Model of the charger config ``cfg``: the standard set, ``extra`` (the variables a later OCPP
+    version adds) and the charger's ``variables``."""
+    model = DeviceModel([*standard_variables(cfg, message_timeout_s=message_timeout_s, url=url,
+                                             availability=availability, power_w=power_w,
+                                             profile_count=profile_count, list_entries=list_entries,
+                                             certificate_entries=certificate_entries), *extra])
     apply_config(model, cfg.variables, cfg.connectors)
     return model
 

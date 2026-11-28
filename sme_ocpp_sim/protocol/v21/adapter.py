@@ -10,7 +10,7 @@ from . import codec as codec21
 from . import models as m
 
 #: CSMS -> CS actions the 2.1 station answers: the 2.0.1 ones plus the store-and-ack 2.1 ones.
-REMOTE_ACTIONS_21 = tuple(REMOTE_ACTIONS) + tuple(a for a in codec21.NEW_ACTIONS if a != "ReportDERControl")
+REMOTE_ACTIONS_21 = tuple(REMOTE_ACTIONS) + tuple(a for a in codec21.NEW_ACTIONS if a not in codec21.CS_ACTIONS)
 
 
 class Adapter21(Adapter201):
@@ -25,3 +25,13 @@ class Adapter21(Adapter201):
     async def send_report_der_control(self, report: m.ReportDERControlRequest) -> Any:
         """CS -> CSMS ReportDERControl (R04); returns the parsed response."""
         return await self._send("ReportDERControl", report)
+
+    async def send_pull_dynamic_schedule_update(self, profile_id: int) -> m.PullDynamicScheduleUpdateResponse:
+        """CS -> CSMS PullDynamicScheduleUpdate (K28 scenario #2); returns the parsed response."""
+        return await self._send("PullDynamicScheduleUpdate",
+                                self.models.PullDynamicScheduleUpdateRequest(charging_profile_id=profile_id))
+
+    async def send_notify_priority_charging(self, transaction_id: str, activated: bool) -> Any:
+        """CS -> CSMS NotifyPriorityCharging (K21.FR.05 / FR.08, K22)."""
+        return await self._send("NotifyPriorityCharging", self.models.NotifyPriorityChargingRequest(
+            transaction_id=transaction_id, activated=activated))

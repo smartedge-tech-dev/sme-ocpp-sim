@@ -138,7 +138,7 @@ def _schedule_ok(sched: ChargingSchedule, limits: Limits) -> bool:
     if limits.max_periods is not None and len(starts) > limits.max_periods:
         return False
     for period in sched.periods:
-        if period.limit < 0:
+        if period.limit is not None and period.limit < 0:  # None: a 2.1 period without limit
             return False
         if period.number_phases is not None and not 1 <= period.number_phases <= 3:
             return False

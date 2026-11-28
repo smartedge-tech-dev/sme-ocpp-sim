@@ -493,7 +493,8 @@ class Station201(VersionStation):
                            availability=lambda i: connector_status(self.evses[i].status).value,
                            power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()),
                            list_entries=lambda: len(self.local_list),
-                           certificate_entries=lambda: self.security.certificate_entries)
+                           certificate_entries=lambda: self.security.certificate_entries,
+                           extra=self._extra_variables(cfg))
         self.dm.models = self.models
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
@@ -548,6 +549,10 @@ class Station201(VersionStation):
             self.models.DeleteCertificateRequest: self._delete_certificate,
             self.models.GetInstalledCertificateIdsRequest: self._get_installed_certificate_ids,
         }
+
+    def _extra_variables(self, cfg: Any) -> List[dm.Variable]:
+        """Device Model variables a later OCPP version adds to the 2.0.1 set (none here; see ``protocol.v21``)."""
+        return []
 
     # ================================================================== session (called by the shell)
 
