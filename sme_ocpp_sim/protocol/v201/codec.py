@@ -126,8 +126,11 @@ def _to_call_error(err: dict) -> CallError:
     return CallError(_code_for(err), f"{field}: {err['msg']}", {"field": field})
 
 
-def model_for(action: str, kind: Kind = "request") -> type[OcppModel]:
-    registry = REQUESTS if kind == "request" else RESPONSES
+def model_for(action: str, kind: Kind = "request", requests: dict | None = None,
+              responses: dict | None = None) -> type[OcppModel]:
+    """Model of ``action``; ``requests`` / ``responses`` replace the 2.0.1 tables (OCPP 2.1 passes its own)."""
+    registry = (REQUESTS if requests is None else requests) if kind == "request" else (
+        RESPONSES if responses is None else responses)
     try:
         return registry[action]
     except KeyError:
@@ -135,7 +138,8 @@ def model_for(action: str, kind: Kind = "request") -> type[OcppModel]:
 
 
 def parse(
-    action: str, payload: Any, kind: Kind = "request", strict: bool = False
+    action: str, payload: Any, kind: Kind = "request", strict: bool = False,
+    requests: dict | None = None, responses: dict | None = None,
 ) -> tuple[OcppModel, list[str]]:
     """Validate ``payload`` for ``action`` and return ``(model, ignored_fields)``.
 
@@ -143,7 +147,7 @@ def parse(
     such as ``meterValue[0].foo``. Strict: an unknown field raises FormatViolation.
     Raises :class:`CallError` with an OCPP-J 2.0.1 code on any other violation.
     """
-    model_cls = model_for(action, kind)
+    model_cls = model_for(action, kind, requests, responses)
     if not isinstance(payload, dict):
         raise CallError(OCPP201_ERRORS.format_violation, "payload must be a JSON object")
     ignored: list[str] = []
@@ -176,3 +180,28 @@ def parse(
 def dump(model: OcppModel) -> dict:
     """Outbound payload: wire names, no ``None`` fields, datetimes as UTC ``...sss Z``."""
     return model.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+class Codec:
+    """``parse`` / ``model_for`` / ``dump`` bound to one version's model tables.
+
+    The adapter holds a ``Codec`` as a class attribute so that OCPP 2.1 (``protocol.v21``) reuses this module
+    with its own tables. The CALLERROR codes are the same in 2.0.1 and 2.1 (Part 4 §4.3)."""
+
+    def __init__(self, requests: dict, responses: dict) -> None:
+        self.requests, self.responses = requests, responses
+
+    def model_for(self, action: str, kind: Kind = "request") -> type[OcppModel]:
+        return model_for(action, kind, self.requests, self.responses)
+
+    def parse(self, action: str, payload: Any, kind: Kind = "request",
+              strict: bool = False) -> tuple[OcppModel, list[str]]:
+        return parse(action, payload, kind, strict, self.requests, self.responses)
+
+    @staticmethod
+    def dump(model: OcppModel) -> dict:
+        return dump(model)
+
+
+#: The 2.0.1 codec.
+CODEC = Codec(REQUESTS, RESPONSES)
