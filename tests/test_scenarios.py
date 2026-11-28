@@ -154,6 +154,12 @@ def _run(version: str, data: dict, **charger) -> dict:
     return asyncio.run(_with_peer(version, fn, **charger))
 
 
+# Sim-time steps may fire late, never early: a wake-up lateness of L wall seconds shows as L * time_scale sim
+# seconds (0.14 s on a busy CI runner = 500 sim s at 3600x). Upper bounds allow 1 s of wall lateness at the
+# engine's 3600x, still far below a mis-scheduling such as a day wrap (86400 s).
+LATE_SIM = 3600 * 1.0
+
+
 START = {"1.6": {"dir": "tx", "action": "StartTransaction"},
          "2.0.1": {"dir": "tx", "action": "TransactionEvent", "payload": {"eventType": "Started"}}}
 STOP = {"1.6": {"dir": "tx", "action": "StopTransaction"},
@@ -189,9 +195,9 @@ def test_absolute_at_and_until():
         {"id": "long", "do": "wait", "duration": "10h"}]}],
         clock={"start_at": "2026-12-01T07:59:00+09:00"}, until="+30m"))
     steps = {s["id"]: s for s in v["steps"]}
-    assert 60 <= steps["eight"]["t_sim"] < 120
+    assert 60 <= steps["eight"]["t_sim"] < 60 + LATE_SIM
     assert v["result"] == "fail" and steps["long"]["status"] == "fail" and "until" in steps["long"]["message"]
-    assert 1800 <= v["sim_s"] < 2400
+    assert 1800 <= v["sim_s"] < 1800 + LATE_SIM
 
 
 def test_fail_stop_continue_and_expect_not():
@@ -353,7 +359,7 @@ def test_repeat_rounds_and_until_pending():
                                                   {"id": "p", "do": "log", "message": "never"}]}], until="+3h"))
     v = asyncio.run(ScenarioRunner(engine, sc).run())
     st = {(s["track"], s["id"]): s for s in v["steps"]}
-    assert 4800 <= st[("track1:CP1", "l#2")]["t_sim"] < 5400
+    assert 4800 <= st[("track1:CP1", "l#2")]["t_sim"] < 4800 + LATE_SIM
     assert st[("u", "w")]["status"] == "fail" and st[("u", "p")]["status"] == "skipped"
     assert "until" in st[("u", "p")]["message"] and v["result"] == "fail"
 
