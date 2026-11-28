@@ -16,7 +16,7 @@ from sme_sim_common.mcp_server import McpRegistry, register_base_tools
 
 from . import __version__
 from .config import ImpairmentConfig
-from .web import MAX_FRAMES, DataTransferBody, FaultBody
+from .web import MAX_FRAMES, DataTransferBody, ExpectFrameBody, FaultBody
 
 APP_NAME = "sme-ocpp-sim"
 INSTRUCTIONS = ("SME OCPPSim: simulated OCPP 1.6J / 2.0.1 charge points connected to a CSMS. get_state lists the "
@@ -156,6 +156,24 @@ def build_registry(app: Any) -> McpRegistry:
               "validate": {"type": "boolean", "default": True},
               "raw": {"type": "string", "minLength": 1, "description": "A raw frame text instead of action"},
               "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 60}}), destructive=True)
+
+    # ---- scenarios (v0.3 M3)
+    add("run_scenario", "Load a scenario (YAML text, format ocppsim-scenario/1: tracks of timed actions and "
+        "assertions on frames / state per charger id) and start it. One scenario at a time; poll "
+        "get_scenario_status, then get_scenario_result for the verdict.", "POST", "/api/scenarios/run",
+        _obj({"body": {"type": "string", "minLength": 1, "description": "The scenario YAML (or JSON) text"}},
+             ["body"], cid=False), body="text", destructive=True)
+    add("get_scenario_status", "State of the current / last scenario: running / done, per-track progress, step "
+        "counts, operator prompts of await_csms steps.", "GET", "/api/scenarios/current", no_args)
+    add("get_scenario_result", "Verdict of the last finished scenario (ocppsim-verdict/1): result pass / fail / "
+        "error / aborted and every step with status, message and evidence frame seqs.",
+        "GET", "/api/scenarios/result", no_args)
+    add("abort_scenario", "Stop the running scenario (result aborted).", "POST", "/api/scenarios/abort", no_args,
+        destructive=True)
+    add("expect_frame", "One-shot assertion: wait up to 'within' seconds for a frame in the log after seq "
+        "'since' (default: now) matching charger / dir / action / message_type and payload matchers (dotted path "
+        "-> literal or {in, gt, ge, lt, le, re, exists}). Returns matched and the frame.", "POST",
+        "/api/frames/expect", _obj(_model_props(ExpectFrameBody), cid=False), destructive=False)
 
     # ---- built-in Mini CSMS
     add("mini_csms_status", "Built-in Mini CSMS: status and the stations connected to it (error when "

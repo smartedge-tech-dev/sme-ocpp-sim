@@ -174,6 +174,18 @@ left out; `last_seq` is the newest sequence number of the whole log (filters ign
 
 The frame log contains OCPP frames only, never HTTP headers or passwords.
 
+## Scenarios { #scenarios }
+
+| Method | Path | Meaning |
+|---|---|---|
+| POST | `/api/scenarios/run` | Start a scenario; body: its YAML (or JSON) text. 400 invalid / unknown charger, 409 one is running |
+| GET | `/api/scenarios/current` | Status of the current / last scenario (`{"state": "idle"}` when none) |
+| POST | `/api/scenarios/abort` | Stop the running scenario (409 when none runs) |
+| GET | `/api/scenarios/result?format=json\|junit` | Verdict of the finished scenario (404 none, 409 still running) |
+| POST | `/api/frames/expect` | Wait up to `within` s (max 300) for a frame after `since` matching `charger` / `dir` / `action` / `message_type` / `payload` matchers; `{"matched": bool, "frame": ...}` |
+
+See [Scenarios](scenarios.md) for the file format and the verdict.
+
 ## Mini CSMS { #mini-csms }
 
 Routes of the built-in [Mini CSMS](mini-csms.md). Station ids are the ids the stations connected with.

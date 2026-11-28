@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Scenario runner and verdict (v0.3 M3): a standalone scenario YAML (`format: ocppsim-scenario/1`) names
+  chargers of the running config by id and runs parallel tracks of timed steps on the sim clock (`at` /
+  `after` / `until`, `for_each` / `repeat`, `${param}`): the actions `plug` / `unplug` / `swipe` / `start` /
+  `stop` / `fault` / `clear_fault` / `connect` / `disconnect` / `drop` / `impair` / `send` / `set_ev` (the EV
+  of the next transaction) / `wait` / `log`, and the assertions `expect` (frame with payload matchers and the
+  answer via `then`, or connector state), `expect_not` and `await_csms`, with `within` (wall) / `within_sim`
+  and `on_fail`. Built-in matchers (literal, `in`, `gt` / `ge` / `lt` / `le`, `re`, `exists`) on dotted
+  paths. The verdict (`ocppsim-verdict/1` JSON, optional JUnit XML) lists every step with its evidence frames.
+  Headless CLI `sme-ocpp-sim scenario run FILE -c CONFIG [--out] [--junit] [--trace] [--time-scale]` (exit
+  0 pass / 1 fail / 2 error) and `scenario validate`; HTTP `POST /api/scenarios/run`, `GET
+  /api/scenarios/current`, `POST /api/scenarios/abort`, `GET /api/scenarios/result`, `POST /api/frames/expect`;
+  MCP tools `run_scenario`, `get_scenario_status`, `get_scenario_result`, `abort_scenario`, `expect_frame`.
+  Example scenarios in `scenarios/`; new docs page "Scenarios".
 - Vehicle profile pool (v0.3 M1): `session.ev_model: pool` draws the EV of every transaction (OCPP 1.6 and
   2.0.1) from the built-in presets plus `ev_models`, by the new `ev_models` field `weight`, with the new
   `initial_soc` / `target_soc` fields (a number or a `fixed` / `uniform` / truncated `normal` distribution).

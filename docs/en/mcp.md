@@ -52,6 +52,11 @@ id as `cid`; connector numbers start at 1.
 | `mini_csms_status` | `GET /api/csms` | Built-in [Mini CSMS](mini-csms.md) status |
 | `mini_csms_actions` | `GET /api/csms/actions` | CSMS → charger actions the Mini CSMS can send |
 | `mini_csms_call` | `POST /api/csms/chargers/{id}/call` | Send a CSMS → charger CALL from the Mini CSMS |
+| `run_scenario` | `POST /api/scenarios/run` | Start a [scenario](scenarios.md) (argument `body`: the YAML text) |
+| `get_scenario_status` | `GET /api/scenarios/current` | Status and progress of the scenario |
+| `get_scenario_result` | `GET /api/scenarios/result` | Verdict of the finished scenario |
+| `abort_scenario` | `POST /api/scenarios/abort` | Stop the running scenario |
+| `expect_frame` | `POST /api/frames/expect` | Wait for a frame matching filters and payload matchers |
 
 Read-only tools are marked `readOnlyHint`; `disconnect_charger`, `drop_connection`, `set_impairments`, `send_frame` and
 `mini_csms_call` are marked `destructiveHint`, so a client can ask before calling them.

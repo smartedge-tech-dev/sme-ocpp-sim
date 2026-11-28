@@ -83,6 +83,7 @@ nav:
       - smart-charging.md
       - security-profiles.md
       - mini-csms.md
+      - scenarios.md
       - http-api.md
       - mcp.md
       - development.md

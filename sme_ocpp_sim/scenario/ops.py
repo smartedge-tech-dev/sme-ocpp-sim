@@ -20,10 +20,10 @@ action          function                                 route
 ``drop``        :func:`drop`                             ``/chargers/{id}/drop``
 ``impair``      :func:`impair`                           ``PUT /chargers/{id}/impairments``
 ``send``        :func:`send`                             ``/chargers/{id}/send``
+``set_ev``      :func:`set_ev`                           (scenario only)
 ==============  =======================================  ==========================================
 
-``set_ev`` (vehicle profile pool), ``wait`` and ``log`` are added with the milestones that need them (``wait`` /
-``log`` belong to the runner, they do not touch a charger). Request validation (field types, ranges) stays with
+``wait`` and ``log`` belong to the scenario runner (:mod:`.runner`), they do not touch a charger. Request validation (field types, ranges) stays with
 the callers' models (the web request bodies); the actions check what depends on the charger (connector range,
 fault codes of its version, transaction state).
 """
@@ -31,8 +31,10 @@ fault codes of its version, transaction state).
 from __future__ import annotations
 
 import json
+import random
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+from ..charging.ev import PRESETS, Vehicle
 from ..config import ChargerConfig, ImpairmentConfig, SimConfig
 from ..csms.handlers import SPECS
 from ..engine import OcppEngine, OperationNotPossible
@@ -265,3 +267,34 @@ async def send(engine: OcppEngine, cid: str, *, action: Optional[str] = None, pa
         except CallError as e:
             out["warning"] = f"the answer does not match the response schema: {e.code}: {e.description}"
     return out
+
+
+# ------------------------------------------------------------------ vehicle
+
+def set_ev(engine: OcppEngine, cid: str, connector: int = 1, ev_model: Optional[str] = None,
+           initial_soc: Optional[float] = None, target_soc: Optional[float] = None) -> Dict[str, Any]:
+    """Set the EV of the connector's next transaction (used once). ``ev_model``: an id of the charger's vehicle
+    pool, of ``ev_models`` or a preset (default: the charger's current model); the SoC values default to the pool
+    entry's distribution (drawn now) or the charger's ``session`` values."""
+    rt = _ready(engine, cid, connector)
+    for name, v in (("initial_soc", initial_soc), ("target_soc", target_soc)):
+        if v is not None and not 0 <= v <= 100:
+            raise OpError("invalid", f"{name}: must be 0..100")
+    entry = None
+    if rt.pool is not None:
+        want = ev_model or rt.ev.id
+        entry = next((e for e in rt.pool.entries if e.ev.id == want), None)
+        model = entry.ev if entry is not None else None
+    else:
+        model = rt.ev if ev_model in (None, rt.ev.id) else None
+    if model is None:
+        model = next((e.to_model() for e in engine.config.ev_models if e.id == ev_model), None) or PRESETS.get(ev_model)
+    if model is None:
+        raise OpError("invalid", f"ev_model {ev_model!r}: not a preset, ev_models entry or pool vehicle")
+    rng = random.Random(f"set_ev:{cid}:{connector}")  # deterministic when only the model is set
+    ini = initial_soc if initial_soc is not None else (
+        entry.initial_soc.sample(rng) if entry is not None else rt.cfg.session.initial_soc)
+    tgt = target_soc if target_soc is not None else (
+        entry.target_soc.sample(rng) if entry is not None else rt.cfg.session.target_soc)
+    rt.next_vehicle[connector] = Vehicle(model, float(ini), float(tgt))
+    return {"ok": True, "ev_model": model.id, "initial_soc": float(ini), "target_soc": float(tgt)}

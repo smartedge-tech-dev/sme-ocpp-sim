@@ -2,11 +2,17 @@
 
   sme-ocpp-sim [run] [-c CONFIG] [--host 127.0.0.1] [--http-port 8082] [--no-browser]
                [-v] [--log-format {text,json}] [--mini-csms] [--csms-host HOST] [--csms-port 9000]
+  sme-ocpp-sim scenario run FILE [-c CONFIG] [--out verdict.json] [--junit junit.xml] [--trace frames.jsonl]
+                            [--time-scale N] [-v] [--log-format {text,json}]
+  sme-ocpp-sim scenario validate FILE [-c CONFIG]
   sme-ocpp-sim --version
 
 The common options and the web server start come from ``sme_sim_common.cli``. ``--mini-csms`` / ``--csms-host`` /
 ``--csms-port`` override ``mini_csms.enabled`` / ``host`` / ``port`` of the config for this run (saving the config
 from the web UI then writes them, like any other running value).
+
+``scenario run`` is headless (no web server): it starts the engine with the config, runs the scenario, writes the
+verdict JSON (``--out``, default stdout) and exits 0 pass / 1 fail / 2 error, aborted or a load error (v0.3 M3).
 """
 
 from __future__ import annotations
@@ -59,8 +65,99 @@ def default_config_path() -> Optional[Path]:
     return user if user.exists() else None
 
 
+def _load_config(path: Optional[str]):
+    from .config import SimConfig, load_file
+
+    if path is None:
+        default = default_config_path()
+        path = str(default) if default else None
+    return (load_file(path) if path else SimConfig()), path
+
+
+def scenario_main(argv) -> int:
+    """``scenario run`` / ``scenario validate`` (exit codes: :mod:`.scenario.verdict`)."""
+    ap = argparse.ArgumentParser(prog=f"{APP_NAME} scenario", description="Run or check a scenario file "
+                                 "(format ocppsim-scenario/1) against a simulator config, without the web UI")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("run", "validate"):
+        p = sub.add_parser(name, help="run the scenario headless" if name == "run" else "check the scenario only")
+        p.add_argument("file", help="scenario YAML")
+        p.add_argument("-c", "--config", help="simulator config YAML (default: as the web app)")
+        if name == "run":
+            p.add_argument("--out", help="verdict JSON file (default: stdout)")
+            p.add_argument("--junit", help="also write a JUnit XML report")
+            p.add_argument("--trace", help="write the frames of the scenario's chargers (JSON lines)")
+            p.add_argument("--time-scale", dest="time_scale", type=float,
+                           help="sim speed for this run (overrides the config and the scenario's clock.time_scale)")
+            p.add_argument("-v", "--verbose", action="store_true")
+            p.add_argument("--log-format", dest="log_format", choices=("text", "json"), default="text")
+    args = ap.parse_args(argv)
+    if args.cmd == "run":
+        setup_logging(verbose=args.verbose, log_format=args.log_format)
+
+    from .scenario import verdict as vd
+    from .scenario.model import ScenarioError, expand, load_file as load_scenario
+
+    try:
+        cfg, _path = _load_config(args.config)
+        sc = load_scenario(args.file)
+        if getattr(args, "time_scale", None) is not None:
+            if args.time_scale <= 0:
+                raise ScenarioError("--time-scale: must be > 0")
+            sc = sc.model_copy(update={"clock": sc.clock.model_copy(update={"time_scale": args.time_scale})})
+        expand(sc, [c.id for c in cfg.chargers])
+    except (ScenarioError, OSError) as e:
+        print(f"scenario error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 - config errors
+        print(f"config error: {e}", file=sys.stderr)
+        return 2
+    if args.cmd == "validate":
+        print(f"{args.file}: ok ({len(sc.tracks)} track(s))")
+        return 0
+
+    import asyncio
+
+    from .engine import OcppEngine
+    from .scenario.runner import ScenarioRunner
+
+    async def run() -> dict:
+        engine = OcppEngine(cfg)
+        await engine.start()
+        try:
+            runner = engine.scenario = ScenarioRunner(engine, sc, source=args.file)
+            runner.trace_path = args.trace
+            verdict = await runner.run()
+            if args.trace:
+                vd.write(args.trace, runner.trace_jsonl())
+            return verdict
+        finally:
+            await engine.stop()
+
+    try:
+        verdict = asyncio.run(run())
+    except KeyboardInterrupt:
+        print("scenario aborted", file=sys.stderr)
+        return 2
+    text = vd.to_json(verdict)
+    if args.out:
+        vd.write(args.out, text)
+    else:
+        sys.stdout.write(text)
+    if args.junit:
+        vd.write(args.junit, vd.to_junit(verdict))
+    failed = [s for s in verdict["steps"] if s["status"] in ("fail", "error")]
+    print(f"scenario {verdict['scenario']}: {verdict['result']} ({len(verdict['steps'])} step(s), "
+          f"{verdict['wall_s']:.1f} s wall, {verdict['sim_s']:.0f} s sim)"
+          + "".join(f"\n  {s['track']} {s['id']} {s['status']}: {s['message']}" for s in failed)
+          + (f"\n  error: {verdict['error']}" if verdict.get("error") else ""), file=sys.stderr)
+    return vd.exit_code(verdict["result"])
+
+
 def main(argv=None) -> int:
     rest = sys.argv[1:] if argv is None else list(argv)
+    if rest[:1] == ["scenario"]:
+        return scenario_main(rest[1:])
     if rest[:1] == ["run"]:
         rest = rest[1:]
     ap = argparse.ArgumentParser(prog=APP_NAME,

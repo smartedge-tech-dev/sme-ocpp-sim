@@ -383,6 +383,22 @@ def _act_sync(fn: Callable[..., Any], *args: Any) -> Any:
 
 # ------------------------------------------------------------------ product router
 
+#: Largest scenario text accepted by ``POST /api/scenarios/run``.
+MAX_SCENARIO_BYTES = 1_000_000
+
+
+class ExpectFrameBody(BaseModel):
+    """``POST /api/frames/expect``: frame filters, payload matchers (scenario syntax) and the wait."""
+    model_config = ConfigDict(extra="forbid")
+    charger: Optional[str] = None
+    dir: Optional[Literal["rx", "tx"]] = None
+    action: Optional[str] = None
+    message_type: Optional[Literal["CALL", "CALLRESULT", "CALLERROR"]] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    since: Optional[int] = Field(None, ge=0, description="frame seq to search after (default: the newest now)")
+    within: float = Field(30.0, ge=0, le=300, description="wall seconds to wait")
+
+
 def _router(engine: OcppEngine) -> APIRouter:
     r = APIRouter(prefix="/api", tags=["ocpp"])
 
@@ -654,6 +670,86 @@ def _router(engine: OcppEngine) -> APIRouter:
 
         return StreamingResponse(chunks(), media_type=NDJSON,
                                  headers={"Content-Disposition": 'attachment; filename="frames.jsonl"'})
+
+
+    # ---- scenarios (v0.3 M3; one at a time, see scenario/runner.py)
+
+    def current_runner():
+        return engine.scenario
+
+    @r.post("/scenarios/run", summary="Load a scenario (YAML or JSON text body, format ocppsim-scenario/1) and "
+            "start it; 409 while another one runs")
+    async def scenario_run(request: Request):
+        from .scenario.model import ScenarioError, load_text
+        from .scenario.runner import ScenarioRunner
+
+        body = await request.body()
+        if len(body) > MAX_SCENARIO_BYTES:
+            raise bad(413, f"scenario: larger than {MAX_SCENARIO_BYTES} bytes")
+        cur = current_runner()
+        if cur is not None and not cur.done:
+            raise bad(409, f"scenario {cur.scenario.name!r} is running (abort it first)")
+        try:
+            runner = ScenarioRunner(engine, load_text(body.decode("utf-8", errors="replace")))
+        except ScenarioError as e:
+            raise bad(400, e) from None
+        engine.scenario = runner
+        runner.start()
+        return {"ok": True, **runner.status()}
+
+    @r.get("/scenarios/current", summary="Status of the current / last scenario (state idle when none)")
+    def scenario_current():
+        cur = current_runner()
+        return {"state": "idle"} if cur is None else cur.status()
+
+    @r.post("/scenarios/abort", summary="Stop the running scenario (result aborted)")
+    async def scenario_abort():
+        cur = current_runner()
+        if cur is None or not cur.abort():
+            raise bad(409, "no scenario is running")
+        await cur.wait()
+        return {"ok": True, **cur.status()}
+
+    @r.get("/scenarios/result", summary="Verdict of the last finished scenario (ocppsim-verdict/1 JSON, or JUnit "
+           "XML with format=junit)")
+    def scenario_result(format: Literal["json", "junit"] = Query("json")):
+        from .scenario.verdict import to_junit
+
+        cur = current_runner()
+        if cur is None:
+            raise bad(404, "no scenario has run")
+        if not cur.done:
+            raise bad(409, f"scenario {cur.scenario.name!r} is still running")
+        verdict = cur.verdict()
+        if format == "junit":
+            return PlainTextResponse(to_junit(verdict), media_type="application/xml")
+        return verdict
+
+    @r.post("/frames/expect", summary="Wait until a frame matching the filters (and payload matchers) is in the "
+            "frame log after seq 'since', or 'within' seconds pass")
+    async def frames_expect(body: ExpectFrameBody):
+        import asyncio
+
+        from .scenario.match import MatcherError, check_matcher, frame_payload, match_all
+
+        for path, m in body.payload.items():
+            try:
+                check_matcher(m)
+            except MatcherError as e:
+                raise bad(400, f"payload.{path}: {e}") from None
+        loop = asyncio.get_running_loop()
+        end = loop.time() + body.within
+        since = engine.frame_log.last_seq if body.since is None else body.since
+        while True:
+            for e in engine.frame_log.since(since, charger=body.charger, action=body.action, direction=body.dir):
+                if body.message_type and e.message_type != body.message_type:
+                    continue
+                if body.payload and match_all(frame_payload(e.raw), body.payload) is not None:
+                    continue
+                return {"ok": True, "matched": True, "frame": e.to_dict(), "last_seq": engine.frame_log.last_seq}
+            if loop.time() >= end:
+                return {"ok": True, "matched": False, "frame": None, "last_seq": engine.frame_log.last_seq}
+            await asyncio.sleep(0.05)
 
     return r
 
