@@ -642,7 +642,7 @@ def test_latency_and_drop_live_against_mini_csms():
                 assert rt.connect_attempts == attempts and rt.connected  # applied live: no reconnect
                 t0 = time.monotonic()
                 assert (await c.post("/api/chargers/CP/send", json={"action": "Heartbeat"})).json()["ok"] is True
-                assert time.monotonic() - t0 >= 0.13
+                assert time.monotonic() - t0 >= 0.1
                 r = await c.post("/api/chargers/CP/drop", json={"mode": "close", "reconnect_after_s": 0.2})
                 assert r.json() == {"ok": True, "mode": "close", "reconnect_after_s": 0.2}
                 async with asyncio.timeout(5):

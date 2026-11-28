@@ -46,6 +46,11 @@ from ..rpc.impair import ImpairedSocket, impairment_seed, make_rng
 log = logging.getLogger(__name__)
 
 
+def _drop_key(imp: ImpairmentConfig) -> tuple:
+    """The settings of the periodic drop countdown (a change of anything else does not restart it)."""
+    return imp.drop_every_s, imp.drop_jitter_s, imp.seed
+
+
 async def _wait_any(*events: asyncio.Event, timeout: Optional[float] = None) -> bool:
     """Wait until one of ``events`` is set or ``timeout`` passes; True if one was set."""
     if any(e.is_set() for e in events):
@@ -168,8 +173,8 @@ class ChargerRuntime:
         """Apply ``imp`` to the running charger (no reconnect); the next inbound CALL already sees it."""
         self.validate_impairments(imp)
         self.impairments = imp.model_copy(deep=True)
-        # Latency / jitter are read per frame by the session's ImpairedSocket; the drop timer re-reads its
-        # settings (a change restarts the current interval).
+        # Latency / jitter are re-read while a frame is held by the session's ImpairedSocket (the seed applies
+        # from the next connection); the drop timer restarts its countdown only when a drop setting changed.
         self._imp_changed.set()
 
     def _block_mode(self, action: str) -> Optional[str]:
@@ -196,7 +201,8 @@ class ChargerRuntime:
         self._net_drop.set()
 
     async def _drop_timer(self, stop: asyncio.Event) -> None:
-        """Periodic drops (``impairments.drop_every_s`` +- ``drop_jitter_s``), counted from each session start."""
+        """Periodic drops (``impairments.drop_every_s`` +- ``drop_jitter_s``), counted from each session start.
+        A change of ``drop_every_s`` / ``drop_jitter_s`` / ``seed`` restarts the countdown, other changes do not."""
         rng, rng_seed = None, None
         while not stop.is_set():
             self._imp_changed.clear()
@@ -212,12 +218,23 @@ class ChargerRuntime:
                 rng, rng_seed = make_rng(seed, "drop"), seed
             j = imp.drop_jitter_s
             interval = imp.drop_every_s + (rng.uniform(-j, j) if j else 0.0)
-            sid = self._session_no
-            if await _wait_any(stop, self._imp_changed, timeout=interval):
-                continue  # stopped, or the settings changed: start over
+            sid, key = self._session_no, _drop_key(imp)
+            deadline = time.monotonic() + interval  # wall time, not the injectable clock
+            restart = False
+            while not stop.is_set():
+                self._imp_changed.clear()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not await _wait_any(stop, self._imp_changed, timeout=remaining):
+                    break
+                if _drop_key(self.impairments) != key:
+                    restart = True  # the drop settings changed: start over with them
+                    break
+                # another impairment changed (latency, block, ...): the countdown goes on
+            if restart or stop.is_set():
+                continue
             if self._session_no == sid and self.connected:
                 try:
-                    self.drop(imp.drop_mode, imp.down_s)
+                    self.drop()  # mode / pause: the current drop_mode / down_s
                 except ConnectionError:
                     pass
             await _wait_any(stop, self._session_down)
@@ -332,11 +349,16 @@ class ChargerRuntime:
         drop: Optional[tuple] = None
         try:
             await asyncio.wait([rx, *waits], return_when=asyncio.FIRST_COMPLETED)
-            if self._net_drop.is_set() and not stop.is_set() and not self._reset_done.is_set():
+            # A real end (stop, Reset, a lost connection, a failed session task) wins over a simulated drop.
+            if (self._net_drop.is_set() and not stop.is_set() and not self._reset_done.is_set()
+                    and not rx.done() and not self._abort.is_set()):
                 drop = self._drop_request
                 self.drops += 1
                 log.info("%s: simulated drop (%s), reconnect in %.1f s", self.cfg.id, drop[0], drop[1])
-                await sock.drop(drop[0])
+                try:
+                    await sock.drop(drop[0])
+                except Exception as e:  # noqa: BLE001 - the session closes below either way
+                    log.warning("%s: simulated drop failed: %r", self.cfg.id, e)
         finally:
             rx_error = await self._close_session(rpc, rx, waits)
             await sock.aclose_pump()

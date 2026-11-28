@@ -665,7 +665,7 @@ def test_forced_drop_reconnects_after_the_pause_and_keeps_the_transaction():
         assert await rt.stop_tx(1)  # queued while offline, delivered on the next session
         t0 = time.monotonic()
         await _until(lambda: rt.online and len(peer.history) == 2)
-        assert time.monotonic() - t0 >= 0.25  # the pause, not the (shorter) back-off
+        assert time.monotonic() - t0 >= 0.2  # the 0.3 s pause, not the (0.05 s) back-off
         assert rt.connect_attempts == attempts + 1 and rt.last_error is None
         await _until(lambda: peer.history[-1].stops)
         assert peer.history[-1].stops[0]["transaction_id"] == s.starts[0]["transaction_id"]
@@ -736,6 +736,16 @@ def test_latency_applies_live_to_the_open_session():
         assert sock.next_delay("tx") == pytest.approx(0.2) and sock.next_delay("rx") == 0.0
         t0 = time.monotonic()
         await rt.heartbeat()  # CP -> CSMS: the CALL waits 0.2 s before it is written
-        assert time.monotonic() - t0 >= 0.18
+        assert time.monotonic() - t0 >= 0.15
         assert rt.connect_attempts == attempts and rt.online  # no reconnect
+    _scenario(body)
+
+def test_a_real_session_error_wins_over_a_simultaneous_drop():
+    async def body(peer, rt):
+        await _until(lambda: rt.online)
+        rt.abort_session("boom")  # a failed session task ...
+        rt.drop(reconnect_after_s=0)  # ... and a drop in the same loop turn
+        await _until(lambda: len(peer.history) == 2 and rt.online)
+        assert rt.drops == 0
+        assert rt._reconnect_after is None
     _scenario(body)

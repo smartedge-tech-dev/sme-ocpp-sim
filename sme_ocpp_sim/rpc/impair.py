@@ -1,32 +1,49 @@
 """Network impairments on an OCPP-J websocket (v0.2.2 A, simulator-only).
 
 :class:`ImpairedSocket` wraps a websockets connection (anything with ``send`` / async iteration / ``close``) and
-delays the frames of one or both directions by ``latency_ms`` +- ``jitter_ms``. The settings are read for every
-frame, so a change applies to the open connection at once.
+delays the frames of one or both directions by ``latency_ms`` +- ``jitter_ms``.
 
-Order is preserved: each frame gets a due time ``max(arrival + delay, due time of the previous frame)``, so a
-short delay drawn after a long one waits behind it (reordering is out of scope). Received frames are read by a
-pump task as they arrive, so the delay of one frame does not add to the next one's. The delays come from one
-``random.Random`` per direction, seeded from the configured seed (or the charger id): the same seed gives the
-same delay sequence. The websockets library's own ping / pong is not delayed.
-
-:meth:`ImpairedSocket.drop` ends the connection the way a network failure would: ``abort`` drops the TCP
-connection without a close frame, ``close`` closes normally with code 1001.
+- **Live settings**: a held frame waits until ``arrival + delay``, where the delay is recomputed from the current
+  settings about every :data:`RECHECK_S` seconds; lowering or switching off the latency releases held frames.
+- **Order**: frames are released one after the other in arrival order (sent frames under a FIFO lock, received
+  frames by the single reader), so a short delay never overtakes a long one (reordering is out of scope).
+  Received frames are read by a pump task as they arrive, so the delay of one frame does not add to the next one's.
+- **Seeding**: each frame draws one jitter factor from a ``random.Random`` per direction, seeded from the
+  configured seed (or a CRC32 of the charger id). The RNG is created per connection, so a seed change applies
+  from the next connection and every connection starts the same sequence again.
+- **Close / drop**: :meth:`ImpairedSocket.close` and :meth:`ImpairedSocket.drop` wake every held frame at once;
+  received frames still queued are discarded, and a sent frame still held is lost (as on a real network), its
+  ``send`` raising ``ConnectionClosed``. ``drop("abort")`` cuts the TCP connection without a close frame,
+  ``drop("close")`` closes with code 1001 (falling back to an abort when the close handshake hangs).
+- The websockets library's own ping / pong is not delayed. The receive queue is bounded, so a slow reader
+  pushes back on the TCP connection instead of buffering without limit.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 import random
 import time
 import zlib
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from websockets.exceptions import ConnectionClosedOK
+
 if TYPE_CHECKING:  # the rpc layer does not import the config at runtime
     from ..config import ImpairmentConfig
 
+log = logging.getLogger(__name__)
+
 #: Close code of a ``close``-mode drop (1001 "going away").
 DROP_CLOSE_CODE = 1001
+#: How long a ``close``-mode drop waits for the close handshake before it aborts the connection.
+DROP_CLOSE_TIMEOUT_S = 1.0
+#: A held frame re-reads the settings at least this often (a lowered latency releases it).
+RECHECK_S = 0.1
+#: Received frames queued at most (then the pump stops reading: TCP back-pressure).
+RX_QUEUE_MAX = 1000
 
 _EOF = object()
 
@@ -49,51 +66,68 @@ class _Error:
 
 
 class ImpairedSocket:
-    """A websocket whose frames are delayed per ``settings()`` (read for every frame)."""
+    """A websocket whose frames are delayed per ``settings()`` (re-read while a frame is held)."""
 
     def __init__(self, ws: Any, settings: Callable[[], "ImpairmentConfig"], seed: int, *,
-                 monotonic: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], Any] = asyncio.sleep) -> None:
+                 monotonic: Callable[[], float] = time.monotonic, rx_queue_max: int = RX_QUEUE_MAX) -> None:
         self._ws = ws
         self._settings = settings
-        self._mono, self._sleep = monotonic, sleep
+        self._mono = monotonic
         self._rng = {"tx": make_rng(seed, "tx"), "rx": make_rng(seed, "rx")}
-        self._due = {"tx": 0.0, "rx": 0.0}
         self._tx_lock = asyncio.Lock()
-        self._rx: Optional[asyncio.Queue] = None
+        self._rx: asyncio.Queue = asyncio.Queue(maxsize=rx_queue_max)
         self._pump: Optional[asyncio.Task] = None
+        self._closed = asyncio.Event()
 
     @property
     def inner(self) -> Any:
         return self._ws
 
+    @property
+    def closed(self) -> bool:
+        return self._closed.is_set()
+
     def __getattr__(self, name: str) -> Any:  # close_code, close_reason, transport, ...
         return getattr(self._ws, name)
 
-    def next_delay(self, direction: str) -> float:
-        """The delay in seconds of the next frame of ``direction`` (``tx`` / ``rx``); 0 when it is not delayed."""
+    # ------------------------------------------------------------------ delays
+
+    def _draw(self, direction: str) -> float:
+        """The jitter factor (-1 .. 1) of the next frame of ``direction``; one draw per frame, always."""
+        return self._rng[direction].uniform(-1.0, 1.0)
+
+    def _delay(self, direction: str, factor: float) -> float:
+        """The delay in seconds of a frame with jitter ``factor`` under the current settings."""
         s = self._settings()
         if not s.delays or s.direction not in ("both", direction):
             return 0.0
-        d = s.latency_ms + (self._rng[direction].uniform(-s.jitter_ms, s.jitter_ms) if s.jitter_ms else 0.0)
-        return max(0.0, d) / 1000.0
+        return max(0.0, s.latency_ms + factor * s.jitter_ms) / 1000.0
 
-    def _due_time(self, direction: str, arrival: float) -> float:
-        due = max(arrival + self.next_delay(direction), self._due[direction])
-        self._due[direction] = due
-        return due
+    def next_delay(self, direction: str) -> float:
+        """Draw the next frame's factor and return its delay now (tests / diagnostics)."""
+        return self._delay(direction, self._draw(direction))
 
-    async def _wait_until(self, due: float) -> None:
-        wait = due - self._mono()
-        if wait > 0:
-            await self._sleep(wait)
+    async def _hold(self, direction: str, arrival: float, factor: float) -> bool:
+        """Wait until ``arrival`` + the current delay; False when the socket closed meanwhile."""
+        while not self._closed.is_set():
+            wait = arrival + self._delay(direction, factor) - self._mono()
+            if wait <= 0:
+                return True
+            try:
+                async with asyncio.timeout(min(wait, RECHECK_S)):
+                    await self._closed.wait()
+            except TimeoutError:
+                pass
+        return False
 
     # ------------------------------------------------------------------ send
 
     async def send(self, raw: Any) -> None:
-        due = self._due_time("tx", self._mono())  # fixed on entry: concurrent sends keep their order
+        arrival = self._mono()  # the delay counts from the call, not from getting the lock
         async with self._tx_lock:  # FIFO: frames are written in the order send() was called
-            await self._wait_until(due)
+            factor = self._draw("tx")
+            if not await self._hold("tx", arrival, factor):
+                raise ConnectionClosedOK(None, None)  # still held when the connection went: lost
             await self._ws.send(raw)
 
     # ------------------------------------------------------------------ receive
@@ -102,49 +136,72 @@ class ImpairedSocket:
         return self
 
     async def __anext__(self) -> Any:
-        if self._rx is None:
-            self._rx = asyncio.Queue()
-            self._pump = asyncio.ensure_future(self._run_pump(self._rx))
+        if self._pump is None and not self._closed.is_set():
+            self._pump = asyncio.ensure_future(self._run_pump())
         item = await self._rx.get()
-        if item is _EOF:
+        if item is _EOF or self._closed.is_set():
+            if self._rx.empty():
+                self._rx.put_nowait(_EOF)  # later reads end too
             raise StopAsyncIteration
         if isinstance(item, _Error):
             raise item.exc
-        due, raw = item
-        await self._wait_until(due)
+        arrival, factor, raw = item
+        if not await self._hold("rx", arrival, factor):
+            raise StopAsyncIteration  # closed while held: the frame is discarded
         return raw
 
-    async def _run_pump(self, q: asyncio.Queue) -> None:
+    async def _run_pump(self) -> None:
+        q = self._rx
         try:
             async for raw in self._ws:
-                q.put_nowait((self._due_time("rx", self._mono()), raw))
+                if self._closed.is_set():
+                    return
+                await q.put((self._mono(), self._draw("rx"), raw))  # bounded: back-pressure on the reader
         except asyncio.CancelledError:
-            q.put_nowait(_EOF)
             raise
         except Exception as e:  # noqa: BLE001 - handed to the reader, like the plain socket would raise it
-            q.put_nowait(_Error(e))
+            await q.put(_Error(e))
             return
-        q.put_nowait(_EOF)
+        await q.put(_EOF)
+
+    def _shut(self) -> None:
+        """Mark closed: wake held frames, stop the pump, discard queued frames, end the reader."""
+        self._closed.set()
+        if self._pump is not None and not self._pump.done():
+            self._pump.cancel()
+        while not self._rx.empty():
+            self._rx.get_nowait()
+        self._rx.put_nowait(_EOF)
 
     # ------------------------------------------------------------------ close / drop
 
     async def close(self, *args: Any, **kwargs: Any) -> None:
+        if not self._closed.is_set():
+            self._shut()
         await self._ws.close(*args, **kwargs)
 
     async def drop(self, mode: str) -> None:
         """End the connection like a network failure: ``abort`` (no close frame) or ``close`` (code 1001)."""
-        if mode == "abort":
-            transport = getattr(self._ws, "transport", None)
+        if not self._closed.is_set():
+            self._shut()
+        transport = getattr(self._ws, "transport", None)
+        if mode == "abort" and transport is not None:
+            transport.abort()
+            return
+        try:
+            async with asyncio.timeout(DROP_CLOSE_TIMEOUT_S):
+                if "code" in inspect.signature(self._ws.close).parameters:
+                    await self._ws.close(code=DROP_CLOSE_CODE, reason="simulated drop")
+                else:  # a socket whose close() takes no code (test fakes)
+                    await self._ws.close()
+        except TimeoutError:
+            log.debug("close handshake of a simulated drop timed out; aborting")
             if transport is not None:
                 transport.abort()
-                return
-        try:
-            await self._ws.close(code=DROP_CLOSE_CODE, reason="simulated drop")
-        except TypeError:  # a socket whose close() takes no arguments (test fakes)
-            await self._ws.close()
 
     async def aclose_pump(self) -> None:
         """Stop the receive pump (after the connection closed)."""
         if self._pump is not None and not self._pump.done():
             self._pump.cancel()
+        if self._pump is not None:
             await asyncio.gather(self._pump, return_exceptions=True)
