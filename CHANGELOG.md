@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `idle_after_s` occupancy; id tags by `id_tag_strategy` `random` / `round_robin` / `affinity`
   (`affinity_prob`, `affinity_map`); vehicles from the vehicle pool (`vehicles` narrows it). The same seed,
   config and start time give the same plan (own random streams per connector; busy connectors skip an
-  arrival). It is a generator track of the scenario runner: scenarios take `generate:` tracks (same fields,
+  arrival; counters completed / aborted / rejected / failed /
+  preempted / cancelled / skipped). It is a generator track of the scenario runner: scenarios take `generate:` tracks (same fields,
   `use: traffic`), and a running scenario takes priority on its chargers. HTTP `GET` / `PUT /api/traffic`,
   `POST /api/traffic/start` / `stop`, `GET /api/traffic/plan`; MCP `get_traffic`, `set_traffic`,
   `start_traffic`, `stop_traffic`, `preview_traffic_plan`; the charger list header shows active sessions and

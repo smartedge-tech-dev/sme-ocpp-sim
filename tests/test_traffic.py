@@ -21,8 +21,9 @@ from sme_ocpp_sim.web import create_app
 T0 = datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc)
 
 
-def _cfg(n: int = 3, traffic=None, url: str = "ws://127.0.0.1:9/ocpp", version: str = "1.6", **sim) -> SimConfig:
-    return SimConfig.model_validate({
+def _cfg(n: int = 3, traffic=None, url: str = "ws://127.0.0.1:9/ocpp", version: str = "1.6", extra=None,
+         **sim) -> SimConfig:
+    return SimConfig.model_validate({**(extra or {}),
         "simulation": sim or {},
         "csms_defaults": {"url": url, "ocpp_version": version,
                           "reconnect": {"min_s": 0.05, "max_s": 0.2, "jitter": 0}},
@@ -142,10 +143,18 @@ def test_http_traffic_routes_and_preview():
 
 # ------------------------------------------------------------------ against the peers
 
-async def _with_peer(version: str, fn, n: int = 2, traffic=None):
-    peer = CsmsPeer() if version == "1.6" else CsmsPeer201()
+async def _until(cond, timeout: float = 30.0, what: str = "condition") -> None:
+    for _ in range(int(timeout / 0.05)):
+        if cond():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+async def _with_peer(version: str, fn, n: int = 2, traffic=None, peer_kw=None, extra=None):
+    peer = (CsmsPeer if version == "1.6" else CsmsPeer201)(**(peer_kw or {}))
     await peer.start()
-    eng = OcppEngine(_cfg(n, traffic, url=peer.url, version=version, time_scale=3600))
+    eng = OcppEngine(_cfg(n, traffic, url=peer.url, version=version, extra=extra, time_scale=3600))
     eng.stop_grace_s = 0.2
     await eng.start()
     try:
@@ -167,7 +176,8 @@ def test_accelerated_multi_hour_standing_traffic(version):
     async def fn(eng):
         tr = eng.traffic
         assert tr.running
-        await asyncio.sleep(7)          # ~7 h of sim time at time_scale 3600
+        g = tr.runner.generators[0]
+        await _until(lambda: tr.status()["sim_s"] > 5 * 3600 and g.stats.completed >= 6, 60, "5 h and 6 sessions")
         st = tr.status()
         assert st["sim_s"] > 5 * 3600
         assert not tr.runner._bufs      # no frame buffer for generator tracks (bounded memory)
@@ -206,6 +216,8 @@ def test_scenario_takes_priority_over_traffic():
         assert v["result"] == "pass", v
         assert g.stats.preempted == 1 and eng.chargers["CP2"].has_transaction(1)   # CP2 kept its session
         assert any(e["charger"] == "CP1" and e.get("note") == "scenario" for e in g.recent)
+        # The scenario is over: traffic comes back to CP1.
+        await _until(lambda: ("CP1", 1) in g.active and eng.chargers["CP1"].has_transaction(1), 10, "CP1 resumed")
         return v
 
     asyncio.run(_with_peer("1.6", fn, traffic=traffic))
@@ -227,3 +239,124 @@ def test_scenario_generate_track():
                 {"charger": "CP1", "generate": {"vehicles": {"nope": 1}}}]}))
 
     asyncio.run(_with_peer("1.6", fn, traffic={"interval_s": 300}))
+
+
+# ------------------------------------------------------------------ review follow-ups
+
+def test_engine_start_with_traffic_and_no_chargers_is_quiet():
+    async def go():
+        eng = OcppEngine(SimConfig.model_validate({"traffic": {"enabled": True}}))
+        await eng.start()
+        try:
+            st = eng.traffic.status()
+            assert st["state"] == "stopped" and "no chargers" in st["error"]
+        finally:
+            await eng.stop()
+    asyncio.run(go())
+
+
+def test_affinity_homes_are_stable_when_a_charger_is_added():
+    tags = [f"TAG{i}" for i in range(40)]
+
+    def homes(n):
+        cfg = _cfg(n, {"seed": 9, "id_tags": tags, "id_tag_strategy": "affinity"})
+        plan = TrafficPlan(cfg.traffic, cfg, {f"CP{i}": 1 for i in range(1, n + 1)}, T0)
+        return {tag: cid for cid, ts in plan._homes.items() for tag in ts}
+
+    three, four = homes(3), homes(4)
+    moved = [t for t in tags if three[t] != four[t]]
+    assert all(four[t] == "CP4" for t in moved) and 0 < len(moved) < len(tags) // 2
+
+
+def test_preview_caps_the_ticks():
+    cfg = _cfg(1, {"interval_s": 1, "probability": 0.0})
+    plan = TrafficPlan(cfg.traffic, cfg, {"CP1": 1}, T0)
+    arrivals, truncated = plan.preview(168 * 3600)
+    assert arrivals == [] and truncated
+    with pytest.raises(ValueError):
+        _cfg(1, {"interval_s": 0.5})
+
+
+def _plugged(eng) -> bool:
+    return any(rt.has_transaction(1) or rt.station.snapshot()["connectors"][0]["status"] != "Available"
+               for rt in eng.chargers.values())
+
+
+def test_rejected_sessions_leave_nothing_plugged():
+    async def fn(eng):
+        g = eng.traffic.runner.generators[0]
+        await _until(lambda: g.stats.rejected >= 2, 20, "two rejections")
+        await _until(lambda: not g.active, 5, "no active session")
+        assert g.stats.started == 0 and g.stats.failed == 0 and not _plugged(eng)
+    asyncio.run(_with_peer("1.6", fn, n=1, peer_kw={"tag_statuses": {"T1a": "Invalid", "T1b": "Invalid"}},
+                           traffic={"enabled": True, "interval_s": 300, "probability": 1.0}))
+
+
+def test_stop_and_reload_with_active_sessions():
+    traffic = {"enabled": True, "seed": 1, "interval_s": 60, "probability": 1.0, "duration_s": [36000, 36000]}
+
+    async def fn(eng):
+        tr = eng.traffic
+        g = tr.runner.generators[0]
+        await _until(lambda: len(g.active) == 2 and all(rt.has_transaction(1) for rt in eng.chargers.values()),
+                     10, "two sessions")
+        old = tr.runner
+        await eng.reload(_cfg(2, {**traffic, "seed": 2}, url=eng.config.csms_defaults.url, time_scale=3600))
+        assert tr.running and tr.runner is not old and tr.runner.generators[0].t.seed == 2
+        assert g.stats.cancelled == 2 and not g.active
+        g = tr.runner.generators[0]
+        await _until(lambda: len(g.active) == 2, 10, "sessions of the new plan")
+        tasks = list(g.active.values())
+        assert await tr.stop()
+        assert not tr.running and not g.active and all(t.done() for t in tasks)
+        await _until(lambda: not _plugged(eng), 5, "everything unplugged")
+        await eng.reload(_cfg(2, {**traffic, "enabled": False}, url=eng.config.csms_defaults.url, time_scale=3600))
+        assert not tr.running
+    asyncio.run(_with_peer("1.6", fn, traffic=traffic))
+
+
+SMALL_EV = {"ev_models": [{"id": "small", "capacity_kwh": 10, "max_ac_kw": 7, "phases": 1,
+                           "initial_soc": 50, "target_soc": 55}]}
+
+
+@pytest.mark.parametrize("case", ["unplug", "remote_only", "soc_target", "idle"])
+def test_session_end_modes(case):
+    base = {"enabled": True, "seed": 3, "interval_s": 300, "probability": 1.0, "idle_after_s": [0, 0]}
+    traffic = {
+        "unplug": {"stop_by": "unplug", "duration_s": [600, 600]},
+        "remote_only": {"stop_by": "remote_only", "duration_s": [36000, 36000], "max_session_s": 900},
+        "soc_target": {"stop_after": "soc_target", "duration_s": [36000, 36000], "vehicles": {"small": 1}},
+        "idle": {"duration_s": [600, 600], "idle_after_s": [3600, 3600]},
+    }[case]
+
+    async def fn(eng):
+        g = eng.traffic.runner.generators[0]
+        rt = eng.chargers["CP1"]
+        if case == "idle":   # charging over, the car still plugged and the session still active
+            await _until(lambda: g.stats.started >= 1 and ("CP1", 1) in g.active and not rt.has_transaction(1),
+                         10, "idle occupancy")
+        # duration_s of 10 h (10 s wall) is never reached: max_session_s / the target SoC end these sessions
+        await _until(lambda: g.stats.completed >= 1, 8, "a completed session")
+        assert g.stats.failed == 0 and g.stats.aborted == 0
+    asyncio.run(_with_peer("1.6", fn, n=1, traffic={**base, **traffic}, extra=SMALL_EV))
+
+
+def test_scenario_clock_reset_restarts_the_standing_plan():
+    traffic = {"enabled": True, "seed": 1, "interval_s": 300, "probability": 1.0, "duration_s": [600, 600],
+               "idle_after_s": [0, 0]}
+
+    async def fn(eng):
+        tr = eng.traffic
+        old = tr.runner
+        sc = load_data({"format": "ocppsim-scenario/1", "name": "reset",
+                        "clock": {"start_at": "2027-01-01T08:00:00+00:00"},
+                        "tracks": [{"charger": "CP2", "steps": [{"do": "wait", "duration": "1h"}]}]})
+        runner = ScenarioRunner(eng, sc)
+        eng.scenario = runner
+        v = await asyncio.wait_for(runner.start(), 30)
+        assert v["result"] == "pass" and tr.running and tr.runner is not old
+        assert tr.runner._ref.year == 2027                  # the new plan's hours follow the reset clock
+        g = tr.runner.generators[0]
+        await _until(lambda: g.stats.completed >= 2, 15, "sessions after the reset")
+        assert g.stats.failed == 0
+    asyncio.run(_with_peer("1.6", fn, traffic=traffic))

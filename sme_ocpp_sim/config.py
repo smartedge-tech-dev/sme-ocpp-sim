@@ -621,7 +621,7 @@ class TrafficConfig(StrictModel):
     #: Seeds the plan (arrivals, durations, tags) and the vehicle streams of every charger (``vehicle_seed``).
     seed: int = 0
     chargers: Union[Literal["*"], List[str]] = "*"
-    interval_s: float = Field(300.0, gt=0, le=86400)
+    interval_s: float = Field(300.0, ge=1, le=86400)
     probability: float = Field(0.2, ge=0, le=1)
     hourly_weights: Optional[List[Annotated[float, Field(ge=0)]]] = Field(None, min_length=24, max_length=24)
     auth_order: Literal["plug_first", "tag_first"] = "plug_first"
@@ -676,8 +676,9 @@ class SimConfig(StrictModel):
             bad = sorted({c for v in t.affinity_map.values() for c in v} - set(known))
             if bad:
                 raise ValueError(f"affinity_map: unknown charger(s) {bad}")
-        if t.vehicles is not None and self.chargers:
-            self.traffic_pool(self.chargers[0], t)
+        if t.vehicles is not None:
+            for cid in targets or [c.id for c in self.chargers[:1]]:
+                self.traffic_pool(known[cid], t)
 
     def traffic_pool(self, charger: ChargerConfig, t: TrafficConfig) -> VehiclePool:
         """The vehicles the traffic generator draws on ``charger``: its :meth:`vehicle_pool`, narrowed to

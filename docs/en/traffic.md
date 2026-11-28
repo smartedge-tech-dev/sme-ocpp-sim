@@ -29,7 +29,7 @@ traffic:
   id_tags: [TAG001, TAG002, TAG003]   # default: each charger's id_tags
   id_tag_strategy: affinity           # random | round_robin | affinity
   affinity_prob: 0.8
-  affinity_map: {TAG001: [CP001]}     # default: one home charger per tag, from the seed
+  affinity_map: {TAG001: [CP001]}     # default: one home charger per tag, from the seed (rendezvous hashing: adding a charger moves only the tags it wins)
   vehicles: {kei-20kwh: 1, compact-40kwh: 3, suv-90kwh: 1}   # default: the whole pool, own weights
 ```
 
@@ -89,7 +89,7 @@ there (`preempted`) and skips arrivals there until the scenario ends; its other 
 
 | Method | Path | MCP tool | Meaning |
 |---|---|---|---|
-| GET | `/api/traffic` | `get_traffic` | State, settings, counters (arrivals, skipped, started, rejected, completed, failed, preempted), active sessions, total power, recent events |
+| GET | `/api/traffic` | `get_traffic` | State, settings, counters (arrivals, skipped, started, rejected, completed, aborted, failed, preempted, cancelled), active sessions, total power, recent events |
 | PUT | `/api/traffic` | `set_traffic` | Replace the `traffic:` block (a reload; save with the config) |
 | POST | `/api/traffic/start` | `start_traffic` | Start now (not saved) |
 | POST | `/api/traffic/stop` | `stop_traffic` | Stop; its sessions are stopped and unplugged |
@@ -99,3 +99,13 @@ While it runs, the charger list header shows the active sessions and their total
 
 Memory stays bounded for long runs: the plan is made lazily, generator tracks keep no frame buffer and the
 status keeps only the last 50 events.
+
+## Notes { #notes }
+
+- **Start / stop**: `POST /api/traffic/start` / `stop` change only the run state, not `traffic.enabled`. A later reload keeps that run state unless it toggles `enabled` (then `enabled` decides). A restart of the app follows `enabled` again. Stopping (or a restart by a reload) stops and unplugs the running sessions; they count as `cancelled`.
+- **Restarts**: a change of `traffic:`, of the charger list or of a target charger that rebuilds it (connectors, vehicle pool, id tags ...) restarts the traffic with a new plan from that moment. A scenario with `clock.start_at` resets the sim clock: the standing traffic restarts too, so the plan's hours follow the new clock. Without `enabled` traffic does not start with the app, and a config without chargers or id tags leaves it stopped with `error` set.
+- **`PUT /api/traffic`** replaces the whole block: omitted fields get their defaults, including `enabled: false`.
+- **Counters**: `completed` (ended by the session's own stop), `aborted` (the transaction ended by itself before the stop condition: CSMS stop, reset, fault), `rejected` (tag not Accepted), `failed` (an action failed, or no transaction started within 30 **wall** seconds after plug + swipe), `preempted` (ended for a scenario), `cancelled` (traffic stopped / restarted), `skipped` (arrival on a busy connector).
+- `stop_after` does not apply to `remote_only` (it waits for the CSMS, up to `max_session_s`).
+- Sessions check their state every 60 sim s (at least 0.25 wall s), so a `soc_target` stop or a CSMS stop is noticed up to one such step late.
+- The preview `start` is an ISO 8601 time; without an offset it is taken as is (naive). The preview computes at most 200 000 checks and returns at most `limit` arrivals; `truncated` says when it cut.

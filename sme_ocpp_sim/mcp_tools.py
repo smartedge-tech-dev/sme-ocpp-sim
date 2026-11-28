@@ -179,12 +179,13 @@ def build_registry(app: Any) -> McpRegistry:
 
     # ---- traffic generator (v0.3 M4)
     add("get_traffic", "Standing traffic generator: state, the traffic: settings, counters (arrivals, skipped, "
-        "started, rejected, completed, failed, preempted), active sessions, total power of its chargers and recent "
+        "started, rejected, completed, aborted, failed, preempted, cancelled), active sessions, total power of its chargers and recent "
         "events.", "GET", "/api/traffic", no_args)
     add("set_traffic", "Replace the traffic: block (seed, chargers, interval_s, probability, hourly_weights, "
         "auth_order, stop_after, duration_s, stop_by, max_session_s, idle_after_s, id_tags, id_tag_strategy "
         "random / round_robin / affinity, affinity_prob, affinity_map, vehicles). Omitted fields get their "
-        "defaults. A change restarts running traffic; enabled starts / stops it.", "PUT", "/api/traffic",
+        "defaults, including enabled: false (send enabled: true to keep it running). A change restarts running "
+        "traffic; toggling enabled starts / stops it.", "PUT", "/api/traffic",
         _obj(_model_props(TrafficConfig), cid=False), destructive=True)
     add("start_traffic", "Start the standing traffic now (not saved; traffic.enabled unchanged).", "POST",
         "/api/traffic/start", no_args, destructive=True)

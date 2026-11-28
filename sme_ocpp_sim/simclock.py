@@ -115,6 +115,11 @@ class SimClock:
             return self._total
         return self._total + (self._mono() - self._seg_start) * self._scale
 
+    def total_sim(self) -> float:
+        """Sim seconds since the clock was made, never reset (:meth:`reset` does not move it): the time base of
+        durations that must survive a scenario's ``clock.start_at``."""
+        return self._total_now()
+
     def elapsed_sim(self) -> float:
         """Sim seconds since the anchor."""
         return self._total_now() - self._offset

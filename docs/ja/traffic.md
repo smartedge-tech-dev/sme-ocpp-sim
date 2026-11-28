@@ -88,7 +88,7 @@ until: "+4h"
 
 | メソッド | パス | MCP ツール | 意味 |
 |---|---|---|---|
-| GET | `/api/traffic` | `get_traffic` | 状態、設定、カウンター（arrivals / skipped / started / rejected / completed / failed / preempted）、実行中セッション数、合計電力、最近のイベント |
+| GET | `/api/traffic` | `get_traffic` | 状態、設定、カウンター（arrivals / skipped / started / rejected / completed / aborted / failed / preempted / cancelled）、実行中セッション数、合計電力、最近のイベント |
 | PUT | `/api/traffic` | `set_traffic` | `traffic:` ブロックを置き換え（リロード。保存は設定の保存で） |
 | POST | `/api/traffic/start` | `start_traffic` | 今すぐ起動（保存しない） |
 | POST | `/api/traffic/stop` | `stop_traffic` | 停止。セッションは停止してプラグを抜く |
@@ -98,3 +98,13 @@ until: "+4h"
 
 長時間の実行でもメモリは増え続けません。計画は必要な分だけ作り、生成トラックはフレームを保持せず、
 状態には最新 50 件のイベントだけを残します。
+
+## 補足 { #notes }
+
+- **起動・停止**：`POST /api/traffic/start` / `stop` は実行状態だけを変え、`traffic.enabled` は変えません。後のリロードは `enabled` を切り替えない限りその実行状態を保ちます（切り替えた場合は `enabled` に従う）。アプリの再起動では再び `enabled` に従います。停止（リロードによる再起動を含む）では実行中のセッションを停止してプラグを抜き、`cancelled` として数えます。
+- **再起動**：`traffic:`、充電器一覧、または対象充電器を作り直す変更（コネクター、車両プール、ID タグなど）で、その時点から新しい計画で再起動します。`clock.start_at` を持つシナリオはシミュレーション時刻をリセットするため、常駐トラフィックも再起動し、計画の時刻は新しい時刻に従います。`enabled` がなければアプリと一緒に起動せず、充電器や ID タグのない設定では停止したまま `error` が設定されます。
+- **`PUT /api/traffic`** はブロック全体を置き換えます。省略した項目は既定値（`enabled: false` を含む）になります。
+- **カウンター**：`completed`（セッション自身の停止で終了）、`aborted`（停止条件の前にトランザクションが自然に終了：CSMS の停止、リセット、故障）、`rejected`（タグが Accepted でない）、`failed`（操作の失敗、または plug + swipe 後 30 **実時間**秒以内にトランザクションが始まらない）、`preempted`（シナリオのために終了）、`cancelled`（トラフィックの停止・再起動）、`skipped`（使用中のコネクターへの到着）。
+- `remote_only` では `stop_after` は使いません（CSMS を `max_session_s` まで待ちます）。
+- セッションは 60 シミュレーション秒ごと（最短 0.25 実時間秒）に状態を確認するため、`soc_target` や CSMS による停止の検出はその 1 間隔分遅れることがあります。
+- プレビューの `start` は ISO 8601 の時刻です。オフセットがなければそのまま（naive）扱います。プレビューは最大 200 000 回の判定を計算し、最大 `limit` 件の到着を返します。切り詰めたときは `truncated` が true です。

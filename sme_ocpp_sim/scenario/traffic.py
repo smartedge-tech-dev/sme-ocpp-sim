@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import random
 import time
@@ -44,7 +45,7 @@ from . import ops
 
 log = logging.getLogger("sme_ocpp_sim.traffic")
 
-#: Wall seconds a session waits for its transaction to start after plug + swipe.
+#: **Wall** seconds a session waits for its transaction to start after plug + swipe (CSMS answer time).
 TX_START_TIMEOUT_S = 30.0
 #: Shortest wall interval between the state checks of a charging session.
 POLL_WALL_S = 0.25
@@ -54,8 +55,9 @@ POLL_SIM_S = 60.0
 CLEANUP_S = 3.0
 #: Recent events kept for the status.
 RECENT = 50
-#: Most arrivals a plan preview returns.
+#: Most arrivals a plan preview returns, and most ticks it computes.
 MAX_PREVIEW = 10_000
+MAX_PREVIEW_TICKS = 200_000
 
 
 @dataclass
@@ -115,10 +117,12 @@ class TrafficPlan:
                     if cid in homes:
                         homes[cid].append(tag)
             return homes
-        ordered = sorted(self.chargers)
+        # Rendezvous hashing: a tag's home is the charger with the highest score, so adding a charger moves only
+        # the tags it wins and removing one only the tags it had.
+        def score(tag: str, cid: str) -> bytes:
+            return hashlib.sha256(f"{t.seed}:affinity:{tag}:{cid}".encode()).digest()
         for tag in sorted({tag for tags in self._tags.values() for tag in tags}):
-            home = ordered[int(random.Random(f"{t.seed}:affinity:{tag}").random() * len(ordered))]
-            homes[home].append(tag)
+            homes[max(self.chargers, key=lambda cid: score(tag, cid))].append(tag)
         return homes
 
     def probability(self, t_s: float) -> float:
@@ -169,6 +173,8 @@ class TrafficPlan:
         """``(arrivals up to until_s, truncated)`` of a fresh plan (do not mix with :meth:`take`)."""
         out: List[Arrival] = []
         while (self.tick + 1) * self.t.interval_s <= until_s:
+            if self.tick >= MAX_PREVIEW_TICKS:
+                return out, True
             out.extend(self._advance())
             if len(out) > limit:
                 return out[:limit], True
@@ -182,8 +188,10 @@ class Stats:
     started: int = 0
     rejected: int = 0
     completed: int = 0
+    aborted: int = 0                 # the transaction ended by itself (CSMS stop, reset, fault) before the stop
     failed: int = 0
-    preempted: int = 0
+    preempted: int = 0               # ended for a scenario on the charger
+    cancelled: int = 0               # ended by a traffic stop / restart
 
 
 class Generator:
@@ -198,6 +206,7 @@ class Generator:
         self.recent: Deque[Dict[str, Any]] = deque(maxlen=RECENT)
         self.active: Dict[Tuple[str, int], asyncio.Task] = {}
         self.cleanup = True
+        self._why = "cancelled"          # counter of the sessions :meth:`close` cancels
 
     def begin(self, start: datetime) -> None:
         conns = {cid: ops.runtime(self.engine, cid).connector_count for cid in self.chargers}
@@ -234,6 +243,7 @@ class Generator:
         while True:
             tick += 1
             await self.runner._sleep_until(tick * self.t.interval_s)
+            await asyncio.sleep(0)       # behind schedule (long pause, slow loop): still let others run
             for a in self.plan.take(cid, tick):
                 self.stats.arrivals += 1
                 why = self._idle(cid, a.connector)
@@ -271,7 +281,7 @@ class Generator:
                 self.stats.rejected += 1
                 self._event(a, "rejected", str(r.get("status")))
                 rt.next_vehicle.pop(c, None)
-                await ops.unplug(eng, cid, c)
+                await self._clear(rt, cid, c)   # best effort: never counted twice
                 return
             w0 = time.monotonic()
             while not rt.has_transaction(c):
@@ -280,7 +290,7 @@ class Generator:
                 await asyncio.sleep(0.05)
             self.stats.started += 1
             self._event(a, "started")
-            s0 = eng.clock.elapsed_sim()
+            s0 = eng.clock.total_sim()
             limit = t.max_session_s
             if t.stop_by != "remote_only" and t.stop_after in ("duration", "first"):
                 limit = min(limit, a.duration_s)
@@ -288,12 +298,13 @@ class Generator:
             while rt.has_transaction(c):
                 if eng.chargers.get(cid) is not rt:
                     raise ops.OpError("conflict", "the charger was restarted by a config change")
-                left = limit - (eng.clock.elapsed_sim() - s0)
+                left = limit - (eng.clock.total_sim() - s0)
                 if left <= 0:
                     break
                 if want_soc and (self._soc(rt, c) or 0) >= a.vehicle.target_soc_pct - 0.01:
                     break
                 await self._poll(left)
+            ended = not rt.has_transaction(c) and t.stop_by != "remote_only"
             if rt.has_transaction(c) and t.stop_by != "unplug":
                 if t.stop_by == "swipe":
                     await ops.swipe(eng, cid, c, a.id_tag)
@@ -301,23 +312,39 @@ class Generator:
                     await ops.stop(eng, cid, c)
             if a.idle_s > 0:
                 await eng.clock.sleep_sim(a.idle_s)
+            if eng.chargers.get(cid) is not rt:
+                raise ops.OpError("conflict", "the charger was restarted by a config change")
             await ops.unplug(eng, cid, c)
-            self.stats.completed += 1
-            self._event(a, "completed")
+            if ended:
+                self.stats.aborted += 1
+                self._event(a, "aborted", "the transaction ended before the stop condition")
+            else:
+                self.stats.completed += 1
+                self._event(a, "completed")
         except asyncio.CancelledError:
+            setattr(self.stats, self._why, getattr(self.stats, self._why) + 1)
+            self._event(a, self._why)
             if self.cleanup:
                 await self._clear(rt, cid, c)
             raise
-        except ops.OpError as e:
+        except Exception as e:  # noqa: BLE001 - one broken session must not stop the generator
             self.stats.failed += 1
-            self._event(a, "failed", f"{e.kind}: {e}")
-            log.info("traffic %s/%s: %s", cid, c, e)
+            msg = f"{e.kind}: {e}" if isinstance(e, ops.OpError) else f"{type(e).__name__}: {e}"
+            self._event(a, "failed", msg)
+            if isinstance(e, ops.OpError):
+                log.info("traffic %s/%s: %s", cid, c, msg)
+            else:
+                log.exception("traffic %s/%s session failed", cid, c)
             await self._clear(rt, cid, c)
         finally:
             rt.next_vehicle.pop(c, None)
 
     async def _clear(self, rt, cid: str, c: int) -> None:
-        """Best effort: end our transaction and unplug (a cancelled / failed / preempted session)."""
+        """Best effort: end our transaction and unplug (a cancelled / failed / preempted session); nothing when
+        the charger has been rebuilt meanwhile (never touch the new runtime)."""
+        if self.engine.chargers.get(cid) is not rt:
+            return
+
         async def go() -> None:
             if rt.has_transaction(c):
                 await ops.stop(self.engine, cid, c)
@@ -325,16 +352,19 @@ class Generator:
         with contextlib.suppress(Exception, asyncio.TimeoutError):
             await asyncio.wait_for(go(), CLEANUP_S)
 
-    async def close(self, chargers: Optional[Iterable[str]] = None, *, cleanup: Optional[bool] = None) -> int:
-        """Cancel the sessions (of ``chargers``, default all) and wait for them; their count."""
+    async def close(self, chargers: Optional[Iterable[str]] = None, *, cleanup: Optional[bool] = None,
+                    why: str = "cancelled") -> int:
+        """Cancel the sessions (of ``chargers``, default all; counted as ``why``) and wait for them; their count."""
         if cleanup is not None:
             self.cleanup = cleanup
+        self._why = why
         want = None if chargers is None else set(chargers)
         tasks = [task for (cid, _), task in list(self.active.items()) if want is None or cid in want]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._why = "cancelled"
         return len(tasks)
 
     def power_w(self) -> float:
@@ -390,8 +420,29 @@ class StandingTraffic:
         config.check_traffic(config.traffic)
         self.error = None
         self.runner = ScenarioRunner(self.engine, self._scenario(config, chargers), standing=True, config=config)
-        self.runner.start()
+        self.runner.start().add_done_callback(lambda _t, r=self.runner: self._ended(r))
         return self.status()
+
+    def _ended(self, r: Any) -> None:
+        if r.error is not None and r is self.runner:
+            self.error = r.error
+            self.engine.log_event("error", f"traffic stopped: {r.error}")
+
+    def start_quiet(self, config: Optional[SimConfig] = None) -> None:
+        """:meth:`start` for the engine / a reload: a config that cannot run (no chargers, no tag pool) leaves it
+        stopped with :attr:`error` set and a log event, instead of raising."""
+        try:
+            self.start(config)
+        except ValueError as e:
+            self.error = str(e)
+            self.engine.log_event("warning", f"traffic not started: {e}")
+
+    async def restart(self, why: str) -> None:
+        """Stop (sessions stopped and unplugged) and start again with a new plan from now, if running."""
+        if self.running:
+            await self.stop()
+            self.engine.log_event("traffic", f"traffic restarted: {why}")
+            self.start_quiet()
 
     async def stop(self, *, cleanup: bool = True) -> bool:
         r = self.runner
@@ -399,6 +450,7 @@ class StandingTraffic:
             return False
         for g in r.generators.values():
             g.cleanup = cleanup
+            g._why = "cancelled"
         r.abort()
         with contextlib.suppress(Exception):
             await r.wait()
@@ -410,22 +462,20 @@ class StandingTraffic:
         if r is None or r.done:
             return
         for g in r.generators.values():
-            n = await g.close(chargers, cleanup=True)
-            g.stats.preempted += n
+            await g.close(chargers, cleanup=True, why="preempted")
 
-    async def reconfigure(self, old: SimConfig, new: SimConfig) -> None:
-        """After a reload: restart when ``traffic:`` or the charger list changed (``enabled`` decides)."""
+    async def reconfigure(self, old: SimConfig, new: SimConfig, rebuilt: Iterable[str] = ()) -> None:
+        """After a reload: restart when ``traffic:``, the charger list or a target charger (rebuilt runtime:
+        connectors, pool, id tags ...) changed. Toggling ``enabled`` starts / stops it; otherwise it keeps its run
+        state (also one set by :meth:`start` / :meth:`stop`)."""
         ids = lambda c: [x.id for x in c.chargers]  # noqa: E731
-        if old.traffic == new.traffic and ids(old) == ids(new):
+        hit = set(rebuilt) & set(new.traffic_chargers(new.traffic))
+        if old.traffic == new.traffic and ids(old) == ids(new) and not hit:
             return
         was = self.running
         await self.stop()
-        if new.traffic.enabled or (was and old.traffic.enabled == new.traffic.enabled):
-            try:
-                self.start(new)
-            except ValueError as e:
-                self.error = str(e)
-                self.engine.log_event("error", f"traffic not restarted: {e}")
+        if new.traffic.enabled if old.traffic.enabled != new.traffic.enabled else was:
+            self.start_quiet(new)
 
     def preview(self, hours: float = 1.0, charger: Optional[str] = None, limit: int = 1000,
                 start: Optional[datetime] = None) -> Dict[str, Any]:

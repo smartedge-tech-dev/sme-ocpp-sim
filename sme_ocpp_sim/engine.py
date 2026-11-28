@@ -272,7 +272,7 @@ class OcppEngine(BaseEngine):
             self.log_event("config", f"chargers restarted: {sorted(set(gone) | set(fresh))}")
         if self._started and not self._stopping:
             await self._sync_csms(new_config.mini_csms)
-            await self.traffic.reconfigure(old_config, new_config)
+            await self.traffic.reconfigure(old_config, new_config, rebuilt=set(gone) | set(fresh))
 
     # ------------------------------------------------------------ Mini CSMS
 
@@ -383,7 +383,7 @@ class OcppEngine(BaseEngine):
             if cid not in self._held:
                 self._launch(cid, e.runtime)
         if self.config.traffic.enabled:
-            self.traffic.start()
+            self.traffic.start_quiet(self.config)
 
     async def stop(self) -> None:
         await self.traffic.stop(cleanup=False)

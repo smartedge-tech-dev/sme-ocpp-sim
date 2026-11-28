@@ -150,7 +150,7 @@ class ScenarioRunner:
 
     def start(self) -> asyncio.Task:
         if self._task is None:
-            self.state, self._w0, self._s0 = "running", time.monotonic(), self.engine.clock.elapsed_sim()
+            self.state, self._w0, self._s0 = "running", time.monotonic(), self.engine.clock.total_sim()
             self._task = asyncio.ensure_future(self.run())
         return self._task
 
@@ -180,7 +180,7 @@ class ScenarioRunner:
         return self.engine.clock
 
     def _sim(self) -> float:
-        return self.clock.elapsed_sim() - self._s0
+        return self.clock.total_sim() - self._s0
 
     def _wall(self) -> float:
         return time.monotonic() - self._w0
@@ -470,9 +470,11 @@ class ScenarioRunner:
                 eng.set_running(time_scale=sc.clock.time_scale)
             if sc.clock.start_at is not None:
                 eng.clock.reset(sc.clock.start_at)
+                if not self.standing:
+                    await eng.traffic.restart("the scenario reset the sim clock")   # plan hours follow the clock
             if not self.standing:
                 await eng.traffic.preempt(self.chargers)   # Q3: the scenario owns its chargers
-            self._w0, self._s0 = time.monotonic(), eng.clock.elapsed_sim()
+            self._w0, self._s0 = time.monotonic(), eng.clock.total_sim()
             self._ref = eng.clock.now_sim()
             self._seq0 = eng.frame_log.last_seq
             for g in self.generators.values():

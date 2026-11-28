@@ -82,7 +82,7 @@ until: "+4h"
 
 | 方法 | 路径 | MCP 工具 | 含义 |
 |---|---|---|---|
-| GET | `/api/traffic` | `get_traffic` | 状态、设置、计数（arrivals / skipped / started / rejected / completed / failed / preempted）、在充会话数、总功率、最近事件 |
+| GET | `/api/traffic` | `get_traffic` | 状态、设置、计数（arrivals / skipped / started / rejected / completed / aborted / failed / preempted / cancelled）、在充会话数、总功率、最近事件 |
 | PUT | `/api/traffic` | `set_traffic` | 替换 `traffic:` 块（重新加载；随配置保存） |
 | POST | `/api/traffic/start` | `start_traffic` | 立即启动（不保存） |
 | POST | `/api/traffic/stop` | `stop_traffic` | 停止；其会话会停止并拔枪 |
@@ -91,3 +91,13 @@ until: "+4h"
 运行时，充电桩列表标题会显示在充会话数和总功率。
 
 长时间运行时内存不会无限增长：计划按需生成，生成器 track 不缓存帧，状态只保留最近 50 条事件。
+
+## 说明 { #notes }
+
+- **启动 / 停止**：`POST /api/traffic/start` / `stop` 只改变运行状态，不改 `traffic.enabled`。之后的重新加载保持该运行状态，除非切换了 `enabled`（此时以 `enabled` 为准）。应用重启后再次按 `enabled`。停止（包括重新加载引起的重启）会停止正在进行的会话并拔枪，计为 `cancelled`。
+- **重启**：修改 `traffic:`、充电桩列表，或会重建目标桩的修改（connector、车型池、id tag 等），都会从此刻起以新计划重启。带 `clock.start_at` 的场景会重置仿真时钟，常驻流量也随之重启，计划的小时跟随新时钟。没有 `enabled` 时不随应用启动；没有充电桩或 id tag 的配置会保持停止并设置 `error`。
+- **`PUT /api/traffic`** 替换整个块：省略的字段取默认值，包括 `enabled: false`。
+- **计数**：`completed`（由会话自己的停止结束）、`aborted`（停止条件之前交易自行结束：CSMS 停止、重置、故障）、`rejected`（tag 非 Accepted）、`failed`（操作失败，或 plug + swipe 后 30 **wall** 秒内没有开始交易）、`preempted`（为场景让出）、`cancelled`（流量停止 / 重启）、`skipped`（到达时 connector 忙）。
+- `remote_only` 不使用 `stop_after`（等待 CSMS，最长 `max_session_s`）。
+- 会话每 60 仿真秒（至少 0.25 wall 秒）检查一次状态，所以 `soc_target` 或 CSMS 停止最多晚一个间隔被发现。
+- 预览的 `start` 是 ISO 8601 时间；不带时区偏移时按原样（naive）处理。预览最多计算 200 000 次判定、最多返回 `limit` 条到达；被截断时 `truncated` 为 true。
