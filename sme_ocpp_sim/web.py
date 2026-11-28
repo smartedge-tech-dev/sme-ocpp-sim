@@ -1,8 +1,9 @@
 """FastAPI app (plan §5 M6).
 
-The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, ``/api/devices*``,
+The generic routes (``/``, ``/healthz``, ``/api/version``, ``/api/state``, ``/api/config*``, ``/api/devices*``,
 ``/api/simulation``, ``/ws``, the ``/sme-sim-common`` and ``/static`` mounts) come from
-``sme_sim_common.web.make_base_app`` (devices = ``chargers``, key = ``id``). This module adds the OCPP routes:
+``sme_sim_common.web.make_base_app`` (devices = ``chargers``, key = ``id``); ``POST /mcp`` (MCP tools wrapping these
+routes) from :mod:`.mcp_tools`. This module adds the OCPP routes:
 
 * ``GET /api/chargers/{id}`` - the charger's snapshot plus ``fault_codes``, the fault codes of its OCPP version;
 * ``POST /api/chargers/{id}/{connect,disconnect}`` - start / stop the connection loop (engine level; a disconnect
@@ -143,7 +144,8 @@ FAULT_CODES = tuple(dict.fromkeys(code for v in list_versions() if v.available
 FaultCode = Literal[FAULT_CODES]  # type: ignore[valid-type]
 MAX_FRAMES = 5000
 MAX_BULK_CREATE = 1000
-#: Largest accepted ``POST /api/config/import`` body (bytes); a bigger upload is 413 before openpyxl sees it.
+#: Largest accepted ``POST /api/config/import`` body (bytes); ``make_base_app(max_import_bytes=)`` answers a bigger
+#: upload with 413 before openpyxl sees it.
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
 NDJSON = "application/x-ndjson"
 JSONL_CHUNK = 500  # frame log entries per streamed chunk
@@ -301,36 +303,6 @@ def _masked(endpoint):
         if "json" in media:
             return JSONResponse(mask_obj(json.loads(resp.body)), status_code=resp.status_code)
         return resp
-    return wrapper
-
-
-def _size_capped(endpoint, limit: int = MAX_IMPORT_BYTES):
-    """Wrap the base ``POST /api/config/import`` route: a body over ``limit`` bytes is 413 (checked on the
-    ``Content-Length`` header and again while reading, for chunked uploads without one)."""
-    too_big = f"upload too large: at most {limit // (1024 * 1024)} MB"
-
-    async def wrapper(request: Request):
-        try:
-            declared = int(request.headers.get("content-length") or 0)
-        except ValueError:
-            raise bad(400, "invalid Content-Length header") from None
-        if declared > limit:
-            raise bad(413, too_big)
-        body = bytearray()
-        async for chunk in request.stream():
-            body += chunk
-            if len(body) > limit:
-                raise bad(413, too_big)
-        sent = False
-
-        async def receive():
-            nonlocal sent
-            if sent:
-                return await request.receive()
-            sent = True
-            return {"type": "http.request", "body": bytes(body), "more_body": False}
-
-        return await endpoint(Request(request.scope, receive))
     return wrapper
 
 
@@ -860,12 +832,16 @@ def _csms_router(engine: OcppEngine) -> APIRouter:
     return r
 
 
-def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> FastAPI:
+def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None, *, host: Optional[str] = None,
+               mcp: bool = True) -> FastAPI:
+    """The web app: base routes (incl. ``GET /healthz``), the OCPP routes and, with ``mcp``, the MCP endpoint
+    ``POST /mcp`` (:mod:`.mcp_tools`; ``host`` = the bind address, for its DNS-rebinding protection)."""
     app = make_base_app(engine, config_path=config_path, static_dir=STATIC, title="SME OCPPSim",
                         version=__version__, config_model=SimConfig, product_routers=[_router(engine), _csms_router(engine)],
                         devices_attr="chargers", device_key="id", key_type=str,
                         duplicate_hook=duplicate_charger, simulation_hook=simulation_hook,
-                        xlsx=xlsx_io.SCHEMA, templates=templates_builtin.registry())
+                        xlsx=xlsx_io.SCHEMA, templates=templates_builtin.registry(),
+                        max_import_bytes=MAX_IMPORT_BYTES)
 
     async def config_save(request: Request):
         try:
@@ -885,8 +861,6 @@ def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> 
             routes[i] = Route(rt.path, config_save, methods=methods, name=rt.name)
         elif rt.path == "/api/devices/{device}/config" and "PUT" in methods:
             routes[i] = Route(rt.path, _masked(_device_put(rt.endpoint, engine)), methods=methods, name=rt.name)
-        elif rt.path == "/api/config/import":
-            routes[i] = Route(rt.path, _size_capped(_masked(rt.endpoint)), methods=methods, name=rt.name)
         elif rt.path.startswith(("/api/config", "/api/devices")):
             routes[i] = Route(rt.path, _masked(rt.endpoint), methods=methods, name=rt.name)
 
@@ -895,4 +869,8 @@ def create_app(engine: OcppEngine, config_path: Optional[str | Path] = None) -> 
         return error_response(request, bad(400, "; ".join(msgs)))
 
     app.add_exception_handler(RequestValidationError, validation_error)
+    if mcp:
+        from . import mcp_tools
+
+        mcp_tools.mount(app, host=host)
     return app

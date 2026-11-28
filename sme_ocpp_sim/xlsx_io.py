@@ -22,11 +22,12 @@ Text columns stay text: ``0123`` or ``1e5`` written as text cells are read back 
 number is converted with ``sme_sim_common.xlsx.convert``: ``123.0`` -> ``"123"``). Errors name the sheet, the row
 and the column: ``chargers row 4, column 'ocpp_version': ...``.
 
-Formula injection: every exported text cell is a plain string cell, never a formula (openpyxl would store a
-text starting with ``=`` as a formula, e.g. a vendor ``=HYPERLINK(...)``); texts starting with ``= + - @``, a tab
-or a CR also get Excel's quote prefix, so editing the cell in Excel keeps it text. The value itself is unchanged
-(no ``'`` is added), so the import reads it back as the same text. Limits: an import with more than
-:data:`MAX_IMPORT_ROWS` rows in one sheet is rejected (the upload size is capped in :mod:`.web`).
+Formula injection: every exported text cell is a plain string cell, never a formula. ``sme_sim_common``'s
+``XlsxSchema.write`` (1.2.1+) writes a text starting with ``= + - @ ＠``, a tab or a CR (``FORMULA_PREFIXES``) as a
+literal string with Excel's quote prefix, so editing the cell in Excel keeps it text. The value itself is unchanged
+(no ``'`` is added), so the import reads it back as the same text. Limits (also upstream): a ``chargers`` sheet with
+more than :data:`MAX_IMPORT_ROWS` rows, or another sheet with ten times as many, is rejected (``Sheet.max_rows`` /
+``XlsxSchema.max_rows``); the upload size is capped by ``make_base_app(max_import_bytes=)`` in :mod:`.web`.
 """
 
 from __future__ import annotations
@@ -40,10 +41,9 @@ from .config import PASSWORD_MASK, ChargerConfig, EvModelConfig, SimConfig
 from .templates_builtin import registry
 
 SESSION_COLUMNS = ("ev_model", "initial_soc", "target_soc")
-#: Data rows accepted per sheet on import (``chargers``; the other sheets get ten times as many).
+#: Data rows read per sheet on import (``chargers``; the other sheets get ten times as many); more is an error
+#: (``sme_sim_common.xlsx`` row cap: ``Sheet.max_rows`` / ``XlsxSchema.max_rows``).
 MAX_IMPORT_ROWS = 5000
-#: First characters a spreadsheet may take as the start of a formula (OWASP "CSV injection").
-FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 
 
 def _text(v: Any) -> str:
@@ -78,7 +78,7 @@ CHARGERS = Sheet("chargers", [
     ("extra", "Other fields as YAML flow mapping, e.g. {verify_tls: false}"),
 ], kinds={"connectors": "int", "max_power_w": "number", "voltage_v": "number", "phases": "int",
           "line_to_line": "bool", "id_tags": "list", "initial_soc": "number", "target_soc": "number"},
-    required=("id",))
+    required=("id",), max_rows=MAX_IMPORT_ROWS)
 
 CONFIG_KEYS = Sheet("config_keys", [
     ("charger", "Charger id (chargers sheet)"),
@@ -178,11 +178,6 @@ def _rows_errors(e: ValidationError, sheet: Sheet, row: int) -> List[str]:
 def build(tables: Dict[str, List[SheetRow]], base: Optional[SimConfig], errors: List[str],
           warnings: List[str]) -> Optional[SimConfig]:
     base = base or SimConfig()
-    too_many = [f"{title}: {len(rows_)} rows, at most {cap} are accepted" for title, rows_ in tables.items()
-                for cap in [MAX_IMPORT_ROWS * (1 if title == "chargers" else 10)] if len(rows_) > cap]
-    if too_many:
-        errors[:] = too_many  # the row errors of such a workbook are not worth reporting
-        return None
     others = {k: v for k, v in base.model_dump().items() if k not in ("chargers", "ev_models")}
 
     evs: List[EvModelConfig] = []
@@ -279,22 +274,8 @@ def build(tables: Dict[str, List[SheetRow]], base: Optional[SimConfig], errors: 
     return SimConfig.model_validate({**others, "ev_models": evs, "chargers": chargers})
 
 
-class _Schema(XlsxSchema):
-    """``XlsxSchema`` whose saved workbooks contain no formula cells (module docstring, "Formula injection")."""
-
-    @staticmethod
-    def save(wb) -> bytes:
-        for ws in wb.worksheets:
-            for row in ws.iter_rows(min_row=3):
-                for cell in row:
-                    if isinstance(cell.value, str) and cell.value.startswith(FORMULA_START):
-                        cell.data_type = "s"  # openpyxl typed a leading "=" as a formula
-                        cell.quotePrefix = True
-        return XlsxSchema.save(wb)
-
-
-SCHEMA = _Schema(SHEETS, export_rows=export_rows, build=build, template_file="sme-ocpp-sim-template.xlsx",
-                    export_file="sme-ocpp-sim-chargers.xlsx")
+SCHEMA = XlsxSchema(SHEETS, export_rows=export_rows, build=build, template_file="sme-ocpp-sim-template.xlsx",
+                     export_file="sme-ocpp-sim-chargers.xlsx", max_rows=MAX_IMPORT_ROWS * 10)
 
 
 def export_xlsx(cfg: SimConfig) -> Tuple[bytes, List[str]]:

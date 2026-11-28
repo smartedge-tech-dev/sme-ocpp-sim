@@ -11,6 +11,8 @@
 # cryptography (runtime dependency since v0.2 M8) is collected by the hook in pyinstaller-hooks-contrib.
 # openpyxl (Excel import / export, v0.2 M10, via sme-sim-common[xlsx]) is imported lazily inside functions;
 # it is listed as a hidden import so the executable never misses it.
+# The mcp SDK (POST /mcp, v0.2.2, via sme-sim-common[mcp]) is bundled by the sme-sim-common hook (1.3.0+) when it
+# is installed in the build environment, which `pip install .` guarantees. Do NOT list it here.
 import os
 from PyInstaller.utils.hooks import collect_submodules
 

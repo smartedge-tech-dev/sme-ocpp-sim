@@ -275,8 +275,20 @@ def test_import_row_cap():
     wb = _book(SCHEMA.blank_template())
     for i in range(MAX_IMPORT_ROWS + 1):
         wb["chargers"].append([f"R{i}"])
+    cfg, errors = import_xlsx(_bytes(wb))  # sme-sim-common's per-sheet row cap (Sheet.max_rows)
+    assert cfg is None and f"chargers: more than {MAX_IMPORT_ROWS} rows (row limit), import refused" in errors
+
+
+def test_import_row_cap_other_sheets():
+    from sme_ocpp_sim.xlsx_io import MAX_IMPORT_ROWS
+
+    assert SCHEMA.max_rows == 10 * MAX_IMPORT_ROWS  # config_keys / variables / ev_models
+    wb = _book(SCHEMA.blank_template())
+    wb["chargers"].append(["A"])
+    for i in range(MAX_IMPORT_ROWS + 1):  # more than chargers allows, within the other sheets' cap
+        wb["config_keys"].append(["A", f"K{i}", "1"])
     cfg, errors = import_xlsx(_bytes(wb))
-    assert cfg is None and errors == [f"chargers: {MAX_IMPORT_ROWS + 1} rows, at most {MAX_IMPORT_ROWS} are accepted"]
+    assert not any("row limit" in e for e in errors), errors[:3]
 
 
 def test_web_import_size_cap(client):
@@ -284,7 +296,7 @@ def test_web_import_size_cap(client):
 
     c, engine = client
     r = c.post("/api/config/import", files={"file": ("big.xlsx", b"x" * (MAX_IMPORT_BYTES + 1))})
-    assert r.status_code == 413 and "too large" in r.text
+    assert r.status_code == 413 and "import size limit" in r.text  # make_base_app(max_import_bytes=)
     assert [ch.id for ch in engine.config.chargers] == ["0123", "1e5", "V2"]
 
 
