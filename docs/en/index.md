@@ -12,8 +12,8 @@ charging power follows the Smart Charging profiles your CSMS sends.
 - **OCPP 1.6J and OCPP 2.0.1.** Each simulated charger is a WebSocket client that connects out to your CSMS
   (subprotocol `ocpp1.6` or `ocpp2.0.1`, chosen per charger, so one process can run a mixed site), boots, sends
   heartbeats, status notifications, transactions (1.6 StartTransaction / StopTransaction, 2.0.1 TransactionEvent)
-  and meter values, and answers the CSMS commands listed in [OCPP messages](messages.md). OCPP 2.1 is planned
-  (v0.3) and shown greyed out in the UI.
+  and meter values, and answers the CSMS commands listed in [OCPP messages](messages.md). OCPP 2.1 is also
+  supported (`ocpp2.1`, see [OCPP 2.1](messages.md#ocpp-21)).
 - **OCPP 2.0.1 Device Model and external limits.** GetVariables / SetVariables / GetBaseReport on a minimal set
   of standard variables plus your own (`variables:` in the YAML file), shown read-only in the web UI; an external
   (EMS) limit per EVSE or station with NotifyChargingLimit / ClearedChargingLimit.

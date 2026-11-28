@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- OCPP 2.1 core (v0.3.1, 2.1-M1): the `ocpp2.1` subprotocol, `protocol/v21` (models, codec, adapter, station), OCPP-J
+  2.1 framing with SEND and CALLRESULTERROR (an unknown MessageTypeId is ignored), Reset `ImmediateAndResume`
+  (handled as `Immediate`) and TriggerMessage `CustomTrigger` (`NotImplemented`). The 2.0.1 station suites also run
+  as 2.1 (`OCPPSIM_V201_SUITE=2.1`).
+- Store-and-ack 2.1 messages: AFRRSignal, NotifyAllowedEnergyTransfer, SetDefaultTariff, GetTariffs, ClearTariffs,
+  ChangeTransactionTariff, SetDERControl, GetDERControl (with ReportDERControl) and ClearDERControl. The other new
+  CSMS to station messages answer CALLERROR `NotImplemented`.
+- Mini CSMS speaks 2.1 (`versions` defaults to 1.6, 2.0.1 and 2.1) and answers the new station to CSMS messages
+  minimally.
+- The OCPP 2.1 JSON schemas (CC BY-ND 4.0, vendored unmodified under `sme_ocpp_sim/schemas/`), the generator
+  `scripts/gen_v21_models.py` for the models, and `tests/test_v21.py`. Documented in en / ja / zh.
+
+### Changed
+
+- Internal: the v201 models, codec and adapter are injected into the station through class attributes, so that 2.1
+  reuses the 2.0.1 station unchanged.
+
 ## [0.3.0] - 2026-11-28
 
 ### Added

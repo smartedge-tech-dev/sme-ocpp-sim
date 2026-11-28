@@ -73,7 +73,7 @@ mask keeps the stored password.
 | Field | Default | Meaning |
 |---|---|---|
 | `url` | none | CSMS WebSocket URL (`ws://` or `wss://`); the charger id is appended as the last path segment. Required unless every charger has `csms_url` |
-| `ocpp_version` | `"1.6"` | `"1.6"` or `"2.0.1"`; `"2.1"` is rejected as coming in v0.3 |
+| `ocpp_version` | `"1.6"` | `"1.6"`, `"2.0.1"` or `"2.1"` |
 | `security_profile` | `0` | `0`, `1`, `2` or `3`; every charger is checked against it, see [Security profiles](security-profiles.md) |
 | `reconnect.min_s` | `1.0` | First reconnect delay in seconds |
 | `reconnect.max_s` | `60.0` | Maximum reconnect delay (≥ `min_s`); the delay grows exponentially |
@@ -275,7 +275,7 @@ The built-in simple CSMS, see [Mini CSMS](mini-csms.md). Off by default.
 | `enabled` | `false` | Start the Mini CSMS WebSocket server |
 | `host` | `"127.0.0.1"` | Listen address (`"0.0.0.0"` for other hosts and Docker) |
 | `port` | `9000` | Listen port |
-| `versions` | `["1.6", "2.0.1"]` | OCPP versions accepted (subprotocol negotiation) |
+| `versions` | `["1.6", "2.0.1", "2.1"]` | OCPP versions accepted (subprotocol negotiation) |
 | `boot.status` | `Accepted` | BootNotification answer: `Accepted`, `Pending` or `Rejected` |
 | `boot.interval` | `300` | Heartbeat interval (Accepted) or retry delay (Pending / Rejected), seconds |
 | `auth.basic` | `false` | `true` = Security Profile 1: HTTP Basic Auth required |

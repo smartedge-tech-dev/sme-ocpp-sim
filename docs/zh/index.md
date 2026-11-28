@@ -11,7 +11,7 @@ description: 免费开源的 OCPP 充电桩模拟器（仿真软件），支持 
 - **OCPP 1.6J 与 OCPP 2.0.1。** 每台模拟桩都是一个主动连接 CSMS 的 WebSocket 客户端（子协议 `ocpp1.6` 或
   `ocpp2.0.1`，按充电桩选择，因此一个进程可以运行混合站点），发送 Boot、Heartbeat、StatusNotification、交易
   （1.6 为 StartTransaction / StopTransaction，2.0.1 为 TransactionEvent）和 MeterValues，并应答
-  [OCPP 消息](messages.md) 中列出的 CSMS 请求。OCPP 2.1 计划在 v0.3 支持，UI 中以灰色显示。
+  [OCPP 消息](messages.md) 中列出的 CSMS 请求。也支持 OCPP 2.1（`ocpp2.1`，见 [OCPP 2.1](messages.md#ocpp-21)）。
 - **OCPP 2.0.1 Device Model 与外部限值。** 对最小标准变量集和用户自定义变量（YAML 中的 `variables:`）支持
   GetVariables / SetVariables / GetBaseReport，Web UI 中只读显示；可按 EVSE 或整站设置外部（EMS）限值，
   并发送 NotifyChargingLimit / ClearedChargingLimit。

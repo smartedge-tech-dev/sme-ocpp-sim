@@ -70,7 +70,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | フィールド | 既定値 | 意味 |
 |---|---|---|
 | `url` | なし | CSMS の WebSocket URL（`ws://` または `wss://`）。充電器 ID を最後のパスセグメントとして付加します。すべての充電器に `csms_url` がある場合を除き必須です |
-| `ocpp_version` | `"1.6"` | `"1.6"` または `"2.0.1"`。`"2.1"` は v0.3 で対応予定としてエラーになります |
+| `ocpp_version` | `"1.6"` | `"1.6"`、`"2.0.1"`、`"2.1"` |
 | `security_profile` | `0` | `0`、`1`、`2`、`3`。各充電器の設定をこれに照らして検査します。[セキュリティプロファイル](security-profiles.md) を参照 |
 | `reconnect.min_s` | `1.0` | 最初の再接続待ち時間（秒） |
 | `reconnect.max_s` | `60.0` | 再接続待ち時間の上限（≥ `min_s`）。待ち時間は指数的に増えます |
@@ -267,7 +267,7 @@ Web UI では、2.0.1 の充電器の **変数（Device Model）** 表にこれ�
 | `enabled` | `false` | Mini CSMS の WebSocket サーバーを起動する |
 | `host` | `"127.0.0.1"` | 待受アドレス（他ホストや Docker からは `"0.0.0.0"`） |
 | `port` | `9000` | 待受ポート |
-| `versions` | `["1.6", "2.0.1"]` | 受け付ける OCPP バージョン（サブプロトコル交渉） |
+| `versions` | `["1.6", "2.0.1", "2.1"]` | 受け付ける OCPP バージョン（サブプロトコル交渉） |
 | `boot.status` | `Accepted` | BootNotification の応答: `Accepted`、`Pending`、`Rejected` |
 | `boot.interval` | `300` | Heartbeat 間隔（Accepted）または再試行待ち（Pending / Rejected）、秒 |
 | `auth.basic` | `false` | `true` = Security Profile 1: HTTP Basic 認証を必須にする |

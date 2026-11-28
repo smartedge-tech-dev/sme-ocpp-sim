@@ -150,10 +150,49 @@ TransactionEvent answer (`Deauthorized`, while `TxCtrlr.StopTxOnInvalidId` is tr
 | UnpublishFirmware | Not supported |  |
 | UpdateFirmware | Supported | Simulated, nothing is downloaded or verified: DownloadScheduled (future `retrieveDateTime`) → Downloading → Downloaded → SignatureVerified (with `signature`) → InstallScheduled (future `installDateTime`) → EVSEs without a transaction `Unavailable` until none is left → Installing → InstallRebooting → reboot (BootNotification reason `FirmwareUpdate`) → Installed. `retries` / `retryInterval` on a download failure; `AcceptedCanceled` when it cancels an update that is not installing yet, `Rejected` while installing. Timings and failure injection: `maintenance` per charger |
 
+## OCPP 2.1 { #ocpp-21 }
+
+OCPP 2.1 is available as `ocpp_version: "2.1"` (subprotocol `ocpp2.1`). A 2.1 station behaves as a 2.0.1 station
+(same message tables above) plus the following.
+
+- **Framing.** OCPP-J 2.1 adds SEND (`[6, ...]`, one-way, never answered) and CALLRESULTERROR (`[5, ...]`, the peer
+  found a CALLRESULT invalid). Both are sent and understood. A frame with an unknown MessageTypeId is ignored under
+  2.1 (not answered with a CALLERROR).
+- **Relaxed fields.** Messages are checked against the 2.1 schemas, which add optional fields and relax some 2.0.1
+  fields; a 2.0.1 payload is still valid.
+- **Reset.** `ImmediateAndResume` is accepted and handled as `Immediate`; resuming the transactions after the reboot
+  is not simulated.
+- **TriggerMessage.** `CustomTrigger` answers `NotImplemented`.
+
+New CSMS to station messages:
+
+| Message | Status | Behaviour |
+|---|---|---|
+| AFRRSignal | Store-and-ack | Stored (the last signal is kept), `Accepted` |
+| NotifyAllowedEnergyTransfer | Store-and-ack | Stored per transaction, `Accepted`; `Rejected` if the transaction is unknown |
+| SetDefaultTariff | Store-and-ack | Stored per EVSE (0 = all EVSEs): `Accepted`, `DuplicateTariffId`, or `Rejected` for an unknown EVSE |
+| GetTariffs | Store-and-ack | Reads back the tariff assignments, or `NoTariff` |
+| ClearTariffs | Store-and-ack | A result per tariff: `Accepted` / `NoTariff` |
+| ChangeTransactionTariff | Store-and-ack | `Accepted` for an ongoing transaction, otherwise `TxNotFound` |
+| SetDERControl | Store-and-ack | Stored by `controlId`, `Accepted` |
+| GetDERControl | Store-and-ack | `NotFound`, or `Accepted` followed by one ReportDERControl |
+| ClearDERControl | Store-and-ack | `Accepted` / `NotFound` |
+| UpdateDynamicSchedule, UsePriorityCharging | Not supported | CALLERROR `NotImplemented` (planned for a later v0.3.x) |
+| GetPeriodicEventStream, AdjustPeriodicEventStream | Not supported | CALLERROR `NotImplemented` (planned for v0.4) |
+| RequestBatterySwap, NotifyWebPaymentStarted | Not supported | CALLERROR `NotImplemented` |
+
+Store-and-ack means the request is kept in memory and answered schema-valid; nothing acts on it (no local cost
+calculation, no DER behaviour).
+
+The 12 new station to CSMS messages (BatterySwap, ClosePeriodicEventStream, GetCertificateChainStatus, NotifyDERAlarm,
+NotifyDERStartStop, NotifyPeriodicEventStream (SEND), NotifyPriorityCharging, NotifySettlement,
+OpenPeriodicEventStream, PullDynamicScheduleUpdate, ReportDERControl, VatNumberValidation) are not sent by the station
+on its own (ReportDERControl only as the answer to GetDERControl). The Mini CSMS answers them minimally.
+
 ## Not supported yet
 
 | Feature | Status |
 |---|---|
-| OCPP 2.1 | Planned for v0.3 (greyed out in the UI) |
+| OCPP 2.1: UpdateDynamicSchedule, UsePriorityCharging, periodic event streams, battery swap, web payment | Not supported (CALLERROR `NotImplemented`), see [OCPP 2.1](#ocpp-21) |
 | 1.6 Security Whitepaper SignedUpdateFirmware, GetLog, LogStatusNotification, SignedFirmwareStatusNotification | Not supported (CALLERROR `NotImplemented`) |
 | ISO 15118 / Plug & Charge | Not supported (paid standard) |
