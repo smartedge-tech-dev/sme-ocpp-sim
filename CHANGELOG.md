@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   gaps; unpaired / duplicate uids and concurrent CALLs; Smart Charging profile timeline).
 - `GET /api/frames.jsonl?format=v1` (default unchanged); MCP tools `get_trace`, `start_trace`, `stop_trace`,
   `analyze_frames`. New docs page *Trace recording and analysis* (en / ja / zh).
+- Trace replay (v0.3.2 M6): `sme-ocpp-sim replay TRACE --csms URL [--charger ID] [--as ID]
+  [--timing original|scale:N|asap] [--password PW] [--out report.json] [--trace new.jsonl] [--fail-on-diff]`
+  re-sends the CALLs one charger of a trace sent to a CSMS on a new connection (charger-side frame replay, no
+  station state machine): new uniqueIds, timestamps shifted to now, the 1.6 `transactionId` re-mapped from the new
+  StartTransaction answer, a run suffix on 2.0.1 / 2.1 `transactionId`s (`--no-tx-suffix`). CSMS CALLs are answered
+  with the recorded answers (action + occurrence; otherwise `NotImplemented`, or no answer with
+  `--unknown-call noreply`). Credentials (Security Profile 1 / 2 / 3) are arguments, since traces are masked. The
+  `ocppsim-replay/1` report compares each CSMS answer with the recorded one (status fields, CALLERROR code,
+  timeout); differences do not fail the run unless `--fail-on-diff`. `POST /api/replay`, `GET /api/replay[/{id}]`,
+  `POST /api/replay/{id}/stop` and MCP tools `start_replay` / `get_replay` replay a trace file of the trace
+  directory from the running app. The docs page is now *Trace recording, analysis and replay*.
+  Timestamps follow each CALL's send time; `--session N` and `--max-gap SECONDS` select one connection and cap waits; the
+  report `notes` flag incomplete traces, guessed versions, cut transactionIds and masked values; the API allows 4
+  concurrent replays, rejects identities in use and stops replays on shutdown.
 
 ### Changed
 

@@ -166,7 +166,7 @@ OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーシ�
 
 ## トレース { #trace }
 
-`GET /api/trace`、`POST /api/trace/start` / `stop`、`GET /api/trace/files[/{file}[/analyze]]`、`GET /api/frames/analyze`、`GET /api/frames.jsonl?format=v1`：[トレースの記録と解析](trace-replay.md#http-api) を参照してください。
+`GET /api/trace`、`POST /api/trace/start` / `stop`、`GET /api/trace/files[/{file}[/analyze]]`、`GET /api/frames/analyze`、`GET /api/frames.jsonl?format=v1`、`POST /api/replay`、`GET /api/replay[/{id}]`、`POST /api/replay/{id}/stop`：[トレースの記録と解析](trace-replay.md#http-api) を参照してください。
 
 ## シナリオ { #scenarios }
 

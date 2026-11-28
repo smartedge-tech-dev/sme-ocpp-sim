@@ -7,6 +7,8 @@
                             [--time-scale N] [-v] [--log-format {text,json}]
   sme-ocpp-sim scenario validate FILE [-c CONFIG]
   sme-ocpp-sim analyze TRACE [--json] [--charger ID] [--ocpp-version V]
+  sme-ocpp-sim replay TRACE --csms URL [--charger ID] [--as ID] [--timing original|scale:N|asap]
+                      [--password PW] [--out report.json] [--trace new.jsonl] [--fail-on-diff] [--json] ...
   sme-ocpp-sim --version
 
 The common options and the web server start come from ``sme_sim_common.cli``. ``--mini-csms`` / ``--csms-host`` /
@@ -18,6 +20,8 @@ verdict JSON (``--out``, default stdout) and exits 0 pass / 1 fail / 2 error, ab
 
 ``analyze`` reads a trace (``ocppsim-trace/1``, or a header-less ``frames.jsonl`` = v0) and prints the summary of
 :mod:`.trace.analyze` (``--json``: the ``ocppsim-analysis/1`` report); exit 0, 2 when the file cannot be read.
+``replay`` re-sends the CALLs one charger of a trace sent to a CSMS and compares the answers
+(:mod:`.trace.replay`, ``ocppsim-replay/1``); exit 0 done, 1 differences with ``--fail-on-diff``, 2 error (v0.3 M6).
 ``--trace FILE`` (web app) records every charger from the start (= config ``trace.path``, v0.3 M5).
 """
 
@@ -222,12 +226,79 @@ def analyze_main(argv) -> int:
     return 0
 
 
+def replay_main(argv) -> int:
+    """``replay TRACE --csms URL``: charger-side replay of a trace against a CSMS (v0.3 M6)."""
+    import asyncio
+    import json
+
+    from .trace.format import TraceError, load
+    from .trace.replay import UNKNOWN_CALL_MODES, VERSIONS, Replayer, ReplayError, exit_code, to_text
+
+    ap = argparse.ArgumentParser(prog=f"{APP_NAME} replay", description="Re-send the CALLs one charger of a trace "
+                                 "sent to a CSMS (new uniqueIds, timestamps shifted to now, transactionIds "
+                                 "re-mapped), answer the CSMS CALLs with the recorded answers and report the "
+                                 "differences of the CSMS answers (ocppsim-replay/1)")
+    ap.add_argument("file", help="trace file (ocppsim-trace/1 or a frames.jsonl export = v0)")
+    ap.add_argument("--csms", required=True, help="CSMS WebSocket URL without the charger id, e.g. ws://host:9000/ocpp")
+    ap.add_argument("--charger", help="the charger of the trace to replay (needed when the trace has several)")
+    ap.add_argument("--as", dest="as_id", help="connect with this charger identity instead of the recorded one")
+    ap.add_argument("--timing", default="original",
+                    help="original (recorded gaps, default), scale:N (gaps / N) or asap (next CALL right after "
+                         "the answer)")
+    ap.add_argument("--max-gap", dest="max_gap", type=float, metavar="SECONDS",
+                    help="cap each wait between two CALLs (original / scale:N; default: no cap)")
+    ap.add_argument("--session", type=int, metavar="N",
+                    help="replay only the N-th connection (1-based) of the charger (default: all, merged)")
+    ap.add_argument("--password", help="Basic Auth password (Security Profile 1 / 2; the trace is masked)")
+    ap.add_argument("--ca-file", dest="ca_file", help="CA bundle (PEM) for wss://")
+    ap.add_argument("--insecure", action="store_true", help="wss:// without certificate checks (testing only)")
+    ap.add_argument("--client-cert", dest="client_cert", help="TLS client certificate chain (PEM; profile 3)")
+    ap.add_argument("--client-key", dest="client_key", help="TLS client private key (PEM; profile 3)")
+    ap.add_argument("--ocpp-version", dest="ocpp_version", choices=VERSIONS,
+                    help="OCPP version when the trace does not name it (v0 files: pass it, the guess is noted in the report)")
+    ap.add_argument("--unknown-call", dest="unknown_call", choices=UNKNOWN_CALL_MODES, default="reject",
+                    help="a CSMS CALL the trace has no answer for: reject = CALLERROR NotImplemented (default), "
+                         "noreply = no answer")
+    ap.add_argument("--no-tx-suffix", dest="tx_suffix", action="store_false",
+                    help="2.0.1 / 2.1: keep the recorded transactionIds (default: add a run suffix)")
+    ap.add_argument("--call-timeout", dest="call_timeout", type=float, default=30.0,
+                    help="seconds to wait for each CSMS answer (default 30)")
+    ap.add_argument("--out", help="write the ocppsim-replay/1 JSON report to this file")
+    ap.add_argument("--trace", help="record this replay into a new trace file (ocppsim-trace/1)")
+    ap.add_argument("--json", action="store_true", help="print the JSON report instead of the text summary")
+    ap.add_argument("--fail-on-diff", dest="fail_on_diff", action="store_true",
+                    help="exit 1 when an answer differs from the recorded one")
+    ap.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    args = ap.parse_args(argv)
+    # stdout carries the report: logs go to stderr, warnings only unless -v
+    setup_logging(verbose=args.verbose, level=None if args.verbose else logging.WARNING, stream=sys.stderr)
+    try:
+        trace = load(args.file)
+        replayer = Replayer(trace, csms_url=args.csms, charger=args.charger, as_id=args.as_id, timing=args.timing,
+                            session=args.session, max_gap=args.max_gap, password=args.password, ocpp_version=args.ocpp_version,
+                            unknown_call=args.unknown_call, tx_suffix=args.tx_suffix,
+                            call_timeout=args.call_timeout, ca_file=args.ca_file, verify_tls=not args.insecure,
+                            client_cert_file=args.client_cert, client_key_file=args.client_key,
+                            out_trace=args.trace, trace_name=args.file)
+    except (OSError, TraceError, ReplayError, UnicodeDecodeError) as e:
+        print(f"replay: {e}", file=sys.stderr)
+        return 2
+    report = asyncio.run(replayer.run())
+    text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    sys.stdout.write(text if args.json else to_text(report))
+    return exit_code(report, fail_on_diff=args.fail_on_diff)
+
+
 def main(argv=None) -> int:
     rest = sys.argv[1:] if argv is None else list(argv)
     if rest[:1] == ["scenario"]:
         return scenario_main(rest[1:])
     if rest[:1] == ["analyze"]:
         return analyze_main(rest[1:])
+    if rest[:1] == ["replay"]:
+        return replay_main(rest[1:])
     if rest[:1] == ["run"]:
         rest = rest[1:]
     ap = argparse.ArgumentParser(prog=APP_NAME,

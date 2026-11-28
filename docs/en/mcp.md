@@ -61,6 +61,7 @@ id as `cid`; connector numbers start at 1.
 | `set_traffic` | `PUT /api/traffic` | Replace the `traffic:` block |
 | `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | Start / stop the standing traffic |
 | `get_trace` / `start_trace` / `stop_trace` | `GET /api/trace`, `POST /api/trace/start` / `stop` | [Trace](trace-replay.md) recording |
+| `start_replay` / `get_replay` | `POST /api/replay`, `GET /api/replay/{id}` | [Replay](trace-replay.md#replay) of a trace against a CSMS |
 | `analyze_frames` | `GET /api/frames/analyze` | Analysis of the frame log |
 | `preview_traffic_plan` | `GET /api/traffic/plan` | The planned arrivals (deterministic for a seed) |
 | `expect_frame` | `POST /api/frames/expect` | Wait for a frame matching filters and payload matchers |
