@@ -8,14 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Security
-
-- Secret values are masked as `********` in the frame log (charger simulator and Mini CSMS) and in the Mini
-  CSMS's recorded calls: 1.6 ChangeConfiguration `AuthorizationKey`, 2.0.1 SetVariables `BasicAuthPassword` and
-  2.0.1 SetNetworkProfile VPN / APN credentials (#54). The frame sent on the wire is unchanged.
-- Excel export writes no formula cells: a text such as `=1+1` (vendor, id tag, config key value ...) is a text
-  cell with Excel's quote prefix and imports back unchanged (#21). `POST /api/config/import` rejects a body over
-  10 MB with 413 and a workbook with more than 5000 charger rows (50000 on the other sheets) with 400.
+## [0.2.1] - 2026-11-28
 
 ### Added
 
@@ -99,6 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   directory and lost when the exe exited (#27). Started without `-c`, the exe now uses the per-user
   `~/.sme-ocpp-sim/config.yaml` (created from the bundled demo config on the first run); `-c FILE` is used and
   saved in place. pip, source and Docker runs are unchanged. The config file in use is logged at startup.
+
+### Security
+
+- Secret values are masked as `********` in the frame log (charger simulator and Mini CSMS) and in the Mini
+  CSMS's recorded calls: 1.6 ChangeConfiguration `AuthorizationKey`, 2.0.1 SetVariables `BasicAuthPassword` and
+  2.0.1 SetNetworkProfile VPN / APN credentials (#54). The frame sent on the wire is unchanged.
+- Excel export writes no formula cells: a text such as `=1+1` (vendor, id tag, config key value ...) is a text
+  cell with Excel's quote prefix and imports back unchanged (#21). `POST /api/config/import` rejects a body over
+  10 MB with 413 and a workbook with more than 5000 charger rows (50000 on the other sheets) with 400.
 
 ## [0.2.0] - 2026-11-27
 
