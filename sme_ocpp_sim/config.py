@@ -5,7 +5,8 @@ M9) and a flat per-charger model
 (``connectors`` count instead of the ``evses`` tree; every connector has the same supply and ``max_power_w``).
 A 2.0.1 charger takes Device Model ``variables`` (:class:`VariableConfig`) instead of the 1.6 ``config_keys``.
 The EV plugged into a connector is ``session.ev_model`` (a built-in preset of :mod:`.charging.ev` or an
-``ev_models`` entry). A charger may take its model defaults from a charger template (``template`` / ``params``,
+``ev_models`` entry), or ``pool``: every transaction draws one from the vehicle pool (:mod:`.charging.vehicles`:
+presets + ``ev_models`` by ``weight``, with their ``initial_soc`` / ``target_soc`` distributions). A charger may take its model defaults from a charger template (``template`` / ``params``,
 :mod:`.templates_builtin`). Not supported: the ``evses`` tree (plan Q11: ``connectors: N``) and ``behaviors`` (v0.3).
 
 YAML pitfall: unquoted ``0123``, ``1e5``-like numbers, ``ON`` / ``OFF`` / ``yes`` / ``no`` are not strings in
@@ -22,7 +23,8 @@ instead (a field set to the model default but differing from the template is wri
 (unusual layout) it re-dumps the whole document and *all* comments are lost; :func:`write_back_checked` reports
 that and :func:`write_back` / :func:`save_file` log a warning.
 
-Product imports: the version metadata registry (no adapter) and the pure EV model of :mod:`.charging.ev`.
+Product imports: the version metadata registry (no adapter) and the pure EV model / vehicle pool of
+:mod:`.charging`.
 """
 
 from __future__ import annotations
@@ -33,13 +35,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
-from pydantic import (AfterValidator, BeforeValidator, Field, SerializationInfo, field_validator, model_serializer,
-                      model_validator)
+from pydantic import (AfterValidator, BeforeValidator, Discriminator, Field, SerializationInfo, Tag, field_validator,
+                      model_serializer, model_validator)
 from pydantic_core import to_jsonable_python
 from sme_sim_common.config import StrictModel, atomic_write_text, replace_yaml_block, splice_yaml_block
 from typing_extensions import Annotated
 
 from .charging.ev import PRESETS, EvModel, validate_curve
+from .charging.vehicles import SocSpec, VehiclePool, build_pool
 from .protocol.registry import check_version
 
 log = logging.getLogger(__name__)
@@ -162,8 +165,50 @@ class CsmsDefaults(StrictModel):
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 
+#: ``session.ev_model`` value that draws the EV of each transaction from the vehicle pool.
+POOL = "pool"
+
+Soc = Annotated[float, Field(ge=0, le=100)]
+
+
+class SocDistConfig(StrictModel):
+    """A SoC (%) distribution (:class:`.charging.vehicles.SocSpec`): ``fixed`` (``mean``), ``uniform`` on
+    ``[min, max]`` or ``normal`` (``mean``, ``sd``) truncated to ``[min, max]``."""
+
+    dist: Literal["fixed", "uniform", "normal"] = "uniform"
+    min: Soc = 0.0
+    max: Soc = 100.0
+    mean: Optional[Soc] = None
+    sd: Optional[float] = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def _check(self) -> "SocDistConfig":
+        self.to_spec()
+        return self
+
+    def to_spec(self) -> SocSpec:
+        return SocSpec(self.dist, self.min, self.max, self.mean, self.sd)
+
+
+def _soc_kind(v: Any) -> str:
+    return "mapping" if isinstance(v, (dict, SocDistConfig)) else "number"
+
+
+#: A plain number is a fixed SoC, a mapping a :class:`SocDistConfig` (tagged: errors come from that branch only).
+SocValue = Annotated[Union[Annotated[Soc, Tag("number")], Annotated[SocDistConfig, Tag("mapping")]],
+                     Discriminator(_soc_kind)]
+
+
+def soc_spec(v: Optional[SocValue]) -> Optional[SocSpec]:
+    if v is None or isinstance(v, SocDistConfig):
+        return v.to_spec() if v is not None else None
+    return SocSpec.fixed(float(v))
+
+
 class EvModelConfig(StrictModel):
-    """One ``ev_models`` entry (design §7); see :class:`.charging.ev.EvModel` for the semantics."""
+    """One ``ev_models`` entry (design §7); see :class:`.charging.ev.EvModel` for the semantics. ``weight`` /
+    ``initial_soc`` / ``target_soc`` are its vehicle pool profile (``session.ev_model: pool``); a missing SoC is
+    the charger's ``session`` value."""
 
     id: QuotedStr = Field(min_length=1)
     capacity_kwh: float = Field(gt=0)
@@ -175,6 +220,16 @@ class EvModelConfig(StrictModel):
     min_current_a: float = Field(6.0, ge=0)
     efficiency: float = Field(0.9, gt=0, le=1)
     curve: Optional[List[Tuple[float, float]]] = None  # SoC% -> fraction of max; None = ev.DEFAULT_CURVE
+    weight: float = Field(1.0, ge=0)
+    initial_soc: Optional[SocValue] = None
+    target_soc: Optional[SocValue] = None
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        if v == POOL:
+            raise ValueError(f"{POOL!r} is reserved (session.ev_model: {POOL} draws from the vehicle pool)")
+        return v
 
     @field_validator("curve")
     @classmethod
@@ -197,7 +252,9 @@ class EvModelConfig(StrictModel):
 
 
 class SessionConfig(StrictModel):
-    """The EV that is plugged in (design §7 ``session``); every new transaction starts at ``initial_soc``."""
+    """The EV that is plugged in (design §7 ``session``); every new transaction starts at ``initial_soc``.
+    ``ev_model: pool`` draws the EV (and its SoC values) of every transaction from the vehicle pool; then
+    ``initial_soc`` / ``target_soc`` are the defaults of the ``ev_models`` entries that set none."""
 
     ev_model: QuotedStr = "compact-40kwh"
     initial_soc: float = Field(30.0, ge=0, le=100)
@@ -514,9 +571,14 @@ class SimConfig(StrictModel):
                 raise ValueError(f"charger {c.id!r}: no csms_url and no csms_defaults.url")
             self._check_profile(c)
             self._check_variables(c)
-            if c.session.ev_model not in ev_ids and c.session.ev_model not in PRESETS:
+            if c.session.ev_model == POOL:
+                try:
+                    self.vehicle_pool(c)
+                except ValueError as e:
+                    raise ValueError(f"charger {c.id!r}: session.ev_model {POOL}: {e}") from None
+            elif c.session.ev_model not in ev_ids and c.session.ev_model not in PRESETS:
                 raise ValueError(f"charger {c.id!r}: unknown session.ev_model {c.session.ev_model!r} "
-                                 f"(not in ev_models nor presets {sorted(PRESETS)})")
+                                 f"(not in ev_models nor presets {sorted(PRESETS)}, nor {POOL!r})")
         return self
 
     def _check_variables(self, c: ChargerConfig) -> None:
@@ -533,8 +595,17 @@ class SimConfig(StrictModel):
         except ValueError as e:
             raise ValueError(f"charger {c.id!r}: {e}") from None
 
-    def resolve_ev(self, charger: ChargerConfig) -> EvModel:
-        """The EV model of ``charger``'s session; an ``ev_models`` entry overrides a preset of the same id."""
+    def vehicle_pool(self, charger: ChargerConfig) -> VehiclePool:
+        """The vehicle pool of ``charger``: presets + ``ev_models``, SoC defaults from its ``session``."""
+        return build_pool(((e.to_model(), e.weight, soc_spec(e.initial_soc), soc_spec(e.target_soc))
+                           for e in self.ev_models),
+                          initial_soc_pct=charger.session.initial_soc, target_soc_pct=charger.session.target_soc)
+
+    def resolve_ev(self, charger: ChargerConfig) -> Union[EvModel, VehiclePool]:
+        """The EV model of ``charger``'s session (an ``ev_models`` entry overrides a preset of the same id), or
+        its :meth:`vehicle_pool` for ``session.ev_model: pool``."""
+        if charger.session.ev_model == POOL:
+            return self.vehicle_pool(charger)
         for e in self.ev_models:
             if e.id == charger.session.ev_model:
                 return e.to_model()

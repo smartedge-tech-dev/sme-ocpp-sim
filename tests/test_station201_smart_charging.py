@@ -266,3 +266,15 @@ def test_external_limit_offline_is_applied_but_not_sent():
         r = await peer.request(CP, _composite(0, unit="W"))
         assert r.schedule["charging_schedule_period"][0]["limit"] == 3000.0
     _scenario(body)
+
+
+def test_pool_session_draws_its_vehicle():
+    """2.0.1 twin of the 1.6 test: the transaction runs on the EV drawn from the pool."""
+    from test_runtime_smart_charging import _one_vehicle_pool
+
+    async def body(peer, rt):
+        await _charging(peer, rt)
+        await _until(lambda: _conn(rt)["power_w"] == 2000)
+        assert 50 <= _conn(rt)["soc_pct"] <= 60.5
+    _scenario(body, cfg_kw={"auth_mode": "accept_all", "session": {"ev_model": "pool"}},
+              rt_kw={"tick_s": 0.05, "ev": _one_vehicle_pool()})

@@ -288,6 +288,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
 from ...charging import power
+from ...charging.ev import EvModel, Vehicle
 from ...charging.power import PowerState
 from ...charging.tx_data import TxDataBuffer, TxReading, union
 from ...rpc import CallError, wait_event
@@ -441,6 +442,7 @@ class _Evse:
     tx: Optional[_Tx] = None
     meter_wh: float = 0.0
     pw: Optional[PowerState] = None
+    vehicle: Optional[Vehicle] = None  # EV of the current / last session (``host.vehicle``)
     last_mono: Optional[float] = None
     meter_task: Optional[asyncio.Task] = None
 
@@ -784,10 +786,14 @@ class Station201(VersionStation):
 
     # ================================================================== readings / power model
 
+    def _ev(self, e: _Evse) -> EvModel:
+        """The EV of e's running session, else the charger's default model."""
+        return e.vehicle.ev if e.pw is not None and e.vehicle is not None else self.ev
+
     def _samples(self, e: _Evse, measurands: Sequence[str]) -> List[d.Sample]:
         """Readings of ``measurands``; Voltage / Current.Import once without a phase unless
         ``meter.phase_values`` asks for one value per phase (SampledValue.phase)."""
-        r = power.meter_reading(e.pw, self.ev, self.supply) if e.pw is not None else None
+        r = power.meter_reading(e.pw, self._ev(e), self.supply) if e.pw is not None else None
         watts = r.power_active_import_w if r else 0.0
         amps = r.current_import_a if r else 0.0
         mode = self.cfg.meter.phase_values
@@ -798,7 +804,7 @@ class Station201(VersionStation):
                         for p, v in power.phase_voltages(self.supply, mode)]
                 continue
             if mode != "off" and name == CURRENT:
-                used = r.phases if r else self.supply.phases_used(self.ev)
+                used = r.phases if r else self.supply.phases_used(self._ev(e))
                 out += [d.Sample(name, round(a, CURRENT_DECIMALS), "A", phase=p, location=LOCATION)
                         for p, a in power.phase_currents(amps, self.supply, used)]
                 continue
@@ -819,12 +825,12 @@ class Station201(VersionStation):
         e = self.evses[evse_id]
         if e.pw is None:
             return 0.0
-        return round(power.meter_reading(e.pw, self.ev, self.supply).power_active_import_w, POWER_DECIMALS)
+        return round(power.meter_reading(e.pw, self._ev(e), self.supply).power_active_import_w, POWER_DECIMALS)
 
     def _phases(self, evse_id: int) -> int:
         """Phases a limit in A applies to: the EV's while one charges, else the supply's."""
         e = self.evses.get(evse_id)
-        return self.supply.phases_used(self.ev) if e is not None and e.pw is not None else self.supply.phases
+        return self.supply.phases_used(self._ev(e)) if e is not None and e.pw is not None else self.supply.phases
 
     def _transactions(self) -> Dict[int, ActiveTransaction]:
         return {e.id: ActiveTransaction(e.tx.tx_id, e.tx.started_at) for e in self.evses.values() if e.tx is not None}
@@ -840,7 +846,7 @@ class Station201(VersionStation):
         now = self.host.monotonic()
         if e.pw is not None and not self.host.paused:  # paused: frozen, the interval just restarts
             dt = max(0.0, now - e.last_mono) if e.last_mono is not None else 0.0
-            e.pw = self.host.step_power(e.pw, dt, self._limit_w(e))
+            e.pw = self.host.step_power(e.pw, dt, self._limit_w(e), e.vehicle)
             e.meter_wh = e.pw.energy_wh
         e.last_mono = now
 
@@ -931,7 +937,8 @@ class Station201(VersionStation):
         e.finishing = False
         tx = e.tx = _Tx(str(uuid.uuid4()), tag, int(round(e.meter_wh)), self.host.clock(), token_type=token_type,
                         remote_start_id=remote_start_id, reservation_id=reservation_id)
-        e.pw = PowerState(soc_pct=self.cfg.session.initial_soc, energy_wh=e.meter_wh)  # a fresh EV session
+        e.vehicle = self.host.vehicle(e.id)  # a fresh EV session (drawn from the pool for ev_model: pool)
+        e.pw = PowerState(soc_pct=e.vehicle.initial_soc_pct, energy_wh=e.meter_wh)
         e.last_mono = None
         if profile is not None:
             self._bind_profile(e, tx, *profile)
