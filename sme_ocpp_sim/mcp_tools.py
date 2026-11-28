@@ -119,11 +119,13 @@ def build_registry(app: Any) -> McpRegistry:
               "charger": {"type": "string", "description": "Charger of the trace (needed when it has several)"},
               "as_id": {"type": "string", "description": "Connect with this charger identity instead"},
               "timing": {"type": "string", "description": "original (default) | scale:N | asap"},
+              "max_gap": {"type": "number", "exclusiveMinimum": 0, "description": "Cap each wait between two CALLs (s)"},
+              "session": {"type": "integer", "minimum": 1, "description": "Replay only the n-th connection of the charger"},
               "password": {"type": "string", "description": "Basic Auth password (the trace is masked)"},
               "ocpp_version": {"type": "string", "enum": ["1.6", "2.0.1", "2.1"]},
               "unknown_call": {"type": "string", "enum": ["reject", "noreply"], "default": "reject"},
               "tx_suffix": {"type": "boolean", "default": True},
-              "call_timeout": {"type": "number", "exclusiveMinimum": 0, "default": 30}},
+              "call_timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 300, "default": 30}},
              ["file", "csms_url"], cid=False), destructive=False)
     add("get_replay", "State of a replay (running / done, CALLs sent) and, once done, its ocppsim-replay/1 report "
         "(per CALL recorded vs replayed outcome and differences).", "GET", "/api/replay/{id}",

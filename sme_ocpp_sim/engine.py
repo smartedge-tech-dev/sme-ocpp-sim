@@ -190,6 +190,9 @@ class OcppEngine(BaseEngine):
         from .scenario.traffic import StandingTraffic  # lazy: scenario imports the engine
         self.traffic = StandingTraffic(self)
         self._runs: Dict[str, _Run] = {}
+        #: Trace replays of the Web API (v0.3 M6): run id -> Replayer, and their tasks (stopped with the engine).
+        self.replays: Dict[str, Any] = {}
+        self.replay_tasks: set = set()
         self._started = False
         self._push_at = 0.0
         self._push_later: Optional[asyncio.TimerHandle] = None
@@ -415,7 +418,20 @@ class OcppEngine(BaseEngine):
         if self.config.traffic.enabled:
             self.traffic.start_quiet(self.config)
 
+    async def stop_replays(self, timeout: float = 5.0) -> None:
+        """Stop every running replay (their recorders write the footer), cancel what does not end in ``timeout``."""
+        for rp in list(self.replays.values()):
+            rp.stop()
+        tasks = list(self.replay_tasks)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout)
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=timeout)
+
     async def stop(self) -> None:
+        await self.stop_replays()
         await self.traffic.stop(cleanup=False)
         runner = self.scenario
         if runner is not None and runner.abort():  # a running scenario ends as aborted, with its cleanup

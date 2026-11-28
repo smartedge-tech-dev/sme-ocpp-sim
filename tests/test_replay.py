@@ -211,7 +211,7 @@ def test_replay16_against_peer(tmp_path):
     stop = next(f for f in calls if f[0] == 2 and f[2] == "StopTransaction")
     assert stop[3]["timestamp"].endswith("Z")
     stop_ts = datetime.fromisoformat(stop[3]["timestamp"].replace("Z", "+00:00"))
-    assert abs((stop_ts - ts).total_seconds() - 20) < 1.0   # the start time has no fraction (cut)
+    assert abs((datetime.now(timezone.utc) - stop_ts).total_seconds()) < 60   # per frame: relative to its send time
     assert not {f[1] for f in calls if f[0] == 2} & {"u1", "u2", "u3", "u4", "u5"}
     # new trace of the run
     new = fmt.load(tmp_path / "new.jsonl")
@@ -410,3 +410,132 @@ def test_web_replay_api_and_mcp_tools(tmp_path):
         app = c.app
     tools = {t["name"]: t for t in build_registry(app).list_tools()}
     assert {"start_replay", "get_replay"} <= set(tools)
+
+
+# ---------------------------------------------------------------- review findings (M6 follow-up)
+
+def test_timestamps_follow_the_send_time_per_frame():
+    rw = Rewriter16(auto_shift=True)
+    p = {"a": "2020-01-01T00:00:00Z", "b": {"c": "2020-01-01T00:00:10Z"}}
+    t0 = datetime.now(timezone.utc)
+    one = rw.call("DataTransfer", p)
+    time.sleep(0.3)
+    two = rw.call("DataTransfer", p)
+    parse = lambda x: datetime.fromisoformat(x.replace("Z", "+00:00"))   # noqa: E731
+    assert abs((parse(one["a"]) - t0).total_seconds()) < 2
+    assert (parse(one["b"]["c"]) - parse(one["a"])).total_seconds() == 10
+    # the second frame is relative to ITS send time, not to the first one
+    assert (parse(two["a"]) - parse(one["a"])).total_seconds() >= 0 and abs(
+        (parse(two["a"]) - datetime.now(timezone.utc)).total_seconds()) < 2
+    assert (parse(rw.reply("X", p)["a"]) - datetime.now(timezone.utc)).total_seconds() < 2
+
+
+def test_tx_id_cap_collision_uses_a_hash_and_notes():
+    rw = Rewriter201(run_id="abc123")
+    a, b = "x" * 40 + "A", "x" * 40 + "B"
+    na, nb = rw.tx_id(a), rw.tx_id(b)
+    assert na != nb and len(na) <= MAX_TX_ID and len(nb) <= MAX_TX_ID
+    assert na.endswith("-abc123") and nb.endswith("-abc123")
+    assert any("tail was cut" in n for n in rw.notes) and any("collided" in n for n in rw.notes)
+    assert rw.tx_id(a) == na
+
+
+def test_plan_notes_incomplete_dropped_guess_masked_and_16_edges():
+    b = TraceBuilder()
+    b.call("BootNotification", {"chargePointVendor": "v", "authorizationKey": "********"}, {"status": "Accepted"})
+    b.call("StartTransaction", {"connectorId": 1, "idTag": "T", "meterStart": 0, "timestamp": "2026-01-01T00:00:00Z"})
+    b.call("MeterValues", {"connectorId": 1, "transactionId": 99, "meterValue": []}, {})
+    tr = b.trace()
+    tr.incomplete, tr.dropped, tr.header["chargers"] = True, 2, []
+    notes = build_plan(tr).notes
+    text = "\n".join(notes)
+    assert "incomplete" in text and "dropped 2" in text and "guessed (1.6)" in text and "masked" in text
+    assert "StartTransaction has no answer" in text and "started outside the trace" in text
+    b2 = TraceBuilder(version="2.0.1")
+    b2.call("StatusNotification", {"evse": {"id": 1}, "connectorStatus": "Available"}, {})
+    tr2 = b2.trace()
+    tr2.header["chargers"] = []
+    plan = build_plan(tr2)
+    assert plan.ocpp_version == "2.0.1" and any("guessed" in n for n in plan.notes)
+
+
+def test_session_selection_and_notes():
+    b = TraceBuilder()
+    for _ in range(4):
+        b.call("Heartbeat", {}, {"currentTime": "2026-01-01T00:00:00Z"})
+    tr = b.trace()
+    tr.events = [{"type": "event", "ts": b.lines[0]["ts"] - 1, "charger": "CP1", "event": "connected"},
+                 {"type": "event", "ts": b.lines[4]["ts"] - 0.001, "charger": "CP1", "event": "connected"}]
+    assert any("2 sessions" in n for n in build_plan(tr).notes) and len(build_plan(tr).calls) == 4
+    assert len(build_plan(tr, session=1).calls) == 2 and len(build_plan(tr, session=2).calls) == 2
+    with pytest.raises(ReplayError):
+        build_plan(tr, session=3)
+
+
+def test_max_gap_caps_the_waits():
+    async def go():
+        peer = CsmsPeer()
+        await peer.start()
+        try:
+            b = TraceBuilder(gap=1.0)
+            for _ in range(4):
+                b.call("Heartbeat", {}, {"currentTime": "2026-01-01T00:00:00Z"})
+            t0 = time.monotonic()
+            report = await Replayer(b.trace(), csms_url=peer.url, max_gap=0.05).run()
+            return time.monotonic() - t0, report
+        finally:
+            await peer.stop()
+
+    took, report = _run(go)
+    assert took < 2.0 and report["max_gap"] == 0.05 and report["summary"]["sent"] == 4
+
+
+def test_stop_cancels_the_call_in_flight():
+    async def go():
+        peer = CsmsPeer()
+        await peer.start()
+        gate = asyncio.Event()
+        peer.gates["StartTransaction"] = gate
+        rp = Replayer(trace16(gap=0.01).trace(), csms_url=peer.url, timing="asap", call_timeout=30)
+        run = asyncio.create_task(rp.run())
+        while "CP1" not in peer.sessions:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)
+        t0 = time.monotonic()
+        rp.stop()
+        report = await asyncio.wait_for(run, 5)
+        gate.set()
+        await peer.stop()
+        return time.monotonic() - t0, report
+
+    took, report = _run(go)
+    assert took < 2 and report["error"] == "stopped" and report["result"] == "error"
+    kinds = [e["replayed"]["kind"] for e in report["calls"]]
+    assert "closed" in kinds and "not_sent" in kinds
+
+
+def test_replayer_validates_url_and_as_id():
+    tr = trace16().trace()
+    for bad_url in ("http://x/ocpp", "ocpp", "ws://"):
+        with pytest.raises(ReplayError):
+            Replayer(tr, csms_url=bad_url)
+    for bad_as in ("a:b", "bulk", ""):
+        with pytest.raises(ReplayError):
+            Replayer(tr, csms_url="ws://x/ocpp", as_id=bad_as)
+
+
+def test_web_replay_limits_and_identity(tmp_path):
+    eng = _engine(tmp_path)
+    trace16(gap=0.01).write(eng.trace_dir() / "rec.jsonl")
+    body = {"file": "rec.jsonl", "csms_url": "ws://127.0.0.1:1/ocpp"}
+    with TestClient(create_app(eng), base_url="http://127.0.0.1") as c:
+        assert c.post("/api/replay", json={**body, "as_id": "a:b"}).status_code == 400
+        assert c.post("/api/replay", json={**body, "call_timeout": 301}).status_code == 400
+        eng._runs["CP1"] = object()
+        assert c.post("/api/replay", json=body).status_code == 409           # the recorded identity runs here
+        assert c.post("/api/replay", json={**body, "as_id": "CP1"}).status_code == 409
+        del eng._runs["CP1"]
+        for i in range(4):
+            eng.replays[f"r{i}"] = type("R", (), {"state": "running"})()
+        assert c.post("/api/replay", json=body).status_code == 409           # 4 are running
+        eng.replays.clear()

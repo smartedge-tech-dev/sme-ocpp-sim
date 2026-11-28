@@ -213,17 +213,21 @@ class ReplayBody(BaseModel):
     csms_url: str = Field(min_length=1, max_length=2048, description="CSMS URL without the charger id")
     charger: Optional[str] = Field(None, description="charger of the trace (needed when it has several)")
     as_id: Optional[str] = Field(None, max_length=48, description="connect with this charger identity")
+    session: Optional[int] = Field(None, ge=1, description="replay only the n-th connection (1-based) of the charger")
+    max_gap: Optional[float] = Field(None, gt=0, le=86_400, description="cap each wait between two CALLs (s)")
     timing: str = Field("original", description="original | scale:N | asap")
     password: Optional[str] = Field(None, repr=False, description="Basic Auth password (never echoed)")
     ocpp_version: Optional[Literal["1.6", "2.0.1", "2.1"]] = None
     unknown_call: Literal["reject", "noreply"] = "reject"
     tx_suffix: bool = True
-    call_timeout: float = Field(30.0, gt=0, le=3600)
+    call_timeout: float = Field(30.0, gt=0, le=300)
     verify_tls: bool = True
 
 
 #: Replays kept for GET /api/replay (the oldest finished ones are dropped beyond it).
 MAX_REPLAYS = 20
+#: Replays that may run at the same time (the next POST /api/replay gets 409).
+MAX_RUNNING_REPLAYS = 4
 
 
 class DataTransferBody(BaseModel):
@@ -820,8 +824,8 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     # ---- trace replay (v0.3 M6; trace/replay.py): own connections, never a simulated charger
 
-    replays: Dict[str, Any] = {}
-    replay_tasks: set = set()
+    replays = engine.replays          # owned by the engine: OcppEngine.stop() stops them
+    replay_tasks = engine.replay_tasks
 
     def get_replay_run(rid: str):
         rp = replays.get(rid)
@@ -841,10 +845,15 @@ def _router(engine: OcppEngine) -> APIRouter:
         try:
             rp = Replayer(load(p), csms_url=body.csms_url, charger=body.charger, as_id=body.as_id,
                           timing=body.timing, password=body.password, ocpp_version=body.ocpp_version,
+                          session=body.session, max_gap=body.max_gap,
                           unknown_call=body.unknown_call, tx_suffix=body.tx_suffix,
                           call_timeout=body.call_timeout, verify_tls=body.verify_tls, trace_name=body.file)
         except (TraceError, ReplayError, UnicodeDecodeError) as e:
             raise bad(400, e) from None
+        if sum(v.state != "done" for v in replays.values()) >= MAX_RUNNING_REPLAYS:
+            raise bad(409, f"{MAX_RUNNING_REPLAYS} replays are already running")
+        if rp.identity in engine._runs:
+            raise bad(409, f"charger {rp.identity!r} is running in this simulator: replay as another identity (as_id)")
         rp.out_trace = engine.trace_dir() / f"replay-{rp.run_id}.jsonl"
         try:
             rp.out_trace.parent.mkdir(parents=True, exist_ok=True)

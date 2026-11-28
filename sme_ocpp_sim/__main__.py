@@ -245,13 +245,17 @@ def replay_main(argv) -> int:
     ap.add_argument("--timing", default="original",
                     help="original (recorded gaps, default), scale:N (gaps / N) or asap (next CALL right after "
                          "the answer)")
+    ap.add_argument("--max-gap", dest="max_gap", type=float, metavar="SECONDS",
+                    help="cap each wait between two CALLs (original / scale:N; default: no cap)")
+    ap.add_argument("--session", type=int, metavar="N",
+                    help="replay only the N-th connection (1-based) of the charger (default: all, merged)")
     ap.add_argument("--password", help="Basic Auth password (Security Profile 1 / 2; the trace is masked)")
     ap.add_argument("--ca-file", dest="ca_file", help="CA bundle (PEM) for wss://")
     ap.add_argument("--insecure", action="store_true", help="wss:// without certificate checks (testing only)")
     ap.add_argument("--client-cert", dest="client_cert", help="TLS client certificate chain (PEM; profile 3)")
     ap.add_argument("--client-key", dest="client_key", help="TLS client private key (PEM; profile 3)")
     ap.add_argument("--ocpp-version", dest="ocpp_version", choices=VERSIONS,
-                    help="OCPP version when the trace does not name it (v0 files); default: detected")
+                    help="OCPP version when the trace does not name it (v0 files: pass it, the guess is noted in the report)")
     ap.add_argument("--unknown-call", dest="unknown_call", choices=UNKNOWN_CALL_MODES, default="reject",
                     help="a CSMS CALL the trace has no answer for: reject = CALLERROR NotImplemented (default), "
                          "noreply = no answer")
@@ -271,7 +275,7 @@ def replay_main(argv) -> int:
     try:
         trace = load(args.file)
         replayer = Replayer(trace, csms_url=args.csms, charger=args.charger, as_id=args.as_id, timing=args.timing,
-                            password=args.password, ocpp_version=args.ocpp_version,
+                            session=args.session, max_gap=args.max_gap, password=args.password, ocpp_version=args.ocpp_version,
                             unknown_call=args.unknown_call, tx_suffix=args.tx_suffix,
                             call_timeout=args.call_timeout, ca_file=args.ca_file, verify_tls=not args.insecure,
                             client_cert_file=args.client_cert, client_key_file=args.client_key,

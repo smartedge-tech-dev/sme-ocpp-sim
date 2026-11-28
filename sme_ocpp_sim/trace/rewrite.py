@@ -1,8 +1,9 @@
 """Frame rewriting for a trace replay (v0.3 plan §3.7): the version-independent part.
 
 A replay re-sends recorded payloads, which must not look stale or collide with the original run. The
-:class:`Rewriter` here shifts every ISO 8601 date-time string by one offset (the earliest timestamp of the replayed
-CALLs lands on "now", the spacing between them is kept). The version rules live in :mod:`.rewrite_v16` (1.6
+:class:`Rewriter` here shifts every ISO 8601 date-time string of a frame (any depth, also inside DataTransfer
+data) by one offset computed when the frame is sent: the earliest timestamp of that frame lands on "now", the
+spacing inside the frame is kept. The version rules live in :mod:`.rewrite_v16` (1.6
 ``transactionId`` re-mapping) and :mod:`.rewrite_v201` (2.0.1 / 2.1 ``transactionId`` run suffix).
 
 Rewriters work on copies; the trace is never changed. ``uniqueId`` values are not a rewriter's job: the RPC layer
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 import copy
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 #: An ISO 8601 date-time as OCPP sends it (``2026-01-01T00:00:00Z``, ``...00.123+09:00``, naive also accepted).
@@ -70,15 +71,29 @@ class Rewriter:
 
     version = "?"
 
-    def __init__(self, *, shift: Optional[timedelta] = None, run_id: str = "") -> None:
+    def __init__(self, *, shift: Optional[timedelta] = None, run_id: str = "", auto_shift: bool = False) -> None:
+        #: A fixed offset, or (``auto_shift``) one computed per frame at the moment it is sent.
         self.shift = shift
+        self.auto_shift = auto_shift
         self.run_id = run_id
         self.notes: List[str] = []
+        self._last_shift: Optional[timedelta] = None
+
+    def _frame_shift(self, payload: Any) -> Optional[timedelta]:
+        """``auto_shift``: the earliest aware date-time of THIS frame becomes "now" (offsets inside it are kept).
+        A frame without one reuses the last offset."""
+        if not self.auto_shift:
+            return self.shift
+        first = earliest_datetime([payload])
+        if first is not None:
+            self._last_shift = datetime.now(timezone.utc) - first
+        return self._last_shift
 
     def _times(self, payload: Any) -> Any:
-        if not self.shift:
+        shift = self._frame_shift(payload)
+        if not shift:
             return copy.deepcopy(payload)
-        return walk(payload, lambda _k, v: shift_datetime(v, self.shift) if isinstance(v, str) else v)
+        return walk(payload, lambda _k, v: shift_datetime(v, shift) if isinstance(v, str) else v)
 
     def call(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """The payload of a recorded charger -> CSMS CALL as it is sent now."""

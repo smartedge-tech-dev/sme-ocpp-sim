@@ -6,14 +6,16 @@ answers in the trace. It does not run the station state machine; what is sent is
 only where a replay has to (:mod:`.rewrite`, :mod:`.rewrite_v16`, :mod:`.rewrite_v201`):
 
 * a new ``uniqueId`` per CALL (the RPC layer draws one);
-* every ISO 8601 date-time shifted by one offset: the earliest timestamp of the replayed CALLs becomes "now";
+* every ISO 8601 date-time (any depth, DataTransfer data included) shifted by one offset per frame, computed when
+  the frame is sent: the earliest timestamp of that frame becomes "now", offsets inside the frame are kept;
 * 1.6: the ``transactionId`` the CSMS answers to StartTransaction now replaces the recorded one in later frames;
 * 2.0.1 / 2.1: the charger-generated ``transactionId`` gets a run suffix (``tx_suffix``, default on);
 * ``as_id`` (CLI ``--as``) connects with another charger identity (URL path and Basic Auth user).
 
 Sending follows OCPP-J: one CALL at a time, the next one only after the answer (or the call timeout). Timing
 (``timing``): ``original`` keeps the recorded gap between two CALLs (measured from the previous send; a slow answer
-pushes the next CALL back), ``scale:N`` divides the gaps by N, ``asap`` sends the next CALL right after the answer.
+pushes the next CALL back), ``scale:N`` divides the gaps by N, ``asap`` sends the next CALL right after the answer;
+``max_gap`` caps each wait. ``session`` replays only the n-th connection of the charger.
 2.1 SEND frames (type 6) are re-sent in order, without an answer.
 
 CALLs the CSMS sends during the replay are answered with the answer the charger gave in the trace, matched by
@@ -35,10 +37,12 @@ trace when ``out_trace`` is given.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import secrets
 import time
+from urllib.parse import urlsplit
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,13 +50,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .. import __version__
-from ..framelog import FrameLog
+from ..config import _charger_id
+from ..framelog import SECRET_MASK, FrameLog
 from ..rpc.connection import FrameInfo, RpcConnection
 from ..rpc.errors import OCPP16_ERRORS, OCPP21_ERRORS, OCPP201_ERRORS, CallError
 from ..rpc.transport import HandshakeError, TransportConfig, open_connection, wait_event
 from . import format as fmt
 from .recorder import TraceRecorder
-from .rewrite import Rewriter, earliest_datetime
+from .rewrite import Rewriter
 from .rewrite_v16 import Rewriter16
 from .rewrite_v201 import Rewriter21, Rewriter201
 
@@ -64,6 +69,10 @@ UNKNOWN_CALL_MODES = ("reject", "noreply")
 #: Actions only a 2.0.1 / 2.1 station sends (version detection of a v0 trace without ``ocpp_version``).
 _V201_ACTIONS = frozenset({"TransactionEvent", "NotifyReport", "NotifyEvent", "ReportChargingProfiles",
                            "NotifyChargingLimit", "ClearedChargingLimit", "NotifyEVChargingNeeds"})
+#: Top-level payload keys that only 2.0.1 / 2.1 messages have.
+_V201_KEYS = frozenset({"transactionInfo", "evse", "eventType", "chargingStation"})
+#: Longest inbound (CSMS CALL) list kept in the report; the rest is only counted.
+MAX_INBOUND = 1000
 
 
 class ReplayError(ValueError):
@@ -114,9 +123,11 @@ class Plan:
     #: CSMS CALL action -> the recorded answer frames in order (None = the charger did not answer).
     answers: Dict[str, List[Optional[list]]] = field(default_factory=dict)
     skipped: int = 0                   # tx frames that could not be parsed
+    notes: List[str] = field(default_factory=list)   # what the reader of the report should know about the trace
 
 
-def build_plan(trace: fmt.Trace, charger: Optional[str] = None, ocpp_version: Optional[str] = None) -> Plan:
+def build_plan(trace: fmt.Trace, charger: Optional[str] = None, ocpp_version: Optional[str] = None,
+               session: Optional[int] = None) -> Plan:
     """What a replay of ``charger`` (the only charger of the trace when ``None``) sends and answers."""
     frames = [f for f in trace.frames if isinstance(f, dict) and isinstance(f.get("ts"), (int, float))]
     ids = sorted({str(f["charger"]) for f in frames if f.get("charger") is not None})
@@ -129,6 +140,25 @@ def build_plan(trace: fmt.Trace, charger: Optional[str] = None, ocpp_version: Op
         raise ReplayError(f"the trace has no frames of charger {charger!r}")
     mine = sorted((f for f in frames if str(f.get("charger")) == charger),
                   key=lambda f: (f["ts"], f.get("seq") if isinstance(f.get("seq"), int) else 0))
+    notes: List[str] = []
+    starts = sorted(float(e["ts"]) for e in trace.events if isinstance(e, dict) and str(e.get("charger")) == charger
+                    and e.get("event") == "connected" and isinstance(e.get("ts"), (int, float)))
+    if session is not None:
+        if not starts:
+            raise ReplayError("the trace has no connection events: --session needs a v1 trace")
+        if session > len(starts):
+            raise ReplayError(f"session {session}: the trace has {len(starts)} session(s) of charger {charger!r}")
+        lo = starts[session - 1]
+        hi = starts[session] if session < len(starts) else float("inf")
+        mine = [f for f in mine if lo <= f["ts"] < hi]
+        notes.append(f"only session {session} of {len(starts)} was replayed")
+    elif len(starts) > 1:
+        notes.append(f"the trace has {len(starts)} sessions of charger {charger!r}; they are replayed merged on one "
+                     "connection (--session N replays one)")
+    if trace.incomplete:
+        notes.append("the trace is incomplete (a part is missing or its footer has an error): the replay may lack CALLs")
+    if trace.dropped > 0:
+        notes.append(f"the recording dropped {trace.dropped} line(s) (write queue full): the replay may lack CALLs")
     calls: List[RecordedCall] = []
     answers: Dict[str, List[Optional[list]]] = defaultdict(list)
     open_tx: Dict[str, RecordedCall] = {}
@@ -162,11 +192,46 @@ def build_plan(trace: fmt.Trace, charger: Optional[str] = None, ocpp_version: Op
         raise ReplayError(f"the trace has no CALL that charger {charger!r} sent")
     version = ocpp_version or trace.ocpp_version(charger)
     if version is None:
-        boot = next((c.payload for c in calls if c.action == "BootNotification"), {})
-        version = "2.0.1" if "chargingStation" in boot or any(c.action in _V201_ACTIONS for c in calls) else "1.6"
+        version = "2.0.1" if any(c.action in _V201_ACTIONS or _V201_KEYS & set(c.payload) for c in calls) else "1.6"
+        notes.append(f"the OCPP version was guessed ({version}) from the payloads: pass --ocpp-version for a trace "
+                     "without a header")
     if version not in VERSIONS:
         raise ReplayError(f"OCPP version {version!r}: one of {', '.join(VERSIONS)}")
-    return Plan(charger, version, calls, dict(answers), skipped)
+    if version == "1.6":
+        _notes16(calls, notes)
+    masked = sum(_count_masked(c.payload) for c in calls) + sum(
+        _count_masked(fr[2]) for lst in answers.values() for fr in lst if fr and fr[0] == 3 and len(fr) > 2)
+    if masked:
+        notes.append(f"{masked} value(s) are masked ({SECRET_MASK!r}) in the trace and are sent as they are (a "
+                     "secret the CSMS checks will not match)")
+    return Plan(charger, version, calls, dict(answers), skipped, notes)
+
+
+def _count_masked(obj: Any) -> int:
+    if isinstance(obj, str):
+        return int(obj == SECRET_MASK)
+    if isinstance(obj, dict):
+        return sum(_count_masked(v) for v in obj.values())
+    if isinstance(obj, list):
+        return sum(_count_masked(v) for v in obj)
+    return 0
+
+
+def _notes16(calls: List[RecordedCall], notes: List[str]) -> None:
+    """1.6 transactionId edge cases of the trace itself (the CSMS assigns the id in StartTransaction.conf)."""
+    started = set()
+    for c in calls:
+        if c.action == "StartTransaction" and c.kind == "call":
+            ok = c.response is not None and c.response[0] == 3 and isinstance(c.response[2], dict)
+            tid = c.response[2].get("transactionId") if ok else None
+            if isinstance(tid, int):
+                started.add(tid)
+            else:
+                notes.append(f"CALL #{c.index} StartTransaction has no answer in the trace: its transactionId is unknown")
+    outside = sorted({c.payload["transactionId"] for c in calls if c.action in ("StopTransaction", "MeterValues")
+                      and isinstance(c.payload.get("transactionId"), int) and c.payload["transactionId"] not in started})
+    for tid in outside:
+        notes.append(f"transactionId {tid} was started outside the trace: Stop / MeterValues send it unchanged")
 
 
 def statuses(payload: Any) -> Dict[str, Any]:
@@ -214,11 +279,11 @@ def compare(recorded: Dict[str, Any], replayed: Dict[str, Any]) -> tuple:
     return not diff, diff
 
 
-def make_rewriter(version: str, *, shift, run_id: str, tx_suffix: bool = True) -> Rewriter:
+def make_rewriter(version: str, *, shift=None, run_id: str, tx_suffix: bool = True, auto_shift: bool = True) -> Rewriter:
     if version == "1.6":
-        return Rewriter16(shift=shift, run_id=run_id)
+        return Rewriter16(shift=shift, run_id=run_id, auto_shift=auto_shift)
     cls = Rewriter21 if version == "2.1" else Rewriter201
-    return cls(shift=shift, run_id=run_id, tx_suffix=tx_suffix)
+    return cls(shift=shift, run_id=run_id, tx_suffix=tx_suffix, auto_shift=auto_shift)
 
 
 def _iso(ts: float) -> str:
@@ -240,7 +305,8 @@ class Replayer:
     """One replay run; :meth:`run` returns the ``ocppsim-replay/1`` report (also kept in :attr:`report`)."""
 
     def __init__(self, trace: fmt.Trace, *, csms_url: str, charger: Optional[str] = None,
-                 as_id: Optional[str] = None, timing: str = "original", password: Optional[str] = None,
+                 as_id: Optional[str] = None, timing: str = "original", session: Optional[int] = None,
+                 max_gap: Optional[float] = None, password: Optional[str] = None,
                  ocpp_version: Optional[str] = None, unknown_call: str = "reject", tx_suffix: bool = True,
                  call_timeout: float = 30.0, ca_file: Optional[str] = None, verify_tls: bool = True,
                  client_cert_file: Optional[str] = None, client_key_file: Optional[str] = None,
@@ -248,6 +314,22 @@ class Replayer:
                  run_id: Optional[str] = None) -> None:
         if not csms_url:
             raise ReplayError("csms_url is required")
+        try:
+            parts = urlsplit(csms_url)
+            ok = parts.scheme.lower() in ("ws", "wss") and bool(parts.hostname)
+        except ValueError:
+            ok = False
+        if not ok:
+            raise ReplayError("csms_url must be a ws:// or wss:// URL")
+        if as_id is not None:
+            try:
+                _charger_id(as_id)
+                if not as_id:
+                    raise ValueError("empty")
+            except ValueError as e:
+                raise ReplayError(f"as_id {as_id!r}: {e}") from None
+        if max_gap is not None and not (max_gap > 0 and math.isfinite(max_gap)):
+            raise ReplayError("max_gap must be > 0")
         if unknown_call not in UNKNOWN_CALL_MODES:
             raise ReplayError(f"unknown_call {unknown_call!r}: reject or noreply")
         if not call_timeout or call_timeout <= 0:
@@ -255,7 +337,9 @@ class Replayer:
         self.factor = parse_timing(timing)
         self.timing = (timing or "original").strip().lower()
         self.trace = trace
-        self.plan = build_plan(trace, charger, ocpp_version)
+        self.plan = build_plan(trace, charger, ocpp_version, session)
+        self.session = session
+        self.max_gap = max_gap
         self.identity = as_id or self.plan.charger
         self.unknown_call = unknown_call
         self.tx_suffix = tx_suffix
@@ -272,7 +356,9 @@ class Replayer:
         self.error: Optional[str] = None
         self.report: Optional[Dict[str, Any]] = None
         self.entries: List[Dict[str, Any]] = []
-        self.inbound: List[Dict[str, Any]] = []
+        self.inbound: List[Dict[str, Any]] = []        # at most MAX_INBOUND entries
+        self._inbound_total = 0
+        self._inbound_unknown = 0
         self.rewriter: Optional[Rewriter] = None
         self._seen: Dict[str, int] = defaultdict(int)
         self._stop: Optional[asyncio.Event] = None
@@ -283,7 +369,8 @@ class Replayer:
 
     def status(self) -> Dict[str, Any]:
         return {"id": self.run_id, "state": self.state, "charger": self.plan.charger, "as": self.identity,
-                "ocpp_version": self.plan.ocpp_version, "timing": self.timing, "sent": self.sent,
+                "ocpp_version": self.plan.ocpp_version, "timing": self.timing, "max_gap": self.max_gap,
+                "session": self.session, "sent": self.sent,
                 "total": len(self.plan.calls), "error": self.error, "report": self.report}
 
     def stop(self) -> None:
@@ -291,7 +378,7 @@ class Replayer:
         if self.error is None and self.state == "running":
             self.error = "stopped"
         if self._stop is not None:
-            self._stop.set()
+            self._stop.set()     # also ends the wait for the answer of the CALL in flight
 
     # ------------------------------------------------------------ inbound CALLs
 
@@ -300,8 +387,11 @@ class Replayer:
         self._seen[action] += 1
         recorded = self.plan.answers.get(action) or []
         entry: Dict[str, Any] = {"action": action, "occurrence": n + 1}
-        self.inbound.append(entry)
+        self._inbound_total += 1
+        if len(self.inbound) < MAX_INBOUND:
+            self.inbound.append(entry)
         if not recorded:
+            self._inbound_unknown += 1
             entry["answer"] = "no_reply" if self.unknown_call == "noreply" else "not_implemented"
             entry["in_trace"] = False
             if self.unknown_call == "noreply":
@@ -327,10 +417,7 @@ class Replayer:
         self.state = "running"
         self._stop = asyncio.Event()
         self._started = time.time()
-        first = earliest_datetime(c.payload for c in self.plan.calls)
-        shift = datetime.now(timezone.utc) - first if first is not None else None
-        self.rewriter = make_rewriter(self.plan.ocpp_version, shift=shift, run_id=self.run_id,
-                                      tx_suffix=self.tx_suffix)
+        self.rewriter = make_rewriter(self.plan.ocpp_version, run_id=self.run_id, tx_suffix=self.tx_suffix)
         recorder = self._recorder()
         try:
             await self._run(recorder)
@@ -395,7 +482,10 @@ class Replayer:
                     self.error = "connection closed by the CSMS"
                 break
             if self.factor is not None and prev_rec is not None:
-                wait = prev_sent + max(0.0, rc.ts - prev_rec) / self.factor - time.monotonic()
+                gap = max(0.0, rc.ts - prev_rec) / self.factor
+                if self.max_gap is not None:
+                    gap = min(gap, self.max_gap)
+                wait = prev_sent + gap - time.monotonic()
                 if wait > 0 and await wait_event(self._stop, wait):
                     break
             prev_rec, prev_sent = rc.ts, time.monotonic()
@@ -406,7 +496,7 @@ class Replayer:
                     await conn.send(rc.action, payload)
                     replayed: Dict[str, Any] = {"kind": "sent"}
                 else:
-                    new = await conn.call(rc.action, payload)
+                    new = await self._until_stopped(conn.call(rc.action, payload))
                     replayed = {"kind": "result", "status": statuses(new)}
             except CallError as e:
                 replayed = {"kind": "error", "code": e.code}
@@ -424,6 +514,23 @@ class Replayer:
                 break
             self.sent += 1
 
+    async def _until_stopped(self, coro) -> Dict[str, Any]:
+        """Await ``coro`` (a CALL); :meth:`stop` cancels it and the CALL counts as ``closed``."""
+        task = asyncio.ensure_future(coro)
+        stopper = asyncio.ensure_future(self._stop.wait())
+        try:
+            await asyncio.wait({task, stopper}, return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+                raise ConnectionError("replay stopped")
+            return task.result()
+        finally:
+            stopper.cancel()
+            if not task.done():
+                task.cancel()
+
     def _entry(self, rc: RecordedCall, replayed: Dict[str, Any]) -> None:
         recorded = recorded_outcome(rc.response) if rc.kind == "call" else {"kind": "none"}
         match, diff = compare(recorded, replayed)
@@ -437,7 +544,12 @@ class Replayer:
                 self._entry(rc, {"kind": "not_sent"})
         entries = sorted(self.entries, key=lambda e: e["index"])
         differed = sum(e["match"] is False for e in entries)
-        notes = list(self.rewriter.notes if self.rewriter else [])
+        notes = list(self.plan.notes) + list(self.rewriter.notes if self.rewriter else [])
+        if self._inbound_total > len(self.inbound):
+            notes.append(f"{self._inbound_total - len(self.inbound)} CSMS CALL(s) beyond the first {MAX_INBOUND} are "
+                         "counted but not listed in inbound")
+        if self.max_gap is not None:
+            notes.append(f"waits between CALLs were capped at {self.max_gap} s")
         if self.plan.skipped:
             notes.append(f"{self.plan.skipped} unparseable charger frame(s) in the trace were not sent")
         ended = time.time()
@@ -446,6 +558,7 @@ class Replayer:
             "charger": self.plan.charger, "as": self.identity, "ocpp_version": self.plan.ocpp_version,
             "csms_url": fmt.strip_credentials(self._transport.csms_url),
             "security_profile": self._transport.security_profile, "timing": self.timing,
+            "max_gap": self.max_gap, "session": self.session,
             "started": _iso(self._started or ended), "ended": _iso(ended),
             "wall_s": round(ended - (self._started or ended), 3),
             "result": "error" if self.error else ("diff" if differed else "match"), "error": self.error,
@@ -455,8 +568,9 @@ class Replayer:
                 "not_compared": sum(e["match"] is None for e in entries),
                 "timeouts": sum(e["replayed"]["kind"] == "timeout" for e in entries),
                 "not_sent": sum(e["replayed"]["kind"] == "not_sent" for e in entries),
-                "inbound": len(self.inbound),
-                "inbound_not_in_trace": sum(not i.get("in_trace") for i in self.inbound),
+                "inbound": self._inbound_total,
+                "inbound_not_in_trace": self._inbound_unknown,
+                "inbound_overflow": max(0, self._inbound_total - len(self.inbound)),
             },
             "calls": entries, "inbound": list(self.inbound), "notes": notes,
             "new_trace": str(self.out_trace) if self.out_trace else None,
@@ -473,7 +587,8 @@ def exit_code(report: Dict[str, Any], *, fail_on_diff: bool = False) -> int:
 def to_text(report: Dict[str, Any]) -> str:
     s = report["summary"]
     lines = [f"replay {report['id']}: {report['charger']} as {report['as']} (OCPP {report['ocpp_version']}) -> "
-             f"{report['csms_url']}, timing {report['timing']}",
+             f"{report['csms_url']}, timing {report['timing']}"
+             + (f" (max gap {report['max_gap']} s)" if report.get("max_gap") else ""),
              f"result: {report['result']}" + (f" ({report['error']})" if report.get("error") else ""),
              f"CALLs: {s['calls']} sent {s['sent']}, matched {s['matched']}, differed {s['differed']}, "
              f"not compared {s['not_compared']}, timeouts {s['timeouts']}, not sent {s['not_sent']}",

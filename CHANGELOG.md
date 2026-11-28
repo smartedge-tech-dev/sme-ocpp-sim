@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   timeout); differences do not fail the run unless `--fail-on-diff`. `POST /api/replay`, `GET /api/replay[/{id}]`,
   `POST /api/replay/{id}/stop` and MCP tools `start_replay` / `get_replay` replay a trace file of the trace
   directory from the running app. The docs page is now *Trace recording, analysis and replay*.
+  Timestamps follow each CALL's send time; `--session N` and `--max-gap SECONDS` select one connection and cap waits; the
+  report `notes` flag incomplete traces, guessed versions, cut transactionIds and masked values; the API allows 4
+  concurrent replays, rejects identities in use and stops replays on shutdown.
 
 ### Changed
 
