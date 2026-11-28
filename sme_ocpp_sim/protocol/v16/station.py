@@ -259,6 +259,7 @@ class _Tx:
     profile: Optional[ChargingProfile] = None  # RemoteStart TxProfile, installed once tx_id is known
     reservation_id: Optional[int] = None  # the reservation this transaction used (StartTransaction.req)
     data: Optional[TxDataBuffer] = None   # readings for transactionData (StopTxnSampledData / AlignedData)
+    begin_sent: bool = False              # meter.begin_end_messages: the Transaction.End MeterValues pairs it
 
 
 @dataclass
@@ -966,13 +967,18 @@ class Station16(VersionStation):
         tx = c.tx
         if tx is None or tx.data is None:
             return
-        if tx.data.sampled_due(self.host.monotonic(), self.store.get_int(SAMPLE_KEY)):
-            tx.data.add(TxReading(self.host.clock(), self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)),
-                                  "Sample.Periodic"))
-        boundary = tx.data.aligned_due(self.host.clock(), self.store.get_int(ALIGNED_INTERVAL_KEY))
-        if boundary is not None:
-            tx.data.add(TxReading(boundary, self._samples(c, self.store.get_csl(STOP_ALIGNED_DATA_KEY)),
-                                  "Sample.Clock"))
+        data, evicted = tx.data, tx.data.evicted
+        at = data.sampled_due(self.host.monotonic(), self.store.get_int(SAMPLE_KEY))
+        if at is not None:
+            data.add_sampled(TxReading(at, self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)),
+                                       "Sample.Periodic"))
+        at = data.aligned_due(self.host.clock(), self.store.get_int(ALIGNED_INTERVAL_KEY))
+        if at is not None:
+            data.add_aligned(TxReading(at, self._samples(c, self.store.get_csl(STOP_ALIGNED_DATA_KEY)),
+                                       "Sample.Clock"))
+        if data.evicted and not evicted:
+            log.warning("%s: connector %d: transactionData exceeds meter.tx_data_max_samples (%d), oldest readings "
+                        "dropped", self.cfg.id, c.id, data.max_readings)
 
     def _bind_profile(self, c: _Conn, tx: _Tx) -> None:
         """Install the RemoteStart TxProfile for the transaction it started (§5.16.2)."""
@@ -1062,6 +1068,7 @@ class Station16(VersionStation):
             begin = d.TxUpdated(c.id, tx.tx_id, self.host.clock(),
                                 self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)), context="Transaction.Begin")
             self._outq_push(_OutMsg(_Kind.METER, lambda: self._adapter.send_tx_updated(begin), c, tx))
+            tx.begin_sent = True
         self._start_meter(c)
         return A.ACCEPTED
 
@@ -1094,8 +1101,7 @@ class Station16(VersionStation):
         tx.ended = _Stop(int(round(c.meter_wh)), self.host.clock(), reason,
                          self._samples(c, self.store.get_csl(STOP_SAMPLED_DATA_KEY)),
                          tx.data.all() if tx.data is not None else [],
-                         self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY))
-                         if self.cfg.meter.begin_end_messages else [],
+                         self._samples(c, self.store.get_csl(SAMPLED_DATA_KEY)) if tx.begin_sent else [],
                          self.host.monotonic() + delay if delay > 0 else None)
         tx.data = None
         if tx.tx_id is not None:

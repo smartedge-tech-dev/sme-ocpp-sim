@@ -230,14 +230,15 @@ class MeterOptions(StrictModel):
       and one Current.Import per supply phase (``L1``..), each with its ``phase``.
     - ``post_tx_delay_s``: seconds between the end of a transaction and sending its StopTransaction / Ended
       TransactionEvent; the outbox is strictly ordered, so the messages queued after it wait as well.
-    - ``tx_data_max_samples``: at most this many interval readings are kept for one transaction's StopTransaction
-      ``transactionData`` / Ended ``meterValue`` (the oldest is dropped first).
+    - ``tx_data_max_samples``: at most this many sampled and as many clock-aligned readings are kept for one
+      transaction's StopTransaction ``transactionData`` / Ended ``meterValue`` (the oldest is dropped first, with
+      one warning per transaction).
     """
 
     begin_end_messages: bool = False
     phase_values: Literal["off", "L-N", "L-L"] = "off"
     post_tx_delay_s: float = Field(0.0, ge=0)
-    tx_data_max_samples: int = Field(100, ge=1, le=10000)
+    tx_data_max_samples: int = Field(1000, ge=1, le=10000)
 
 
 #: What the Web API shows instead of a charger password; sent back unchanged it keeps the stored password.

@@ -18,7 +18,7 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | Authorize | 取决于 `auth_mode`（见 [配置](configuration.md)） |
 | StartTransaction | 取得 `transactionId`；`idTagInfo` 不是 Accepted 时停止交易 |
 | StopTransaction | `reason`、`transactionData`：从交易开始起每隔 `MeterValueSampleInterval` 采样的 `StopTxnSampledData` measurand（`Sample.Periodic`）及结束值（`Transaction.End`），每个 `ClockAlignedDataInterval` 时钟边界的 `StopTxnAlignedData` measurand（`Sample.Clock`）；两个 key 都为空时不带。电表不报告的 measurand（Energy.Active.Import.Register、Power.Active.Import、Current.Import、Voltage、SoC 以外）或超过其 `*MaxLength` key 的列表，ChangeConfiguration 回 `Rejected` |
-| MeterValues | 周期采样（`MeterValueSampleInterval`）与时钟对齐（`ClockAlignedDataInterval`）；measurand 取自 `MeterValuesSampledData`；带 `location` / `context` |
+| MeterValues | 交易中每隔 `MeterValueSampleInterval` 发送采样值；measurand 取自 `MeterValuesSampledData`，带 `location` / `context`。时钟对齐的 MeterValues 消息（`ClockAlignedDataInterval` / `MeterValuesAlignedData`）尚未发送（`transactionData` 中的 `StopTxnAlignedData` 读数会发送） |
 | DataTransfer | 从 UI 或 HTTP API 手动发送 |
 | FirmwareStatusNotification | Downloading → Downloaded → Installing →（重启、BootNotification）→ Installed；失败注入时为 DownloadFailed / InstallationFailed |
 | DiagnosticsStatusNotification | Uploading → Uploaded / UploadFailed |
@@ -90,7 +90,7 @@ SME OCPPSim 模拟 OCPP 1.6J 充电桩（Charge Point）和 OCPP 2.0.1 充电站
 | SecurityEventNotification | 支持 | StartupOfTheDevice、ResetOrReboot、FirmwareUpdated、InvalidCsmsCertificate、InvalidTLSVersion、FailedToAuthenticateAtCsms、InvalidChargingStationCertificate、DiscardedRenewedClientCertificate、ReconfigurationOfSecurityParameters。critical 事件离线时也排队，在下一次 Boot 被接受后发送；其它事件只在连接期间发生时发送 |
 | SignCertificate | 支持 | 收到 TriggerMessage `SignChargingStationCertificate` 后生成新的 EC P-256 密钥和 CSR（CN = `serial`，未设置时为充电桩 ID；O = `SecurityCtrlr.OrganizationName`），`certificateType` 为 `ChargingStationCertificate`。没有应答的 CSR 不重发（未模拟 CertSigningWaitMinimum） |
 | StatusNotification | 支持 | 每个 EVSE（connector 1）一条，EVSE 0 不发送。`connectorStatus` 为 Available / Occupied / Reserved / Unavailable / Faulted；更细的状态（充电、暂停）由 TransactionEvent 的 `chargingState` 表示 |
-| TransactionEvent | 支持 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）由充电站生成；`seqNo` 每笔交易从 0 计数；每隔 `SampledDataCtrlr.TxUpdatedInterval` 发送周期性 `Updated`；断线期间产生的事件带 `offline: true`。`Started` 带 `SampledDataCtrlr.TxStartedMeasurands`；`Ended` 带 `SampledDataCtrlr` 与 `AlignedDataCtrlr` `TxEndedMeasurands` 并集的开始值（`Transaction.Begin`）和结束值（`Transaction.End`）、从开始起每隔 `SampledDataCtrlr.TxEndedInterval` 的采样值（`Sample.Periodic`；0 = 只有开始和结束）以及每个 `AlignedDataCtrlr.TxEndedInterval` 时钟边界的值（`Sample.Clock`；0 = 无） |
+| TransactionEvent | 支持 | `Started` → `Updated` → `Ended`。`transactionId`（UUID）由充电站生成；`seqNo` 每笔交易从 0 计数；每隔 `SampledDataCtrlr.TxUpdatedInterval` 发送周期性 `Updated`；断线期间产生的事件带 `offline: true`。`Started` 带 `SampledDataCtrlr.TxStartedMeasurands`；`Ended` 带 `SampledDataCtrlr` 与 `AlignedDataCtrlr` `TxEndedMeasurands` 并集的开始值（`Transaction.Begin`）和结束值（`Transaction.End`）、从开始起每隔 `SampledDataCtrlr.TxEndedInterval` 的采样值（`Sample.Periodic`；0 = 只有开始和结束）以及每个 `AlignedDataCtrlr.TxEndedInterval` 时钟边界的值（`Sample.Clock`；0 = 无）。与 1.6 相同，电表不报告的 measurand 不被接受：`*Measurands` 变量的 `valuesList` 只有所报告的 5 个 measurand，SetVariables 回 `Rejected` |
 
 TransactionEvent 和状态变化引起的 StatusNotification 与 1.6 一样经同一个有序队列发送。失败的 TransactionEvent
 最多重试 `OCPPCommCtrlr.MessageAttempts[TransactionEvent]` 次，间隔为 `MessageAttemptInterval[TransactionEvent]` × 失败次数；

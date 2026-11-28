@@ -51,9 +51,20 @@ def test_aligned_stream_boundaries_after_the_start():
 
 def test_cap_keeps_begin_and_newest_readings_in_order():
     b = TxDataBuffer(0.0, T0, 2, begin=TxReading(T0, ["b"], "Transaction.Begin"))
-    for i in range(4):
-        b.add(TxReading(T0 + timedelta(seconds=i + 1), [i], "Sample.Periodic"))
-    b.add(TxReading(T0, [], "Sample.Clock"))  # empty readings are not kept
+    b.add_sampled(TxReading(T0 + timedelta(seconds=1), [0], "Sample.Periodic"))
+    b.add_sampled(TxReading(T0 + timedelta(seconds=2), [1], "Sample.Periodic"))
+    assert not b.evicted
+    for i in (2, 3):
+        b.add_sampled(TxReading(T0 + timedelta(seconds=i + 1), [i], "Sample.Periodic"))
+    assert b.evicted
+    b.add_aligned(TxReading(T0 + timedelta(seconds=2.5), ["c"], "Sample.Clock"))  # own cap: not evicted by sampled
+    b.add_aligned(TxReading(T0, [], "Sample.Clock"))  # empty readings are not kept
     out = b.all(TxReading(T0 + timedelta(seconds=9), ["e"], "Transaction.End"))
-    assert [r.samples for r in out] == [["b"], [2], [3], ["e"]]
+    assert [r.samples for r in out] == [["b"], ["c"], [2], [3], ["e"]]
+
+
+def test_sampled_readings_are_stamped_at_their_boundary():
+    b = TxDataBuffer(100.0, T0, 10)
+    b.sampled_due(100.0, 2)
+    assert b.sampled_due(104.7, 2) == T0 + timedelta(seconds=4)
     assert union(["a", "b"], ["b", "c"]) == ("a", "b", "c")

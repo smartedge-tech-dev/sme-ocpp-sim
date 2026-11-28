@@ -6,6 +6,7 @@ TxEndedInterval and TxEndedMeasurands). Both: per-phase values and the post-tran
 """
 
 import asyncio
+import json
 import time
 from datetime import datetime
 
@@ -60,6 +61,11 @@ def _contexts(meter_values):
     return [mv["sampled_value"][0]["context"] for mv in meter_values]
 
 
+def _calls(s):
+    """Actions of the CALLs the charger sent (1.6 peer raw frames), in order."""
+    return [f[2] for f in (json.loads(raw) for dr, raw in s.frames if dr == "rx") if f[0] == 2]
+
+
 def _ts(value):
     return value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
@@ -76,7 +82,7 @@ def test_16_transaction_data_samples_every_interval_from_the_start():
         await _until(lambda: s.stops)
         data = s.stops[0]["transaction_data"]
         ctx = _contexts(data)
-        assert ctx[-1] == "Transaction.End" and set(ctx[:-1]) == {"Sample.Periodic"} and len(ctx) >= 3
+        assert ctx[-1] == "Transaction.End" and set(ctx[:-1]) == {"Sample.Periodic"} and len(ctx) >= 2
         assert all(v["sampled_value"][0]["measurand"] == "Energy.Active.Import.Register" for v in data)
         stamps = [_ts(v["timestamp"]) for v in data]
         assert stamps == sorted(stamps)
@@ -85,7 +91,7 @@ def test_16_transaction_data_samples_every_interval_from_the_start():
 
 def test_16_transaction_data_cap_keeps_the_newest_readings():
     async def body(s, rt, peer):
-        await _charge(rt, 2.6)
+        await _charge(rt, 3.5)
         await _until(lambda: s.stops)
         assert _contexts(s.stops[0]["transaction_data"]) == ["Sample.Periodic", "Transaction.End"]
     _run("1.6", {"config_keys": _keys16(), "meter": {"tx_data_max_samples": 1}}, body)
@@ -101,7 +107,7 @@ def test_16_both_keys_empty_no_transaction_data():
 
 def test_16_stop_txn_aligned_data_on_clock_boundaries():
     async def body(s, rt, peer):
-        await _charge(rt, 2.3)
+        await _charge(rt, 3.0)
         await _until(lambda: s.stops)
         data = s.stops[0]["transaction_data"]
         assert len(data) >= 1 and _contexts(data) == ["Sample.Clock"] * len(data)
@@ -127,6 +133,8 @@ def test_16_begin_end_meter_values():
         assert all(mv["transaction_id"] == s.starts[0]["transaction_id"] for mv in s.meter_values)
         measurands = {v["measurand"] for v in s.meter_values[1]["meter_value"][0]["sampled_value"]}
         assert measurands == {"Energy.Active.Import.Register", "Power.Active.Import"}  # MeterValuesSampledData
+        tx_calls = [a for a in _calls(s) if a in ("StartTransaction", "MeterValues", "StopTransaction")]
+        assert tx_calls == ["StartTransaction", "MeterValues", "MeterValues", "StopTransaction"]
     _run("1.6", {"config_keys": _keys16(MeterValueSampleInterval="0"), "meter": {"begin_end_messages": True}}, body)
 
 
@@ -151,10 +159,15 @@ def test_16_post_transaction_delay():
         assert await rt.swipe(1, "TAG1") == "Accepted"
         t0 = time.monotonic()
         assert await rt.stop_tx(1)
-        await _until(lambda: s.stops)
-        assert time.monotonic() - t0 >= 0.9
+        await asyncio.sleep(0.5)
+        assert not s.stops and "Finishing" not in [st for _, st, _ in s.statuses]  # waits behind the Stop
+        await _until(lambda: s.stops and "Finishing" in [st for _, st, _ in s.statuses])
+        assert time.monotonic() - t0 >= 1.4
         assert s.stops[0]["reason"] == "Local"
-    _run("1.6", {"config_keys": _keys16(), "meter": {"post_tx_delay_s": 1.0}}, body)
+        calls = _calls(s)
+        stop_at = calls.index("StopTransaction")
+        assert "StatusNotification" in calls[stop_at + 1:]  # Finishing goes out after the delayed Stop
+    _run("1.6", {"config_keys": _keys16(), "meter": {"post_tx_delay_s": 1.5}}, body)
 
 
 # ------------------------------------------------------------------------------------------------ OCPP 2.0.1
@@ -182,13 +195,13 @@ def test_201_ended_interval_samples_from_the_start():
         await _until(lambda: _ended(s))
         ctx = _contexts(_ended(s)["meter_value"])
         assert ctx[0] == "Transaction.Begin" and ctx[-1] == "Transaction.End"
-        assert set(ctx[1:-1]) == {"Sample.Periodic"} and len(ctx) >= 4
+        assert set(ctx[1:-1]) == {"Sample.Periodic"} and len(ctx) >= 3
     _run("2.0.1", {"variables": [_var("SampledDataCtrlr", "TxEndedInterval", "1")]}, body)
 
 
 def test_201_ended_aligned_union_of_measurands():
     async def body(s, rt, peer):
-        await _charge(rt, 2.3)
+        await _charge(rt, 3.0)
         await _until(lambda: _ended(s))
         mvs = _ended(s)["meter_value"]
         ctx = _contexts(mvs)
@@ -202,7 +215,7 @@ def test_201_ended_aligned_union_of_measurands():
 
 def test_201_tx_data_cap():
     async def body(s, rt, peer):
-        await _charge(rt, 2.6)
+        await _charge(rt, 3.5)
         await _until(lambda: _ended(s))
         assert _contexts(_ended(s)["meter_value"]) == ["Transaction.Begin", "Sample.Periodic", "Transaction.End"]
     _run("2.0.1", {"variables": [_var("SampledDataCtrlr", "TxEndedInterval", "1")],
@@ -229,5 +242,32 @@ def test_201_post_transaction_delay():
         t0 = time.monotonic()
         assert await rt.stop_tx(1)
         await _until(lambda: _ended(s))
-        assert time.monotonic() - t0 >= 0.9
-    _run("2.0.1", {"meter": {"post_tx_delay_s": 1.0}}, body)
+        assert time.monotonic() - t0 >= 1.4
+    _run("2.0.1", {"meter": {"post_tx_delay_s": 1.5}}, body)
+
+
+def test_16_phase_values_line_to_neutral():
+    async def body(s, rt, peer):
+        await rt.plug(1)
+        assert await rt.swipe(1, "TAG1") == "Accepted"
+        await _until(lambda: s.meter_values)
+        values = s.meter_values[0]["meter_value"][0]["sampled_value"]
+        assert [(v["measurand"], v["phase"], float(v["value"])) for v in values] == [
+            ("Voltage", "L1-N", 115.5), ("Voltage", "L2-N", 115.5), ("Voltage", "L3-N", 115.5)]
+    _run("1.6", {"phases": 3, "voltage_v": 200.0, "line_to_line": True,
+                 "config_keys": _keys16(MeterValuesSampledData="Voltage"), "meter": {"phase_values": "L-N"}}, body)
+
+
+def test_16_change_configuration_rejects_a_list_longer_than_max_length():
+    async def body(s, rt, peer):
+        r = await peer.change_configuration(CP, "StopTxnSampledData", "Energy.Active.Import.Register,Voltage,SoC")
+        assert r.status == "Rejected"
+        r = await peer.change_configuration(CP, "StopTxnSampledData", "Energy.Active.Import.Register,Voltage")
+        assert r.status == "Accepted"
+    _run("1.6", {"config_keys": {"StopTxnSampledDataMaxLength": "2"}}, body)
+
+
+def test_load_time_unsupported_measurand_is_dropped_not_fatal():
+    async def body(s, rt, peer):
+        assert rt.station.store.get_csl("StopTxnSampledData") == ["Energy.Active.Import.Register"]
+    _run("1.6", {"config_keys": _keys16(StopTxnSampledData="Energy.Active.Import.Register,Temperature")}, body)

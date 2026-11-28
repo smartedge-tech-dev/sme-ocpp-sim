@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Charger block `meter:` (simulator options): `begin_end_messages` (1.6 MeterValues `Transaction.Begin` /
   `Transaction.End`), `phase_values` (`off` / `L-N` / `L-L`: Voltage and Current.Import per phase with
   `phase`), `post_tx_delay_s` (delay before StopTransaction / `Ended`) and `tx_data_max_samples` (cap of the
-  readings kept for one transaction).
+  sampled and of the clock-aligned readings kept for one transaction, default 1000, one warning on overflow).
 - OCPP 2.0.1: `SampledDataCtrlr.TxEndedInterval` is ReadWrite; new `AlignedDataCtrlr.TxEndedInterval` and
   `AlignedDataCtrlr.TxEndedMeasurands`. `Ended.meterValue` holds the start and end readings plus the sampled
   and clock-aligned readings of these intervals.
@@ -40,7 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   StopTxnAlignedData readings at every ClockAlignedDataInterval boundary.
 - OCPP 1.6: ChangeConfiguration of `MeterValuesSampledData`, `MeterValuesAlignedData`, `StopTxnSampledData` and
   `StopTxnAlignedData` rejects measurands the simulated meter does not report and lists longer than the
-  matching `*MaxLength` key.
+  matching `*MaxLength` key. In YAML / template / Excel `config_keys` such measurands are dropped with a
+  warning instead.
+- Docs: the 1.6 MeterValues row no longer claims clock-aligned MeterValues messages (not sent yet).
 - Windows: the asyncio proactor's "Exception in callback ..._call_connection_lost" `ConnectionResetError`
   traceback after a peer reset is no longer printed (logged at debug level).
 

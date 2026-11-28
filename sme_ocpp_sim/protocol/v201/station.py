@@ -865,13 +865,18 @@ class Station201(VersionStation):
         tx = e.tx
         if tx is None or tx.data is None:
             return
-        if tx.data.sampled_due(self.host.monotonic(), self.dm.int_value(dm.TX_ENDED_INTERVAL)):
-            tx.data.add(TxReading(self.host.clock(), self._samples(e, self.dm.list_value(dm.TX_ENDED_MEASURANDS)),
-                                  ReadingContextEnumType.sample_periodic.value))
-        boundary = tx.data.aligned_due(self.host.clock(), self.dm.int_value(dm.ALIGNED_TX_ENDED_INTERVAL))
-        if boundary is not None:
-            tx.data.add(TxReading(boundary, self._samples(e, self.dm.list_value(dm.ALIGNED_TX_ENDED_MEASURANDS)),
-                                  ReadingContextEnumType.sample_clock.value))
+        data, evicted = tx.data, tx.data.evicted
+        at = data.sampled_due(self.host.monotonic(), self.dm.int_value(dm.TX_ENDED_INTERVAL))
+        if at is not None:
+            data.add_sampled(TxReading(at, self._samples(e, self.dm.list_value(dm.TX_ENDED_MEASURANDS)),
+                                       ReadingContextEnumType.sample_periodic.value))
+        at = data.aligned_due(self.host.clock(), self.dm.int_value(dm.ALIGNED_TX_ENDED_INTERVAL))
+        if at is not None:
+            data.add_aligned(TxReading(at, self._samples(e, self.dm.list_value(dm.ALIGNED_TX_ENDED_MEASURANDS)),
+                                       ReadingContextEnumType.sample_clock.value))
+        if data.evicted and not evicted:
+            log.warning("%s: EVSE %d: Ended meterValue exceeds meter.tx_data_max_samples (%d), oldest readings "
+                        "dropped", self.cfg.id, e.id, data.max_readings)
 
     @staticmethod
     def _charging_state(e: _Evse) -> ChargingStateEnumType:

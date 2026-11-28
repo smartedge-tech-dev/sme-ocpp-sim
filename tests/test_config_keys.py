@@ -150,3 +150,15 @@ def test_measurand_keys_reject_unsupported_measurands_and_too_long_lists():
     assert store.set("StopTxnSampledData", "Energy.Active.Import.Register,Voltage,SoC") == "Rejected"
     assert store.set("StopTxnSampledData", "Energy.Active.Import.Register,SoC") == "Accepted"
     assert store.set("StopTxnSampledData", "") == "Accepted"
+
+
+def test_load_time_overrides_drop_unsupported_items_with_a_warning(caplog):
+    """YAML / template / Excel config_keys: unsupported measurands are dropped (warning), not a load error."""
+    store = ConfigStore(KEYS, {"StopTxnSampledData": "Energy.Active.Import.Register,Temperature",
+                               "MeterValuesAlignedData": "Frequency"})
+    assert store.get_csl("StopTxnSampledData") == ["Energy.Active.Import.Register"]
+    assert store.get_csl("MeterValuesAlignedData") == []
+    assert "Temperature" in caplog.text and "Frequency" in caplog.text
+    assert store.set("StopTxnSampledData", "Energy.Active.Import.Register,Temperature") == "Rejected"
+    with pytest.raises(ValueError):
+        ConfigStore(KEYS, {"HeartbeatInterval": "x"})  # other invalid values still refuse the configuration

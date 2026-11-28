@@ -129,8 +129,8 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `session.target_soc` | `90.0` | この SoC に達すると EV は電力を受け付けなくなります（SuspendedEV） |
 | `meter.begin_end_messages` | `false` | OCPP 1.6：受け付けられた StartTransaction の後に context `Transaction.Begin`、StopTransaction の直前に `Transaction.End` の MeterValues も送ります（測定項目は `MeterValuesSampledData`）。OCPP 2.0.1 では常に `Started` / `Ended` イベントに含まれます |
 | `meter.phase_values` | `off` | `off`：phase なしの `Voltage` と均等な `Current.Import` を 1 つずつ。`L-N`：電源の相ごとに `Voltage`（`L1-N`、`L2-N`、`L3-N`）。`L-L`：三相電源では線間電圧（`L1-L2`、`L2-L3`、`L3-L1`、相電圧の √3 倍）、1 相・2 相では `L-N` と同じ。どちらでも `Current.Import` は電源の相ごと（`L1`..、EV が使わない相は 0 A）。`voltage_v` / `phases` / `line_to_line` を使います |
-| `meter.post_tx_delay_s` | `0` | トランザクション終了から StopTransaction（1.6）/ `Ended` の TransactionEvent（2.0.1）を送るまでの秒数。送信キューは順序を保つため、後に積まれたメッセージ（Finishing の StatusNotification など）も待ちます |
-| `meter.tx_data_max_samples` | `100` | StopTransaction の `transactionData` / `Ended` の `meterValue` 用に 1 トランザクションで保持する途中の読み値の上限（1–10000）。古いものから捨てます。開始・終了の読み値は数えません |
+| `meter.post_tx_delay_s` | `0` | トランザクション終了から StopTransaction（1.6）/ `Ended` の TransactionEvent（2.0.1）を送るまでの秒数。送信キューは順序を保つため、後に積まれたメッセージはすべて待ちます：Finishing の StatusNotification、遅延中に始めた新しいトランザクションの StartTransaction / `Started` も含みます。Reset はキューが空になるのを最大で呼び出しタイムアウトまでしか待たないため、それより長い遅延では Reset で終了したトランザクションの StopTransaction / `Ended` は再起動前に送られず、キューに残って次に受け付けられた BootNotification の後に送られます |
+| `meter.tx_data_max_samples` | `1000` | StopTransaction の `transactionData` / `Ended` の `meterValue` 用に 1 トランザクションで保持するサンプル値・時刻同期値それぞれの上限（1–10000）。古いものから捨て、トランザクションごとに 1 回警告をログに出します。開始・終了の読み値は数えません。読み値は電力モデルの tick（`simulation.tick_seconds`）で取るため、分解能は tick に制限されます（tick・ストリームごとに最大 1 つ、区間の境界時刻を付けます） |
 | `template` | なし | 充電器テンプレート（組み込みまたはユーザー。[Excel とテンプレート](excel-templates.md) 参照）。この充電器が設定していないテンプレート項目はテンプレートの値 |
 | `params` | `{}` | `{param}` プレースホルダを持つユーザーテンプレートのパラメータ |
 | `meter_sample_interval_s` | キーの既定値 | `config_keys` で指定していない場合の `MeterValueSampleInterval` の既定値。2.0.1 では `SampledDataCtrlr.TxUpdatedInterval` の初期値 |
