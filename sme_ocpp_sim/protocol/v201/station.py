@@ -493,7 +493,8 @@ class Station201(VersionStation):
                            availability=lambda i: connector_status(self.evses[i].status).value,
                            power_w=self._power_w, profile_count=lambda: len(self.profiles.profiles()),
                            list_entries=lambda: len(self.local_list),
-                           certificate_entries=lambda: self.security.certificate_entries)
+                           certificate_entries=lambda: self.security.certificate_entries,
+                           extra=self._extra_variables(cfg))
         self.dm.models = self.models
         self._hb_wake = asyncio.Event()
         self.dm.on_change(dm.HEARTBEAT_INTERVAL, lambda v: self._wake_heartbeat())
@@ -548,6 +549,10 @@ class Station201(VersionStation):
             self.models.DeleteCertificateRequest: self._delete_certificate,
             self.models.GetInstalledCertificateIdsRequest: self._get_installed_certificate_ids,
         }
+
+    def _extra_variables(self, cfg: Any) -> List[dm.Variable]:
+        """Device Model variables a later OCPP version adds to the 2.0.1 set (none here; see ``protocol.v21``)."""
+        return []
 
     # ================================================================== session (called by the shell)
 
@@ -869,9 +874,13 @@ class Station201(VersionStation):
         now = self.host.monotonic()
         if e.pw is not None and not self.host.paused:  # paused: frozen, the interval just restarts
             dt = max(0.0, now - e.last_mono) if e.last_mono is not None else 0.0
-            e.pw = self.host.step_power(e.pw, dt, self._limit_w(e), e.vehicle)
+            self._step_power(e, dt)
             e.meter_wh = e.pw.energy_wh
         e.last_mono = now
+
+    def _step_power(self, e: _Evse, dt: float) -> None:
+        """Step the power model of ``e`` by ``dt`` s with what applies now (2.1 adds the setpoint)."""
+        e.pw = self.host.step_power(e.pw, dt, self._limit_w(e), e.vehicle)
 
     def settle(self) -> None:
         for e in self.evses.values():

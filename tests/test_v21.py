@@ -332,8 +332,8 @@ def test_store_and_ack_answers_are_schema_valid():
     assert call("ClearDERControl", {"isDefault": False, "controlId": "C1"}) == {"status": "NotFound"}
 
 
-@pytest.mark.parametrize("action", ["RequestBatterySwap", "NotifyWebPaymentStarted", "UpdateDynamicSchedule",
-                                    "UsePriorityCharging", "GetPeriodicEventStream", "AdjustPeriodicEventStream"])
+@pytest.mark.parametrize("action", ["RequestBatterySwap", "NotifyWebPaymentStarted", "GetPeriodicEventStream",
+                                    "AdjustPeriodicEventStream"])
 def test_not_implemented_2_1_messages(action):
     with pytest.raises(CallError) as ei:
         c21.parse(action, {})

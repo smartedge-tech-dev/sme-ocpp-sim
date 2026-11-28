@@ -21,6 +21,7 @@ Only ``rpc`` and ``protocol.<version>.models / codec`` are imported (no ``runtim
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import ModuleType
@@ -122,6 +123,7 @@ def build_handlers(spec: VersionSpec, session: "CpSession", ctx: Ctx) -> Dict[st
     table = answers(session, ctx)
     if spec.version == "2.1":
         table.update(_ANSWERS21)
+        table["PullDynamicScheduleUpdate"] = functools.partial(_pull_dynamic, session)
     out: Dict[str, Handler] = {}
     for action in spec.cp_actions:
         out[action] = _wrap(spec, session, ctx, action, table.get(action))
@@ -261,6 +263,60 @@ _ANSWERS21: Dict[str, Callable[[dict], dict]] = {
         {"certificateHashData": c.get("certificateHashData"), "source": c.get("source"), "status": "Unknown",
          "nextUpdate": "1970-01-01T00:00:00Z"} for c in p.get("certificateStatusRequests") or ()]},
     "OpenPeriodicEventStream": lambda p: {"status": "Accepted"},
-    "PullDynamicScheduleUpdate": lambda p: {"status": "Rejected"},
     "VatNumberValidation": lambda p: {"vatNumber": p.get("vatNumber", ""), "status": "Rejected"},
 }
+
+
+#: ChargingScheduleUpdateType fields (the values a Dynamic profile period can change, K28).
+_UPDATE_FIELDS = ("limit", "limit_L2", "limit_L3", "dischargeLimit", "dischargeLimit_L2", "dischargeLimit_L3",
+                  "setpoint", "setpoint_L2", "setpoint_L3", "setpointReactive", "setpointReactive_L2",
+                  "setpointReactive_L3")
+
+
+def remember_dynamic(session: "CpSession", action: str, payload: Any, result: Any) -> None:
+    """Keep the values of the Dynamic profiles the Mini CSMS sent and the station accepted (SetChargingProfile /
+    UpdateDynamicSchedule), so that PullDynamicScheduleUpdate can answer with them (K28.FR.07)."""
+    if not isinstance(payload, dict) or not isinstance(result, dict) or result.get("status") != "Accepted":
+        return
+    if action == "SetChargingProfile":
+        profile = payload.get("chargingProfile") or {}
+        pid = profile.get("id")
+        if profile.get("chargingProfileKind") != "Dynamic":
+            _forget_dynamic(session, pid)  # the same id replaced by another kind
+            return
+        try:
+            period = profile["chargingSchedule"][0]["chargingSchedulePeriod"][0]
+        except (KeyError, IndexError, TypeError):
+            return
+        session.dynamic_profiles[pid] = {k: period[k] for k in _UPDATE_FIELDS if k in period}
+        session.dynamic_meta[pid] = (payload.get("evseId"), profile.get("chargingProfilePurpose"),
+                                     profile.get("stackLevel"))
+    elif action == "UpdateDynamicSchedule":
+        pid = payload.get("chargingProfileId")
+        if pid in session.dynamic_profiles:
+            session.dynamic_profiles[pid].update(
+                {k: v for k, v in (payload.get("scheduleUpdate") or {}).items() if k in _UPDATE_FIELDS})
+    elif action == "ClearChargingProfile":
+        if payload.get("chargingProfileId") is not None:
+            _forget_dynamic(session, payload["chargingProfileId"])
+            return
+        crit = payload.get("chargingProfileCriteria") or {}  # the criteria are ANDed; an absent one matches all
+        for pid, (evse, purpose, stack) in list(session.dynamic_meta.items()):
+            if all(want is None or want == have for want, have in
+                   ((crit.get("evseId"), evse), (crit.get("chargingProfilePurpose"), purpose),
+                    (crit.get("stackLevel"), stack))):
+                _forget_dynamic(session, pid)
+
+
+def _forget_dynamic(session: "CpSession", pid: Any) -> None:
+    session.dynamic_profiles.pop(pid, None)
+    session.dynamic_meta.pop(pid, None)
+
+
+def _pull_dynamic(session: "CpSession", p: dict) -> dict:
+    """K28.FR.07: ``Accepted`` with the current values of a Dynamic profile the Mini CSMS sent; K28.FR.12:
+    ``Rejected`` ``InvalidProfile`` for another id."""
+    values = session.dynamic_profiles.get(p.get("chargingProfileId"))
+    if values is None:
+        return {"status": "Rejected", "statusInfo": {"reasonCode": "InvalidProfile"}}
+    return {"status": "Accepted", "scheduleUpdate": dict(values)}

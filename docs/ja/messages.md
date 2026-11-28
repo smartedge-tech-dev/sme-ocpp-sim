@@ -179,7 +179,7 @@ CSMS からステーションへの新しいメッセージ:
 | SetDERControl | 保存して応答 | `controlId` ごとに保存、`Accepted` |
 | GetDERControl | 保存して応答 | `NotFound`、または `Accepted` の後に ReportDERControl を 1 件 |
 | ClearDERControl | 保存して応答 | `Accepted` / `NotFound` |
-| UpdateDynamicSchedule、UsePriorityCharging | 未対応 | CALLERROR `NotImplemented`（v0.3.x の後続で対応予定） |
+| UpdateDynamicSchedule、UsePriorityCharging | 対応 | [スマート充電と V2X](#ocpp-21-smart-charging) を参照 |
 | GetPeriodicEventStream、AdjustPeriodicEventStream | 未対応 | CALLERROR `NotImplemented`（v0.4 で対応予定） |
 | RequestBatterySwap、NotifyWebPaymentStarted | 未対応 | CALLERROR `NotImplemented` |
 
@@ -189,12 +189,41 @@ CSMS からステーションへの新しいメッセージ:
 ステーションから CSMS への新しい 12 メッセージ（BatterySwap、ClosePeriodicEventStream、GetCertificateChainStatus、
 NotifyDERAlarm、NotifyDERStartStop、NotifyPeriodicEventStream（SEND）、NotifyPriorityCharging、NotifySettlement、
 OpenPeriodicEventStream、PullDynamicScheduleUpdate、ReportDERControl、VatNumberValidation）は、ステーションから
-自発的には送信しません（ReportDERControl は GetDERControl への応答としてのみ）。Mini CSMS はこれらに最小限の応答を返します。
+自発的には送信しません。例外は ReportDERControl（GetDERControl への応答）、PullDynamicScheduleUpdate と
+NotifyPriorityCharging（下記）です。Mini CSMS はこれらに最小限の応答を返します。
+
+### スマート充電と V2X（2.1-M2） { #ocpp-21-smart-charging }
+
+OCPP 2.1 のスマート充電（K）と双方向電力伝送（Q）の基本部分をシミュレートします。仕様が実装に委ねている規則と、
+モデル化していないオプションを以下に示します。
+
+| 機能 | 動作 |
+|---|---|
+| 目的 PriorityCharging、LocalGeneration | 受け付けます（SmartChargingCtrlr.SupportedAdditionalPurposes）。PriorityCharging はトランザクションで優先充電が有効な間 TxProfile / TxDefaultProfile に代わって適用され、LocalGeneration の制限値は合成後の制限値に加算されます |
+| 種別 Dynamic（K28） | スケジュール 1 つ・開始 0 の期間 1 つのみ。それ以外は `Rejected` `InvalidSchedule`。`dynUpdateTime` は受信時に設定され、`duration` があれば最後の更新から `duration` 秒だけ有効で、その後は下位のプロファイルが適用されます |
+| operationMode | 目的ごとに検査します（K01.FR.111〜FR.116、reasonCode `InvalidOperationMode`）。ChargingOnly は `limit` 内で充電、CentralSetpoint・ExternalSetpoint・CentralFrequency は `setpoint`（負 = 放電）に従い [`dischargeLimit`, `limit`] に制限、Idle は 0 W、ExternalLimits・LocalFrequency・LocalLoadBalancing は制限内で充電します（周波数や負荷の計測はシミュレートしません）。ChargingStationExternalConstraints の setpoint（ExternalSetpoint）は、トランザクション側のモードに関わらず優先されます（Q06.FR.21。ChargingOnly の期間では operationMode が ExternalSetpoint として報告されます）。Idle だけはこれに優先します |
+| GetCompositeSchedule | 期間に `operationMode`（ChargingOnly は省略）、`dischargeLimit`、`setpoint` を含めます。Idle の期間は値を持ちません |
+| `limitAtSoC` | EV の SoC が `soc` 以上の間、制限値と setpoint を上限で抑えます（将来の期間にも現在の SoC を使用） |
+| `maxOfflineDuration` | オフラインがその秒数を超えるとプロファイルは無効になります。再接続時、期限切れで `invalidAfterOfflineDuration` のものは削除し、それ以外は再び有効になります。一度も接続していないステーションはオンラインとみなします（初回接続前はオフライン時間が進みません） |
+| 動作モードの変化 | triggerReason `OperationModeChanged` と `transactionInfo.operationMode` を持つ TransactionEvent `Updated` |
+| 放電の物理モデル | 放電中の電力は負の値で、SoC 10 % まで、EV の充電上限と同じ値を上限に放電します。Energy.Active.Import.Register と Energy.Active.Export.Register はどちらも増加のみ。放電したトランザクションでは Export の測定値を Import の測定値と並べて報告します。Web UI は符号付きの電力、放電量、動作モードを表示します |
+| V2XChargingCtrlr | `Enabled`（true、読み書き可。false = 放電と双方向モードを無効化）、`SupportedEnergyTransferModes`、`SupportedOperationModes` |
+
+| メッセージ | 方向 | 動作 |
+|---|---|---|
+| UpdateDynamicSchedule | CSMS → ステーション | Dynamic プロファイルなら `Accepted`（指定値で期間の値を置き換え）、他の種別は `Rejected` `InvalidProfile`、不明な ID は `Rejected` `NotFound` |
+| PullDynamicScheduleUpdate | ステーション → CSMS | オンライン中、`dynUpdateTime + dynUpdateInterval` に送信し、以後その間隔ごとに送信。`Accepted` の更新を適用します。Mini CSMS は自身が送った Dynamic プロファイルの現在値を返し、それ以外は `Rejected` `InvalidProfile` |
+| UsePriorityCharging | CSMS → ステーション | `Accepted`、`NoProfile`（EVSE にも EVSE 0 にも PriorityCharging プロファイルがない）、`Rejected` `TxNotFound`。切り替わると NotifyPriorityCharging を送信 |
+| NotifyPriorityCharging | ステーション → CSMS | 優先充電の切り替え（リモート／ローカル）ごとに送信。オフライン中はキューに入れません |
+
+モデル化していないもの: 周波数応答、SmartChargingCtrlr.SetpointPriority、`setpointReactive` と `_L2` / `_L3`
+の値（受け付けるが適用しない）、`evseSleep`、ランダム遅延とローカル時刻（`Rejected`）、ISO 15118-20 の再ネゴシエーション、
+RequestStartTransaction のプロファイルの 2.1 フィールド（2.0.1 の規則で処理）。
 
 ## 未対応の機能
 
 | 機能 | 状況 |
 |---|---|
-| OCPP 2.1: UpdateDynamicSchedule、UsePriorityCharging、定期イベントストリーム、バッテリー交換、Web 決済 | 未対応（CALLERROR `NotImplemented`）。[OCPP 2.1](#ocpp-21) を参照 |
+| OCPP 2.1: 定期イベントストリーム、バッテリー交換、Web 決済 | 未対応（CALLERROR `NotImplemented`）。[OCPP 2.1](#ocpp-21) を参照 |
 | 1.6 Security Whitepaper の SignedUpdateFirmware、GetLog、LogStatusNotification、SignedFirmwareStatusNotification | 未対応（CALLERROR `NotImplemented`） |
 | ISO 15118 / Plug & Charge | 非対応（有償規格のため） |

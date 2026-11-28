@@ -37,7 +37,7 @@ from ..framelog import FrameLog, mask_payload
 from ..rpc.connection import FrameInfo, RpcConnection
 from ..rpc.errors import CallError
 from ..rpc.server import Handshake, OcppServer, Reject, parse_basic_auth
-from .handlers import BY_SUBPROTOCOL, SPECS, build_handlers, check_outbound
+from .handlers import BY_SUBPROTOCOL, SPECS, build_handlers, check_outbound, remember_dynamic
 from .plan import PlanRunner, matching_items
 from .session import CpSession
 
@@ -222,6 +222,7 @@ class MiniCsms:
             raise
         else:
             out = {"ok": True, "result": result}
+            remember_dynamic(session, action, payload, result)
             try:
                 SPECS[session.version].codec.parse(action, result, "response", strict=False)
             except CallError as e:

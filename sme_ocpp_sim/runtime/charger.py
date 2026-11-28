@@ -529,12 +529,13 @@ class ChargerRuntime:
             self._vehicle_rngs.clear()
 
     def step_power(self, pw: PowerState, dt_s: float, evse_limit_w: Optional[float],
-                   vehicle: Optional[Vehicle] = None) -> PowerState:
+                   vehicle: Optional[Vehicle] = None, *, setpoint_w: Optional[float] = None) -> PowerState:
         ev, target = (vehicle.ev, vehicle.target_soc_pct) if vehicle else (self.ev, self.cfg.session.target_soc)
         return power.step(pw, dt_s=dt_s, ev=ev, target_soc_pct=target,
                           evse_limit_w=evse_limit_w, evse_max_w=self.cfg.max_power_w, supply=self.supply,
                           ramp_up_w_per_s=self.cfg.ramp_up_w_per_s,
-                          ramp_down_w_per_s=self.cfg.ramp_down_w_per_s, time_scale=self._time_scale)
+                          ramp_down_w_per_s=self.cfg.ramp_down_w_per_s, time_scale=self._time_scale,
+                          setpoint_w=setpoint_w)
 
     def start_ticks(self) -> None:
         self._spawn(self._tick_loop())

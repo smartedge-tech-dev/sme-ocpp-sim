@@ -21,6 +21,15 @@ Modelling choices (simulator conventions, not defined by OCPP):
   ``line_to_line=True`` (e.g. Japanese 3-phase 200 V delta) the per-phase voltage on a 3-phase supply is
   ``voltage_v / sqrt(3)``, so ``P = sqrt(3) * V_LL * I``. Single-phase always uses ``voltage_v``.
   Phases in use = ``min(ev.phases, supply.phases)``; current is balanced across them.
+- Bidirectional (OCPP 2.1 V2X, ``setpoint_w``): ``None`` (the default, the only value 1.6 / 2.0.1 pass) keeps the
+  charging-only model above. A setpoint >= 0 is one more cap on the charging target. A negative setpoint asks
+  the EV to discharge: ``power_w`` becomes negative (sign convention of OCPP 2.1 setpoints: positive charges,
+  negative discharges), ``target = -min(|setpoint|, evse_max_w, EV maximum)`` where the EV maximum is the same
+  as for charging (``max_ac_w`` / ``max_current_a``); the EV refuses (``SuspendedEV``, 0 W) at or below
+  ``discharge_min_soc_pct``. The ramp applies in both directions.
+- Registers: ``energy_wh`` (Energy.Active.Import.Register) integrates the positive part of the power,
+  ``energy_export_wh`` (Energy.Active.Export.Register) the negative part; both only grow. A step whose
+  trapezoid crosses 0 W is split at the crossing. Discharging lowers the SoC by ``energy / efficiency``.
 """
 
 from __future__ import annotations
@@ -71,6 +80,7 @@ class PowerState:
     soc_pct: float
     power_w: float = 0.0
     energy_wh: float = 0.0          # Energy.Active.Import.Register, monotonic
+    energy_export_wh: float = 0.0   # Energy.Active.Export.Register (2.1 discharge), monotonic
     target_w: float = 0.0           # power the step was heading for (before the ramp)
     suspension: Optional[Suspension] = None
 
@@ -84,11 +94,28 @@ def _ramp(current_w: float, target_w: float, sim_dt_s: float,
     return current_w + max(-max_delta, min(max_delta, target_w - current_w))
 
 
+#: SoC at or below which the simulated EV refuses to discharge (simulator choice; OCPP leaves it to the EV).
+DISCHARGE_MIN_SOC_PCT = 10.0
+
+
+def _areas(p0: float, p1: float, sim_dt_s: float) -> "tuple[float, float]":
+    """(import Wh, export Wh) of the linear power p0 -> p1 over ``sim_dt_s`` (both >= 0)."""
+    if p0 >= 0 and p1 >= 0:
+        return (p0 + p1) / 2 * sim_dt_s / 3600.0, 0.0
+    if p0 <= 0 and p1 <= 0:
+        return 0.0, -(p0 + p1) / 2 * sim_dt_s / 3600.0
+    hi, lo = max(p0, p1), min(p0, p1)
+    frac = hi / (hi - lo)  # share of the step on the positive side
+    return hi / 2 * frac * sim_dt_s / 3600.0, -lo / 2 * (1 - frac) * sim_dt_s / 3600.0
+
+
 def step(state: PowerState, *, dt_s: float, ev: EvModel, target_soc_pct: float,
          evse_limit_w: Optional[float], evse_max_w: float, supply: AcSupply,
          ramp_up_w_per_s: Optional[float] = None, ramp_down_w_per_s: Optional[float] = None,
-         time_scale: float = 1.0) -> PowerState:
-    """Advance one tick of ``dt_s`` caller seconds (``dt_s * time_scale`` simulated seconds)."""
+         time_scale: float = 1.0, setpoint_w: Optional[float] = None,
+         discharge_min_soc_pct: float = DISCHARGE_MIN_SOC_PCT) -> PowerState:
+    """Advance one tick of ``dt_s`` caller seconds (``dt_s * time_scale`` simulated seconds); ``setpoint_w``: see
+    the module docstring (bidirectional)."""
     if dt_s < 0 or time_scale <= 0:
         raise ValueError("dt_s must be >= 0 and time_scale > 0")
     for rate in (ramp_up_w_per_s, ramp_down_w_per_s):
@@ -104,7 +131,15 @@ def step(state: PowerState, *, dt_s: float, ev: EvModel, target_soc_pct: float,
 
     min_w = ev_min_power_w(ev, v_phase, n)
     suspension: Optional[Suspension] = None
-    if accept_w <= 0 or accept_w < min_w:
+    if setpoint_w is not None:
+        offer_w = min(offer_w, max(0.0, setpoint_w))
+    if setpoint_w is not None and setpoint_w < 0:
+        ev_max_w = min(ev.max_ac_w, ev.max_current_a * v_phase * n)
+        if state.soc_pct <= discharge_min_soc_pct:
+            suspension, target_w = "SuspendedEV", 0.0
+        else:
+            target_w = -min(-setpoint_w, evse_max_w, ev_max_w)
+    elif accept_w <= 0 or accept_w < min_w:
         suspension, target_w = "SuspendedEV", 0.0
     elif offer_w <= 0 or offer_w < min_w:
         suspension, target_w = "SuspendedEVSE", 0.0
@@ -112,16 +147,20 @@ def step(state: PowerState, *, dt_s: float, ev: EvModel, target_soc_pct: float,
         target_w = min(offer_w, accept_w)
 
     power_w = _ramp(state.power_w, target_w, sim_dt_s, ramp_up_w_per_s, ramp_down_w_per_s)
-    delta_wh = (state.power_w + power_w) / 2 * sim_dt_s / 3600.0
-    soc_pct = min(100.0, state.soc_pct + delta_wh * ev.efficiency / (ev.capacity_kwh * 10.0))
-    return replace(state, soc_pct=soc_pct, power_w=power_w, energy_wh=state.energy_wh + delta_wh,
-                   target_w=target_w, suspension=suspension)
+    import_wh, export_wh = _areas(state.power_w, power_w, sim_dt_s)
+    soc_pct = state.soc_pct + import_wh * ev.efficiency / (ev.capacity_kwh * 10.0)
+    if export_wh:
+        soc_pct -= export_wh / ev.efficiency / (ev.capacity_kwh * 10.0)
+    soc_pct = max(0.0, min(100.0, soc_pct))
+    return replace(state, soc_pct=soc_pct, power_w=power_w, energy_wh=state.energy_wh + import_wh,
+                   energy_export_wh=state.energy_export_wh + export_wh, target_w=target_w, suspension=suspension)
 
 
 @dataclass(frozen=True)
 class MeterReading:
     """Values for the 1.6 measurands Power.Active.Import (W), Current.Import (A, per phase),
-    Voltage (V), Energy.Active.Import.Register (Wh) and SoC (Percent)."""
+    Voltage (V), Energy.Active.Import.Register (Wh) and SoC (Percent); the ``*_export_*`` ones are the 2.1
+    discharge counterparts (Power.Active.Export, Current.Export, Energy.Active.Export.Register), all >= 0."""
 
     power_active_import_w: float
     current_import_a: float          # per phase, balanced over ``phases``
@@ -129,17 +168,24 @@ class MeterReading:
     energy_active_import_register_wh: float
     soc_pct: float
     phases: int
+    power_active_export_w: float = 0.0
+    current_export_a: float = 0.0
+    energy_active_export_register_wh: float = 0.0
 
 
 def meter_reading(state: PowerState, ev: EvModel, supply: AcSupply) -> MeterReading:
     n = supply.phases_used(ev)
+    import_w, export_w = max(0.0, state.power_w), max(0.0, -state.power_w)
     return MeterReading(
-        power_active_import_w=state.power_w,
-        current_import_a=watts_to_amps(state.power_w, supply, n),
+        power_active_import_w=import_w,
+        current_import_a=watts_to_amps(import_w, supply, n),
         voltage_v=supply.voltage_v,
         energy_active_import_register_wh=state.energy_wh,
         soc_pct=state.soc_pct,
         phases=n,
+        power_active_export_w=export_w,
+        current_export_a=watts_to_amps(export_w, supply, n),
+        energy_active_export_register_wh=state.energy_export_wh,
     )
 
 

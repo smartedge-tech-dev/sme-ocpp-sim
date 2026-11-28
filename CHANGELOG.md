@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The OCPP 2.1 JSON schemas (CC BY-ND 4.0, vendored unmodified under `sme_ocpp_sim/schemas/`), the generator
   `scripts/gen_v21_models.py` for the models, and `tests/test_v21.py`. Documented in en / ja / zh.
 
+- OCPP 2.1 smart charging and V2X basics (v0.3.1, 2.1-M2): purposes PriorityCharging and LocalGeneration, Dynamic
+  profiles with UpdateDynamicSchedule and PullDynamicScheduleUpdate (the Mini CSMS answers with the values it sent),
+  `operationMode` with discharge limits and setpoints, the new GetCompositeSchedule period fields, `limitAtSoC`,
+  `maxOfflineDuration` / `invalidAfterOfflineDuration`, UsePriorityCharging with NotifyPriorityCharging, the
+  `OperationModeChanged` TransactionEvent and the V2XChargingCtrlr variables. The power model discharges (negative
+  power, SoC going down) with separate import and export energy registers; the Web UI shows discharging and the
+  operation mode. 1.6 and 2.0.1 behaviour is unchanged.
+
 ### Changed
 
 - Internal: the v201 models, codec and adapter are injected into the station through class attributes, so that 2.1
