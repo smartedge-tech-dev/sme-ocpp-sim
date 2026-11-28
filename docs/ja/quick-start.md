@@ -14,7 +14,7 @@ OCPP 1.6J に対応した CSMS であれば何でも使えます。
 保存もそのファイルに書き戻します。使用中の設定ファイルは起動時のコンソールログ（`config file: ...`）に表示されます。
 
 ```powershell
-.\sme-ocpp-sim-v0.2.2-windows.exe -c my-site.yaml
+.\sme-ocpp-sim-v0.3.0-windows.exe -c my-site.yaml
 ```
 
 ## pip
