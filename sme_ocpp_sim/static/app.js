@@ -1246,6 +1246,34 @@ for (const id of ["fCharger", "fDir"]) $(id).addEventListener("change", renderFr
 $("fAction").addEventListener("input", renderFrames);
 // Clear drops the frames kept client side too (newer ones still arrive; Details refetches older ones).
 $("fClear").addEventListener("click", () => { S.frames = []; S.frameSet.clear(); $("frameRows").replaceChildren(); });
+
+// Trace recording (v0.3 M5): GET /api/trace, POST /api/trace/start|stop, GET /api/trace/files/{name}.
+let traceOn = false;
+function traceText(st) {
+  return t(st.recording ? "trace.recording" : "trace.last", { path: st.path, frames: st.frames || 0 });
+}
+function showTrace(st) {
+  traceOn = !!(st && st.recording);
+  const b = $("fTrace");
+  b.textContent = t(traceOn ? "trace.stop" : "trace.start");
+  b.classList.toggle("danger", traceOn);
+  b.title = st && st.path ? traceText(st) : "";
+  const name = st && st.path && !traceOn ? st.path.split(/[\\/]/).pop() : null;
+  const a = $("fTraceFile");
+  a.hidden = !name;
+  if (name) { a.href = `/api/trace/files/${encodeURIComponent(name)}`; a.download = name; }
+}
+async function refreshTrace() {
+  try { showTrace(await api("GET", "/api/trace")); } catch (e) { /* keep the button as it is */ }
+}
+$("fTrace").addEventListener("click", async () => {
+  try {
+    const st = await api("POST", traceOn ? "/api/trace/stop" : "/api/trace/start", {});
+    showTrace(st);
+    Shell.toast(traceText(st), "ok");
+  } catch (e) { fail(e); refreshTrace(); }
+});
+refreshTrace();
 $("tagValue").addEventListener("input", checkTag);
 $("keysBox").addEventListener("toggle", () => { if ($("keysBox").open) loadKeys(); });
 $("varsBox").addEventListener("toggle", () => { if ($("varsBox").open) loadKeys(); });
