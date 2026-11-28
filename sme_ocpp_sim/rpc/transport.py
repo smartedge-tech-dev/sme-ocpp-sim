@@ -226,9 +226,19 @@ def _ssl_cause(e: BaseException) -> Optional[ssl.SSLError]:
 def _lost_after_tls(e: BaseException) -> bool:
     """The server closed the connection after the TLS handshake, before any HTTP upgrade response (no SSL error
     was surfaced): with TLS 1.3 a server that refuses (or misses) the client certificate may just close. A narrow
-    heuristic, applied only over TLS (Windows surfaces nothing else for a refused or missing certificate)."""
+    heuristic, applied only over TLS (Windows surfaces nothing else for a refused or missing certificate); without
+    a client certificate only when no password is configured either (see :func:`_lost_after_tls_kind`)."""
     cur: Optional[BaseException] = e.__cause__ or e.__context__
     return isinstance(e, InvalidMessage) and isinstance(cur, (EOFError, ConnectionResetError))
+
+
+def _lost_after_tls_kind(cfg: TransportConfig) -> str:
+    """Kind of a connection closed right after the TLS handshake: a refused client certificate when one is
+    configured; "probably required" when the charger has neither a certificate nor a password (it can only be a
+    profile 3 CSMS refusing it); otherwise (profile 2) nothing points at a certificate: a plain handshake error."""
+    if cfg.client_cert_file is not None:
+        return "client_cert_rejected"
+    return "client_cert_required" if cfg.password is None else "handshake"
 
 
 def classify_ssl(e: ssl.SSLError, cfg: TransportConfig) -> HandshakeError:
@@ -275,7 +285,7 @@ async def open_connection(cfg: TransportConfig) -> ClientConnection:
         if cause is not None:
             raise classify_ssl(cause, cfg) from None
         if cfg.is_tls and _lost_after_tls(e):
-            raise HandshakeError(_cert_kind(cfg), str(e)) from None
+            raise HandshakeError(_lost_after_tls_kind(cfg), str(e)) from None
         raise HandshakeError("handshake", str(e)) from None
     except ssl.SSLError as e:
         raise classify_ssl(e, cfg) from None

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import socket
+import sys
 from http import HTTPStatus
 
 import pytest
@@ -174,9 +175,11 @@ def test_profile_3_no_client_certificate_is_rejected(tmp_path):
     pki, server = _p3(tmp_path)
     with pytest.raises(HandshakeError) as ei:
         asyncio.run(_try({"ca_file": str(pki.ca_file), "open_timeout": 5}, **server))
-    # Without a configured client certificate the CSMS refusal is reported as "certificate probably required"
-    # (how the refusal surfaces depends on the platform: an alert, a close after the handshake, a reset).
-    assert ei.value.kind in ("client_cert_required", "tls", "handshake", "network")
+    # Without a configured client certificate the refusal is never "certificate rejected". Windows may surface
+    # only a reset (network); elsewhere the TLS alert / close after the handshake means "probably required".
+    assert ei.value.kind != "client_cert_rejected"
+    if sys.platform != "win32":
+        assert ei.value.kind == "client_cert_required"
 
 
 def test_profile_3_client_certificate_of_another_ca_is_rejected(tmp_path):
@@ -251,18 +254,22 @@ def _lost_after_tls_error():
         return e
 
 
-@pytest.mark.parametrize("cert, kind", [(None, "client_cert_required"), ("c.pem", "client_cert_rejected")])
-def test_connection_lost_after_tls_handshake(monkeypatch, cert, kind):
+@pytest.mark.parametrize("cert, password, kind", [
+    (None, None, "client_cert_required"), ("c.pem", None, "client_cert_rejected"),
+    (None, "pw", "handshake"),  # profile 2: nothing points at a client certificate
+])
+def test_connection_lost_after_tls_handshake(monkeypatch, cert, password, kind):
     import sme_ocpp_sim.rpc.transport as tr
 
     async def fake_connect(*_a, **_kw):
         raise _lost_after_tls_error()
     monkeypatch.setattr(tr, "connect", fake_connect)
     monkeypatch.setattr(tr, "make_ssl_context", lambda cfg: None)
-    cfg = TransportConfig("wss://h/o", "A", client_cert_file=cert, client_key_file=cert and "c.key")
+    cfg = TransportConfig("wss://h/o", "A", password=password, client_cert_file=cert,
+                          client_key_file=cert and "c.key")
     with pytest.raises(HandshakeError) as ei:
         asyncio.run(open_connection(cfg))
-    assert ei.value.kind == kind and "TLS" in str(ei.value)
+    assert ei.value.kind == kind
     # Over ws:// the same close is a plain handshake failure.
     with pytest.raises(HandshakeError) as ei:
         asyncio.run(open_connection(TransportConfig("ws://h/o", "A")))

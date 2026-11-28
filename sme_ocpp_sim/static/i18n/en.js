@@ -28,6 +28,7 @@ Shell.addStrings("en", {
   "conn.held": "Disconnected",
   "conn.gave_up": "Gave up",
   "conn.gave_up.title": "Gave up after {attempts} attempts (last: {kind}); press Connect to retry",
+  "conn.gave_up.title_boot": "Gave up after {attempts} boots (last: {kind}); press Connect to retry",
   "status.Available": "Available",
   "status.Preparing": "Preparing",
   "status.Charging": "Charging",

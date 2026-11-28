@@ -301,11 +301,13 @@ class OcppEngine(BaseEngine):
         if exc is not None:
             self.log_event("error", f"charger {cid} task crashed: {type(exc).__name__}: {exc}")
         elif run.runtime.gave_up is not None:
-            # A retry limit was hit: the loop stays stopped until the operator connects again (connect() needs
-            # the run gone from the registry).
+            # A retry limit was hit: hold the charger like an operator disconnect, so it stays stopped (also
+            # across reloads and their rollback) until the operator connects it again.
             g = run.runtime.gave_up
             self._runs.pop(cid, None)
-            self.log_event("warning", f"charger {cid} gave up ({g['reason']}) after {g['attempts']} attempts; "
+            self._held.add(cid)
+            unit = "boots" if g["reason"] == "boot_max_retries" else "attempts"
+            self.log_event("warning", f"charger {cid} gave up ({g['reason']}) after {g['attempts']} {unit}; "
                                       f"last: {g.get('last_kind')}")
             self.wake()
         else:
@@ -508,6 +510,7 @@ class OcppEngine(BaseEngine):
                 raise KeyError(cid)
             self._held.add(cid)
             was = cid in self._runs
+            self.state[cid].runtime.gave_up = None  # an operator hold now, no longer a give-up
             # Halting under the lock (up to stop_grace_s) delays reloads and the push tick briefly, but a reload
             # can then never relaunch the charger between the hold and the stop.
             await self._halt([cid])

@@ -186,6 +186,7 @@ class ChargerRuntime:
         """Serve one connection; returns True when it ended because of a Reset."""
         self._reset_done.clear()
         self._abort.clear()
+        before = self.last_error  # an error left from an earlier attempt is not this session's
         self.registration = None
         self._accepted_this_session = False
         rpc = RpcConnection(ws, self.adapter.handlers(self.station), error_codes=self.adapter.error_codes,
@@ -202,7 +203,7 @@ class ChargerRuntime:
         finally:
             rx_error = await self._close_session(rpc, rx, waits)
         # An abort that recorded no error of its own (the outbox worker lost the connection) is a disconnect.
-        aborted = self._abort.is_set() and self.last_error is not None
+        aborted = self._abort.is_set() and self.last_error is not None and self.last_error is not before
         if not self._reset_done.is_set() and not stop.is_set() and not aborted:
             self.last_error = {"kind": "disconnected", "message": self._close_text(ws, rx_error)}
         return self._reset_done.is_set()
@@ -239,10 +240,11 @@ class ChargerRuntime:
 
     def _give_up(self, reason: str, attempts: int, last_kind: Optional[str]) -> None:
         self.gave_up = {"reason": reason, "attempts": attempts, "last_kind": last_kind}
-        limit = "reconnect.max_retries" if reason == "max_retries" else "boot_max_retries"
+        limit, unit = (("reconnect.max_retries", "attempts") if reason == "max_retries"
+                       else ("boot_max_retries", "boots"))
         self.last_error = {"kind": "retries_exhausted",
-                           "message": f"gave up after {attempts} attempts ({limit}); last: {last_kind}"}
-        log.warning("%s: gave up after %d attempts (%s, last %s)", self.cfg.id, attempts, reason, last_kind)
+                           "message": f"gave up after {attempts} {unit} ({limit}); last: {last_kind}"}
+        log.warning("%s: gave up after %d %s (%s, last %s)", self.cfg.id, attempts, unit, reason, last_kind)
 
     @staticmethod
     def _close_text(ws: Any, rx_error: Optional[str]) -> str:

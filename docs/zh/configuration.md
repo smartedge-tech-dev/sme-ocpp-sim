@@ -116,7 +116,7 @@ HTTP API 不会返回密码，而是显示为 `********`。带着掩码原样发
 | `auth_mode` | `local_then_csms` | `local_only`（仅 `id_tags`）、`csms_only`（始终 Authorize）、`local_then_csms`（先查 `id_tags`，再 Authorize）、`accept_all` |
 | `id_tags` | `[]` | 本地接受的 ID 标签（每个最多 20 个字符，不可重复） |
 | `boot_retry_s` | `60.0` | CSMS 以 interval 0 应答 Pending / Rejected 时的 Boot 重试间隔 |
-| `boot_max_retries` | `null` | 非 Accepted 的 BootNotification 应答（Pending、Rejected 或无应答，跨重连累计直到 Accepted）的上限。超过后关闭连接，并像 `reconnect.max_retries` 一样停止。`null` = 不限（符合 OCPP）；TriggerMessage 触发的 BootNotification 不计入 |
+| `boot_max_retries` | `null` | 非 Accepted 的 BootNotification 应答（Pending、Rejected 或无应答，跨重连累计直到 Accepted）的上限。超过后关闭连接，并像 `reconnect.max_retries` 一样停止。`null` = 不限（符合 OCPP）；TriggerMessage 触发的 BootNotification 不计入。若 CSMS 反复应答 Pending 后断开连接，则同时计入两个上限（每次 Boot、每次断开） |
 | `max_power_w` | `6000.0` | 每个 connector 的硬件最大功率 |
 | `voltage_v` | `200.0` | 供电标称电压 |
 | `phases` | `1` | 供电相数（1、2 或 3） |

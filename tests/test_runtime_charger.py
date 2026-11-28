@@ -611,3 +611,41 @@ def test_boot_max_retries_counts_pending_and_resets_on_accepted():
         assert rt.gave_up is None and rt._boot_failures == 0
     # One Pending is within boot_max_retries=1; the second boot is Accepted.
     _scenario(body, {"boot_statuses": ["Pending"], "retry_interval": 1}, {"boot_max_retries": 1})
+
+
+def test_boot_max_retries_pending_at_the_limit_gives_up():
+    async def main():
+        peer = CsmsPeer(hb_interval=30, boot_statuses=["Pending"] * 3, retry_interval=1)
+        await peer.start()
+        try:
+            rt = ChargerRuntime(_cfg(boot_max_retries=0), peer.url, "1.6", reconnect=FAST, call_timeout=5)
+            await asyncio.wait_for(rt.run(asyncio.Event()), 8)
+            assert rt.gave_up == {"reason": "boot_max_retries", "attempts": 1, "last_kind": "Pending"}
+            assert "1 boots" in rt.last_error["message"]
+        finally:
+            await peer.stop()
+    asyncio.run(main())
+
+
+@VERSIONS
+def test_reconnect_failures_reset_after_accepted_boot(version):
+    async def main():
+        peer = PEERS[version](hb_interval=30)
+        await peer.start()
+        try:
+            rt = ChargerRuntime(_cfg(), peer.url, version, call_timeout=5,
+                                reconnect=ReconnectConfig(min_s=0.05, max_s=0.1, jitter=0, max_retries=1))
+            stop = asyncio.Event()
+            task = asyncio.create_task(rt.run(stop))
+            for n in range(1, 4):  # more accepted-then-dropped sessions than max_retries allows failures
+                await _until(lambda: rt.online and len(peer.history) == n)
+                assert rt._failures == 0
+                rt._abort.set()  # drop the connection after the accepted boot
+                await _until(lambda: not rt.online)
+            await _until(lambda: rt.online)
+            assert rt.gave_up is None and not task.done()
+            stop.set()
+            await asyncio.wait_for(task, 3)
+        finally:
+            await peer.stop()
+    asyncio.run(main())

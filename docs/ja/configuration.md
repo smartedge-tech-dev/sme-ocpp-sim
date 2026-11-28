@@ -117,7 +117,7 @@ UI での変更はすぐに反映され（再接続するのは変更した充�
 | `auth_mode` | `local_then_csms` | `local_only`（`id_tags` のみ）、`csms_only`（常に Authorize）、`local_then_csms`（まず `id_tags`、次に Authorize）、`accept_all` |
 | `id_tags` | `[]` | ローカルで受け付ける ID タグ（各最大 20 文字、重複不可） |
 | `boot_retry_s` | `60.0` | CSMS が interval 0 で Pending / Rejected を返したときの Boot 再送間隔 |
-| `boot_max_retries` | `null` | Accepted 以外の BootNotification 応答（Pending・Rejected・無応答。Accepted まで再接続をまたいで数える）の上限。超えると接続を閉じ、`reconnect.max_retries` と同様に停止します。`null` = 無制限（OCPP どおり）。TriggerMessage による BootNotification は数えません |
+| `boot_max_retries` | `null` | Accepted 以外の BootNotification 応答（Pending・Rejected・無応答。Accepted まで再接続をまたいで数える）の上限。超えると接続を閉じ、`reconnect.max_retries` と同様に停止します。`null` = 無制限（OCPP どおり）。TriggerMessage による BootNotification は数えません。Pending を返しては接続を切る CSMS では、両方の上限に数えられます（Boot ごと・切断ごと） |
 | `max_power_w` | `6000.0` | 各コネクターのハードウェア上の最大電力 |
 | `voltage_v` | `200.0` | 電源の公称電圧 |
 | `phases` | `1` | 電源の相数（1、2、3） |
