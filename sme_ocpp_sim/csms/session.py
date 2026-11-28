@@ -64,6 +64,8 @@ class CpSession:
         self.plan: List[dict] = []   # filled by the plan runner (its live item states)
         #: 2.1: chargingProfileId -> current period values of the Dynamic profiles sent (``handlers.remember_dynamic``).
         self.dynamic_profiles: Dict[int, dict] = {}
+        #: chargingProfileId -> (evseId, purpose, stackLevel) of those profiles, to match ClearChargingProfile criteria.
+        self.dynamic_meta: Dict[int, tuple] = {}
 
     # ------------------------------------------------------------ recording (handlers)
 

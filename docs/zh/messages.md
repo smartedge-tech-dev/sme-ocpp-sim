@@ -189,10 +189,10 @@ OpenPeriodicEventStream、PullDynamicScheduleUpdate、ReportDERControl、VatNumb
 |---|---|
 | 用途 PriorityCharging、LocalGeneration | 接受（SmartChargingCtrlr.SupportedAdditionalPurposes）。交易启用优先充电期间，PriorityCharging 取代 TxProfile / TxDefaultProfile；LocalGeneration 的限值叠加到合成限值上 |
 | 类型 Dynamic（K28） | 只允许 1 个日程、1 个从 0 开始的时段，否则 `Rejected` `InvalidSchedule`。`dynUpdateTime` 在收到时设置；有 `duration` 时自最后一次更新起有效 `duration` 秒，之后改用更低一级的 profile |
-| operationMode | 按用途检查（K01.FR.111 - FR.116，reasonCode `InvalidOperationMode`）。ChargingOnly 在 `limit` 内充电；CentralSetpoint、ExternalSetpoint、CentralFrequency 跟随 `setpoint`（负值 = 放电），限制在 [`dischargeLimit`, `limit`]；Idle 为 0 W；ExternalLimits、LocalFrequency、LocalLoadBalancing 在限值内充电（不模拟频率与负荷测量）。ChargingStationExternalConstraints 的 setpoint（ExternalSetpoint）优先 |
+| operationMode | 按用途检查（K01.FR.111 - FR.116，reasonCode `InvalidOperationMode`）。ChargingOnly 在 `limit` 内充电；CentralSetpoint、ExternalSetpoint、CentralFrequency 跟随 `setpoint`（负值 = 放电），限制在 [`dischargeLimit`, `limit`]；Idle 为 0 W；ExternalLimits、LocalFrequency、LocalLoadBalancing 在限值内充电（不模拟频率与负荷测量）。ChargingStationExternalConstraints 的 setpoint（ExternalSetpoint）优先于交易侧 profile，与其模式无关（Q06.FR.21；ChargingOnly 的时段会报告为 ExternalSetpoint），只有 Idle 优先于它 |
 | GetCompositeSchedule | 时段包含 `operationMode`（ChargingOnly 时省略）、`dischargeLimit`、`setpoint`；Idle 时段不含数值 |
 | `limitAtSoC` | EV 的 SoC 不低于 `soc` 时，限值和 setpoint 以该上限封顶（未来时段也用当前 SoC） |
-| `maxOfflineDuration` | 离线超过该秒数后 profile 失效；重连时，已过期且 `invalidAfterOfflineDuration` 为 true 的被删除，其余恢复有效 |
+| `maxOfflineDuration` | 离线超过该秒数后 profile 失效；重连时，已过期且 `invalidAfterOfflineDuration` 为 true 的被删除，其余恢复有效。从未连接过的充电站视为在线（首次连接前不计离线时间） |
 | 运行模式变化 | 发送 TransactionEvent `Updated`，triggerReason `OperationModeChanged`，带 `transactionInfo.operationMode` |
 | 放电物理模型 | 放电时功率为负，最多放到 SoC 10 %，上限与 EV 的充电上限相同。Energy.Active.Import.Register 与 Energy.Active.Export.Register 都只增不减；交易放过电后，Export 测量值与 Import 测量值一起上报。Web UI 显示带符号的功率、放电电量和运行模式 |
 | V2XChargingCtrlr | `Enabled`（true，可读写；false = 不放电、不允许双向模式）、`SupportedEnergyTransferModes`、`SupportedOperationModes` |

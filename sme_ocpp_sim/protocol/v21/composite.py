@@ -19,7 +19,9 @@ Rules (OCPP 2.1 Part 2 K 3.6 "Combining charging profile purposes", K21, K27, Q 
 - ``dischargeLimit`` (<= 0) = the one closest to 0 among the leading periods, only in a mode that may discharge
   (every mode but ChargingOnly and Idle).
 - ``setpoint``: an external constraints period with operationMode ExternalSetpoint and a setpoint takes
-  precedence (K "ExternalSetpoint"; SmartChargingCtrlr.SetpointPriority is not modelled); else the transaction
+  precedence (ChargingStationExternalConstraints purpose text, Q06.FR.20 / FR.21; SmartChargingCtrlr.SetpointPriority
+  is not modelled) whatever the transaction period's mode: over a ChargingOnly transaction period it makes the
+  reported operationMode ExternalSetpoint and allows discharge (only Idle wins over it); else the transaction
   period's setpoint in CentralSetpoint / ExternalSetpoint / CentralFrequency. It is capped to [dischargeLimit,
   limit] (V2X.06 / V2X.07) and to >= 0 in a mode that may not discharge.
 - Idle (Q10): limit, dischargeLimit and setpoint are absent from the period; the power model gets setpoint 0.
@@ -108,7 +110,7 @@ def _lead(ctx: _Ctx, profiles: Sequence[ChargingProfile], t: datetime, rel: date
           evse_id: int) -> Optional[_Values]:
     store = ctx.store
     for profile in profiles:
-        if isinstance(store, ProfileStore21) and not store.valid_offline(profile, t):
+        if not store.valid_offline(profile, t):
             continue
         period = _period_at(profile, t, rel)
         if period is not None:
@@ -155,6 +157,8 @@ def _evse_setting(ctx: _Ctx, evse_id: int, t: datetime) -> Setting:
     ext_sp = next((x.setpoint for x in externals if x.mode is MODE.external_setpoint and x.setpoint is not None),
                   None)
     mode = tx.mode if tx else (MODE.external_setpoint if ext_sp is not None else None)
+    if ext_sp is not None and mode is MODE.charging_only:
+        mode = MODE.external_setpoint  # Q06.FR.21 / Part 2 K 3.1: the external setpoint applies whatever the Tx mode
     phases = min(x.phases for x in leads)
     if mode is MODE.idle:
         return Setting(operation_mode=mode, phases=phases, setpoint=0.0)

@@ -282,20 +282,35 @@ def remember_dynamic(session: "CpSession", action: str, payload: Any, result: An
         profile = payload.get("chargingProfile") or {}
         pid = profile.get("id")
         if profile.get("chargingProfileKind") != "Dynamic":
-            session.dynamic_profiles.pop(pid, None)  # the same id replaced by another kind
+            _forget_dynamic(session, pid)  # the same id replaced by another kind
             return
         try:
             period = profile["chargingSchedule"][0]["chargingSchedulePeriod"][0]
         except (KeyError, IndexError, TypeError):
             return
         session.dynamic_profiles[pid] = {k: period[k] for k in _UPDATE_FIELDS if k in period}
+        session.dynamic_meta[pid] = (payload.get("evseId"), profile.get("chargingProfilePurpose"),
+                                     profile.get("stackLevel"))
     elif action == "UpdateDynamicSchedule":
         pid = payload.get("chargingProfileId")
         if pid in session.dynamic_profiles:
             session.dynamic_profiles[pid].update(
                 {k: v for k, v in (payload.get("scheduleUpdate") or {}).items() if k in _UPDATE_FIELDS})
-    elif action == "ClearChargingProfile" and payload.get("chargingProfileId") is not None:
-        session.dynamic_profiles.pop(payload["chargingProfileId"], None)
+    elif action == "ClearChargingProfile":
+        if payload.get("chargingProfileId") is not None:
+            _forget_dynamic(session, payload["chargingProfileId"])
+            return
+        crit = payload.get("chargingProfileCriteria") or {}  # the criteria are ANDed; an absent one matches all
+        for pid, (evse, purpose, stack) in list(session.dynamic_meta.items()):
+            if all(want is None or want == have for want, have in
+                   ((crit.get("evseId"), evse), (crit.get("chargingProfilePurpose"), purpose),
+                    (crit.get("stackLevel"), stack))):
+                _forget_dynamic(session, pid)
+
+
+def _forget_dynamic(session: "CpSession", pid: Any) -> None:
+    session.dynamic_profiles.pop(pid, None)
+    session.dynamic_meta.pop(pid, None)
 
 
 def _pull_dynamic(session: "CpSession", p: dict) -> dict:

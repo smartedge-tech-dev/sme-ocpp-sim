@@ -135,6 +135,61 @@ def test_limit_at_soc_caps_above_the_threshold():
     assert setting_at(store, 1, NOW, transactions=TXS, soc={1: 80.0}).limit == 2000.0
 
 
+def test_external_setpoint_applies_over_a_charging_only_transaction_profile():
+    # Q06.FR.20 / FR.21: the external setpoint wins over the transaction profile whatever its mode
+    store = _store((1, _wire([{"startPeriod": 0, "limit": 7000}], tx="TX")))
+    ext, wire = charging_profile21(_wire([{"startPeriod": 0, "operationMode": "ExternalSetpoint",
+                                           "setpoint": -2500}], purpose="ChargingStationExternalConstraints",
+                                         kind="Absolute", pid=9), NOW)
+    store.install(1, ext, external=True, wire=wire)
+    s = setting_at(store, 1, NOW, transactions=TXS)
+    assert (s.setpoint, s.limit, s.operation_mode) == (-2500.0, 7000.0, MODE.external_setpoint)
+    sched = composite_schedule(store, 1, NOW, 60, transactions=TXS)
+    assert [(p.setpoint, p.operation_mode) for p in sched.periods] == [(-2500.0, MODE.external_setpoint)]
+
+
+def test_dynamic_update_is_checked_again_and_left_unchanged_when_invalid():
+    from sme_ocpp_sim.protocol.v21.profiles import UpdateRejected
+    store = _store((1, _wire([{"startPeriod": 0, "operationMode": "CentralSetpoint", "setpoint": -1000,
+                               "dischargeLimit": -2000, "limit": 5000}], kind="Dynamic", tx="TX", pid=4)))
+    args = {"modes": ALL_MODES, "purposes": (), "bidirectional": True}
+    before = store.find(4)
+    for bad in ({"setpoint": -3000}, {"dischargeLimit": 100}, {"setpoint": 6000}):  # V2X.05, positive dischargeLimit
+        with pytest.raises(UpdateRejected) as exc:
+            store.update_dynamic(4, m.ChargingScheduleUpdateType.model_validate(bad), NOW, **args)
+        assert exc.value.reason == "InvalidSchedule"
+        assert store.find(4) is before
+    ip = store.update_dynamic(4, m.ChargingScheduleUpdateType(setpoint=-1500), NOW, **args)
+    assert ip.profile.schedule.periods[0].setpoint == -1500
+    with pytest.raises(UpdateRejected) as exc:  # no bidirectional modes any more (K01.FR.116)
+        store.update_dynamic(4, m.ChargingScheduleUpdateType(setpoint=-1000), NOW, **{**args, "bidirectional": False})
+    assert exc.value.reason == "InvalidOperationMode"
+
+
+def test_mini_csms_forgets_dynamic_profiles_cleared_by_criteria():
+    s = CpSession("X", "2.1", "ocpp2.1")
+
+    def put(pid, evse, stack, purpose="TxProfile"):
+        wire = _wire([{"startPeriod": 0, "limit": 3000}], kind="Dynamic", pid=pid, stack=stack, purpose=purpose)
+        remember_dynamic(s, "SetChargingProfile", {"evseId": evse, "chargingProfile": wire.model_dump(
+            mode="json", by_alias=True, exclude_none=True)}, {"status": "Accepted"})
+
+    put(1, 1, 0)
+    put(2, 1, 5)
+    put(3, 2, 5)
+    put(4, 1, 5, purpose="TxDefaultProfile")
+    clear = lambda crit, status="Accepted": remember_dynamic(  # noqa: E731
+        s, "ClearChargingProfile", {"chargingProfileCriteria": crit}, {"status": status})
+    clear({"evseId": 1}, "Unknown")
+    assert set(s.dynamic_profiles) == {1, 2, 3, 4}  # not cleared: nothing is forgotten
+    clear({"evseId": 1, "stackLevel": 5, "chargingProfilePurpose": "TxProfile"})
+    assert set(s.dynamic_profiles) == {1, 3, 4} and set(s.dynamic_meta) == {1, 3, 4}
+    clear({"chargingProfilePurpose": "TxDefaultProfile"})
+    assert set(s.dynamic_profiles) == {1, 3}
+    clear({})
+    assert not s.dynamic_profiles and not s.dynamic_meta
+
+
 def test_max_offline_duration_falls_back_and_invalid_after_offline_drops():
     v2x = _wire([{"startPeriod": 0, "operationMode": "CentralSetpoint", "setpoint": -3000}], tx="TX", stack=2, pid=2,
                 maxOfflineDuration=60, invalidAfterOfflineDuration=True)
@@ -243,6 +298,26 @@ def test_dynamic_profile_update_and_pull_round_trip():
                 bad = await _call(csms, v, "UpdateDynamicSchedule",
                                   {"chargingProfileId": 99, "scheduleUpdate": {"limit": 1}})
                 assert bad["status"] == "Rejected"
+            await _with_charger(url, "2.1", body, **METERED)
+        await _with_csms(_cfg(), with_csms)
+    asyncio.run(main())
+
+
+def test_invalid_dynamic_update_is_rejected_over_the_wire():
+    v = _validator()
+
+    async def main():
+        async def with_csms(csms, url):
+            async def body(rt):
+                tx = await _charging(rt, csms)
+                profile = _wire([{"startPeriod": 0, "operationMode": "CentralSetpoint", "setpoint": -1000,
+                                  "dischargeLimit": -2000, "limit": 5000}], kind="Dynamic", pid=8, tx=tx)
+                assert (await _call(csms, v, "SetChargingProfile", _set(1, profile)))["status"] == "Accepted"
+                res = await _call(csms, v, "UpdateDynamicSchedule",
+                                  {"chargingProfileId": 8, "scheduleUpdate": {"setpoint": -3000}})
+                assert res["status"] == "Rejected" and res["statusInfo"]["reasonCode"] == "InvalidSchedule"
+                comp = await _call(csms, v, "GetCompositeSchedule", {"evseId": 1, "duration": 60})
+                assert comp["schedule"]["chargingSchedulePeriod"][0]["setpoint"] == -1000.0
             await _with_charger(url, "2.1", body, **METERED)
         await _with_csms(_cfg(), with_csms)
     asyncio.run(main())

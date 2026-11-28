@@ -72,7 +72,8 @@ from ..v201.station import (CURRENT, CURRENT_DECIMALS, ENERGY, LOCATION, POWER, 
 from . import models as m
 from .adapter import Adapter21
 from .composite import CompositeSchedule21, Setting, composite_schedule, setting_at
-from .profiles import DYNAMIC, MODE, PRIORITY, ProfileStore21, charging_profile21, reject_reason_21
+from .profiles import (DYNAMIC, MODE, PRIORITY, ProfileStore21, UpdateRejected, charging_profile21,
+                       reject_reason_21)
 
 log = logging.getLogger(__name__)
 
@@ -304,20 +305,15 @@ class Station21(Station201):
         s = self._setting(e)
         return 0.0 if s.operation_mode is MODE.idle else s.limit
 
-    def _advance(self, e: _Evse) -> None:
-        now = self.host.monotonic()
-        if e.pw is not None and not self.host.paused:
-            dt = max(0.0, now - e.last_mono) if e.last_mono is not None else 0.0
-            s = self._setting(e)
-            setpoint = s.setpoint
-            if setpoint is not None and setpoint < 0 and not self._bidirectional():
-                setpoint = 0.0
-            if setpoint is None:
-                e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle)
-            else:
-                e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle, setpoint_w=setpoint)
-            e.meter_wh = e.pw.energy_wh
-        e.last_mono = now
+    def _step_power(self, e: _Evse, dt: float) -> None:
+        s = self._setting(e)
+        setpoint = s.setpoint
+        if setpoint is not None and setpoint < 0 and not self._bidirectional():
+            setpoint = 0.0
+        if setpoint is None:
+            e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle)
+        else:
+            e.pw = self.host.step_power(e.pw, dt, s.limit, e.vehicle, setpoint_w=setpoint)
 
     def tick(self) -> None:
         super().tick()
@@ -413,10 +409,13 @@ class Station21(Station201):
     # ------------------------------------------------------------------ K28 dynamic profiles
 
     def _apply_update(self, profile_id: int, update: m.ChargingScheduleUpdateType) -> None:
-        """K28.FR.06 / FR.08 / FR.09; ``KeyError`` / ``ValueError`` from :meth:`ProfileStore21.update_dynamic`."""
+        """K28.FR.06 / FR.08 / FR.09; ``KeyError`` / ``ValueError`` / ``UpdateRejected`` from
+        :meth:`ProfileStore21.update_dynamic` (the profile is left unchanged then)."""
         self.settle()
         now = self.host.clock()
-        ip = self.profiles.update_dynamic(profile_id, update, now)
+        ip = self.profiles.update_dynamic(profile_id, update, now, modes=self.dm.list_value(V2X_OPERATION_MODES),
+                                          purposes=self.dm.list_value(SC_ADDITIONAL_PURPOSES),
+                                          bidirectional=self._bidirectional())
         interval = getattr(ip.profile, "dyn_update_interval", None)
         if interval:
             self._pull_due[profile_id] = now + timedelta(seconds=interval)
@@ -429,6 +428,8 @@ class Station21(Station201):
             return R(status=ChargingProfileStatusEnumType.rejected, status_info=self._info(REASON_NOT_FOUND))
         except ValueError:  # K28.FR.11
             return R(status=ChargingProfileStatusEnumType.rejected, status_info=self._info(REASON_INVALID))
+        except UpdateRejected as exc:  # the merged period is invalid (V2X.05, K01.FR.111 ...)
+            return R(status=ChargingProfileStatusEnumType.rejected, status_info=self._info(exc.reason))
         self.host.after_reply(self.tick)
         return R(status=ChargingProfileStatusEnumType.accepted)
 
@@ -436,11 +437,17 @@ class Station21(Station201):
         """K28.FR.10: a PullDynamicScheduleUpdate per due Dynamic profile with a dynUpdateInterval."""
         if not self.host.online:
             return
+        # K28.FR.10 does not require a transaction: a Dynamic profile is pulled while it exists and is in its validity.
+        dynamic = {ip.profile.profile_id for ip in self.profiles.profiles() if ip.profile.kind is DYNAMIC}
+        for stale in set(self._pull_due) - dynamic:  # replaced by another kind, cleared or dropped meanwhile
+            del self._pull_due[stale]
         for ip in self.profiles.profiles():
             p = ip.profile
             interval = getattr(p, "dyn_update_interval", None)
             if p.kind is not DYNAMIC or not interval or interval <= 0 or p.profile_id in self._pulling:
                 continue
+            if (p.valid_from and now < p.valid_from) or (p.valid_to and now >= p.valid_to):
+                continue  # outside validFrom / validTo the profile does not apply: nothing to update
             due = self._pull_due.get(p.profile_id) or p.dyn_update_time + timedelta(seconds=interval)
             if now < due:
                 continue
@@ -459,8 +466,11 @@ class Station21(Station201):
             return
         try:
             self._apply_update(profile_id, res.schedule_update)
-        except (KeyError, ValueError):  # replaced or cleared meanwhile
+        except (KeyError, ValueError, UpdateRejected):  # replaced or cleared meanwhile, or the update is invalid
             return
+        # Runs in a session task on the same event loop as the CALL handlers: settle() / tick() are synchronous, so
+        # nothing interleaves with them and they are as safe here as in a handler (the shell cancels the task with
+        # the session).
         self.tick()
 
     # ------------------------------------------------------------------ K21 / K22 priority charging
@@ -513,6 +523,7 @@ class Station21(Station201):
 
     def on_session_ended(self) -> None:
         super().on_session_ended()
+        self._pulling.clear()  # the session tasks (and so the in-flight pulls) are cancelled
         self.profiles.go_offline(self.host.clock())
 
     async def on_online(self) -> None:
@@ -546,5 +557,4 @@ def composite_schedule_type21(sched: CompositeSchedule21, models: Any = m) -> m.
 
 
 def _wire(attr: str) -> str:
-
     return m.ReportDERControlRequest.model_fields[attr].alias or attr

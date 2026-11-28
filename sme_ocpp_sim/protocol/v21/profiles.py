@@ -42,7 +42,7 @@ from . import models as m
 
 __all__ = ["BIDIRECTIONAL_MODES", "DISCHARGE_MODES", "DYNAMIC", "LOCAL_GENERATION", "MODE", "PRIORITY",
            "REASON_INVALID_OPERATION_MODE", "REASON_INVALID_SCHEDULE", "REASON_PHASE_CONFLICT", "ChargingProfile21",
-           "ChargingSchedule21", "ProfileStore21", "SchedulePeriod21", "charging_profile21", "mode_of",
+           "ChargingSchedule21", "ProfileStore21", "SchedulePeriod21", "UpdateRejected", "charging_profile21", "mode_of",
            "reject_reason_21"]
 
 MODE = m.OperationModeEnumType
@@ -184,6 +184,15 @@ def reject_reason_21(profile: ChargingProfile21, *, modes: Collection[str], purp
     return None
 
 
+class UpdateRejected(Exception):
+    """A dynamic-schedule update would make the profile invalid; ``reason`` is the reasonCode (K28.FR.11 is a
+    ``ValueError`` instead: the profile is not Dynamic)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class ProfileStore21(ProfileStore):
     """The 2.0.1 store plus the offline state of ``maxOfflineDuration`` and dynamic-schedule updates."""
 
@@ -221,10 +230,14 @@ class ProfileStore21(ProfileStore):
         return next((ip for ip in self._installed if ip.profile.profile_id == profile_id
                      and ip.profile.purpose is not ext), None)
 
-    def update_dynamic(self, profile_id: int, update: m.ChargingScheduleUpdateType, now: datetime) -> InstalledProfile:
+    def update_dynamic(self, profile_id: int, update: m.ChargingScheduleUpdateType, now: datetime, *,
+                       modes: Optional[Collection[str]] = None, purposes: Collection[str] = (),
+                       bidirectional: bool = True) -> InstalledProfile:
         """Apply a ChargingScheduleUpdateType to the Dynamic profile ``profile_id`` (K28.FR.06 / FR.08 / FR.09):
         the values present replace those of its one period, absent ones are kept; ``dynUpdateTime`` = ``now``.
-        ``KeyError`` when there is no such profile, ``ValueError`` when it is not Dynamic."""
+        ``KeyError`` when there is no such profile, ``ValueError`` when it is not Dynamic. With ``modes`` the merged
+        profile is checked again as :func:`reject_reason_21` does (same arguments); ``UpdateRejected`` and the
+        profile stays unchanged when it no longer passes."""
         ip = self.find(profile_id)
         if ip is None:
             raise KeyError(profile_id)
@@ -236,6 +249,10 @@ class ProfileStore21(ProfileStore):
         period = replace(sched.periods[0], **fields)
         profile = replace(ip.profile, schedule=replace(sched, periods=(period,), start_schedule=now),
                           dyn_update_time=now)
+        if modes is not None:
+            reason = reject_reason_21(profile, modes=modes, purposes=purposes, bidirectional=bidirectional)
+            if reason is not None:
+                raise UpdateRejected(reason)
         wire = ip.wire
         if wire is not None:
             ws = wire.charging_schedule[0]

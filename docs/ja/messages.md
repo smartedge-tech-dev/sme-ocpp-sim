@@ -201,10 +201,10 @@ OCPP 2.1 のスマート充電（K）と双方向電力伝送（Q）の基本部
 |---|---|
 | 目的 PriorityCharging、LocalGeneration | 受け付けます（SmartChargingCtrlr.SupportedAdditionalPurposes）。PriorityCharging はトランザクションで優先充電が有効な間 TxProfile / TxDefaultProfile に代わって適用され、LocalGeneration の制限値は合成後の制限値に加算されます |
 | 種別 Dynamic（K28） | スケジュール 1 つ・開始 0 の期間 1 つのみ。それ以外は `Rejected` `InvalidSchedule`。`dynUpdateTime` は受信時に設定され、`duration` があれば最後の更新から `duration` 秒だけ有効で、その後は下位のプロファイルが適用されます |
-| operationMode | 目的ごとに検査します（K01.FR.111〜FR.116、reasonCode `InvalidOperationMode`）。ChargingOnly は `limit` 内で充電、CentralSetpoint・ExternalSetpoint・CentralFrequency は `setpoint`（負 = 放電）に従い [`dischargeLimit`, `limit`] に制限、Idle は 0 W、ExternalLimits・LocalFrequency・LocalLoadBalancing は制限内で充電します（周波数や負荷の計測はシミュレートしません）。ChargingStationExternalConstraints の setpoint（ExternalSetpoint）が優先されます |
+| operationMode | 目的ごとに検査します（K01.FR.111〜FR.116、reasonCode `InvalidOperationMode`）。ChargingOnly は `limit` 内で充電、CentralSetpoint・ExternalSetpoint・CentralFrequency は `setpoint`（負 = 放電）に従い [`dischargeLimit`, `limit`] に制限、Idle は 0 W、ExternalLimits・LocalFrequency・LocalLoadBalancing は制限内で充電します（周波数や負荷の計測はシミュレートしません）。ChargingStationExternalConstraints の setpoint（ExternalSetpoint）は、トランザクション側のモードに関わらず優先されます（Q06.FR.21。ChargingOnly の期間では operationMode が ExternalSetpoint として報告されます）。Idle だけはこれに優先します |
 | GetCompositeSchedule | 期間に `operationMode`（ChargingOnly は省略）、`dischargeLimit`、`setpoint` を含めます。Idle の期間は値を持ちません |
 | `limitAtSoC` | EV の SoC が `soc` 以上の間、制限値と setpoint を上限で抑えます（将来の期間にも現在の SoC を使用） |
-| `maxOfflineDuration` | オフラインがその秒数を超えるとプロファイルは無効になります。再接続時、期限切れで `invalidAfterOfflineDuration` のものは削除し、それ以外は再び有効になります |
+| `maxOfflineDuration` | オフラインがその秒数を超えるとプロファイルは無効になります。再接続時、期限切れで `invalidAfterOfflineDuration` のものは削除し、それ以外は再び有効になります。一度も接続していないステーションはオンラインとみなします（初回接続前はオフライン時間が進みません） |
 | 動作モードの変化 | triggerReason `OperationModeChanged` と `transactionInfo.operationMode` を持つ TransactionEvent `Updated` |
 | 放電の物理モデル | 放電中の電力は負の値で、SoC 10 % まで、EV の充電上限と同じ値を上限に放電します。Energy.Active.Import.Register と Energy.Active.Export.Register はどちらも増加のみ。放電したトランザクションでは Export の測定値を Import の測定値と並べて報告します。Web UI は符号付きの電力、放電量、動作モードを表示します |
 | V2XChargingCtrlr | `Enabled`（true、読み書き可。false = 放電と双方向モードを無効化）、`SupportedEnergyTransferModes`、`SupportedOperationModes` |

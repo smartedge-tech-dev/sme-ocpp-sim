@@ -874,9 +874,13 @@ class Station201(VersionStation):
         now = self.host.monotonic()
         if e.pw is not None and not self.host.paused:  # paused: frozen, the interval just restarts
             dt = max(0.0, now - e.last_mono) if e.last_mono is not None else 0.0
-            e.pw = self.host.step_power(e.pw, dt, self._limit_w(e), e.vehicle)
+            self._step_power(e, dt)
             e.meter_wh = e.pw.energy_wh
         e.last_mono = now
+
+    def _step_power(self, e: _Evse, dt: float) -> None:
+        """Step the power model of ``e`` by ``dt`` s with what applies now (2.1 adds the setpoint)."""
+        e.pw = self.host.step_power(e.pw, dt, self._limit_w(e), e.vehicle)
 
     def settle(self) -> None:
         for e in self.evses.values():
