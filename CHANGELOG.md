@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-28
+
 ### Added
 
 - Retry limits: `csms_defaults.reconnect.max_retries` (consecutive failed connections) and the charger field

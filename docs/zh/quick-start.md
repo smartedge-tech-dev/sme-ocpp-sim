@@ -12,7 +12,7 @@ OCPP 1.6 CSMS [SteVe](https://github.com/steve-community/steve)；任何支持 O
 写回该文件。启动时控制台日志会显示正在使用的配置文件（`config file: ...`）。
 
 ```powershell
-.\sme-ocpp-sim-v0.2.1-windows.exe -c my-site.yaml
+.\sme-ocpp-sim-v0.2.2-windows.exe -c my-site.yaml
 ```
 
 ## pip
