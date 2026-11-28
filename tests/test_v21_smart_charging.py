@@ -308,3 +308,23 @@ def test_priority_charging_round_trip():
             await _with_charger(url, "2.1", body, **METERED)
         await _with_csms(_cfg(), with_csms)
     asyncio.run(main())
+
+
+# ---------------------------------------------------------------------- 2.0.1 regression
+
+
+@pytest.mark.parametrize("change", [{"chargingProfilePurpose": "PriorityCharging"},
+                                    {"chargingProfileKind": "Dynamic"}])
+def test_a_2_0_1_station_still_rejects_2_1_profile_values(change):
+    from sme_ocpp_sim.protocol.v201 import codec as c201
+    from sme_ocpp_sim.rpc.errors import CallError
+
+    profile = {"id": 1, "stackLevel": 0, "chargingProfilePurpose": "TxDefaultProfile",
+               "chargingProfileKind": "Relative", "chargingSchedule": [
+                   {"id": 1, "chargingRateUnit": "W", "chargingSchedulePeriod": [{"startPeriod": 0, "limit": 1}]}],
+               **change}
+    with pytest.raises(CallError):
+        c201.parse("SetChargingProfile", {"evseId": 1, "chargingProfile": profile})
+    with pytest.raises(CallError) as ei:
+        c201.parse("UpdateDynamicSchedule", {"chargingProfileId": 1, "scheduleUpdate": {}})
+    assert ei.value.code == "NotImplemented"
