@@ -165,6 +165,18 @@ connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_
 
 文件格式和判定结果见[场景](scenarios.md)。
 
+## 流量生成器 { #traffic }
+
+| 方法 | 路径 | 含义 |
+|---|---|---|
+| GET | `/api/traffic` | 状态、`traffic:` 设置、计数、在充会话数、总功率、最近事件 |
+| PUT | `/api/traffic` | 替换 `traffic:` 块（重新加载；无效则 400） |
+| POST | `/api/traffic/start` | 立即启动常驻流量，不保存（无 tag 池 / 充电桩时 400） |
+| POST | `/api/traffic/stop` | 停止；其会话会停止并拔枪（未运行时 409） |
+| GET | `/api/traffic/plan?hours=&charger=&limit=&start=` | 预览计划的到达（对 seed 和开始时刻确定） |
+
+参见[流量生成器](traffic.md)。
+
 ## Mini CSMS { #mini-csms }
 
 内置 [Mini CSMS](mini-csms.md) 的路由。站点 ID 是站点连接时使用的 ID。

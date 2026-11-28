@@ -186,6 +186,18 @@ The frame log contains OCPP frames only, never HTTP headers or passwords.
 
 See [Scenarios](scenarios.md) for the file format and the verdict.
 
+## Traffic generator { #traffic }
+
+| Method | Path | Meaning |
+|---|---|---|
+| GET | `/api/traffic` | State, `traffic:` settings, counters, active sessions, total power, recent events |
+| PUT | `/api/traffic` | Replace the `traffic:` block (reload; 400 invalid) |
+| POST | `/api/traffic/start` | Start the standing traffic now, not saved (400 no tag pool / chargers) |
+| POST | `/api/traffic/stop` | Stop it; its sessions are stopped and unplugged (409 not running) |
+| GET | `/api/traffic/plan?hours=&charger=&limit=&start=` | Preview the planned arrivals (deterministic for a seed and start) |
+
+See [Traffic generator](traffic.md).
+
 ## Mini CSMS { #mini-csms }
 
 Routes of the built-in [Mini CSMS](mini-csms.md). Station ids are the ids the stations connected with.

@@ -52,7 +52,10 @@ def test_model_errors_name_the_position():
         {"expect": {"state": {"online": True}}, "id_tag": "x"}]}]))
     assert "unknown matcher operator" in _err(_sc([{"charger": "A", "steps": [
         {"expect": {"frame": {"payload": {"a": {"eq": 1}}}}}]}]))
-    assert "generator tracks" in _err(_sc([{"charger": "A", "generate": {}, "steps": [{"do": "plug"}]}]))
+    assert "takes no steps" in _err(_sc([{"charger": "A", "generate": {}, "steps": [{"do": "plug"}]}]))
+    assert "until: required" in _err(_sc([{"charger": "A", "generate": {"probability": 0.5}}]))
+    assert "generate: probability" in _err(_sc([{"charger": "A", "generate": {"probability": 2}}], until="+1h"))
+    assert "not allowed" in _err(_sc([{"charger": "A", "generate": {"chargers": "*"}}], until="+1h"))
     assert "format" in _err({"format": "x", "name": "n", "tracks": []})
     assert "YAML" in _err("format: [")
     assert "charger / for_each" in _err(_sc([{"steps": [{"do": "plug"}]}]))

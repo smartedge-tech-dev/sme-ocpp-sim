@@ -158,7 +158,7 @@ The web UI has no scenario panel yet; it shows the scenario's `log` lines and it
 
 ## Limits
 
-- Generator tracks (`generate:`, the traffic generator) come with v0.3 M4; `seed` is only recorded until then.
+- Generator tracks (`generate:` instead of `steps`, needs `until`): see [Traffic generator](traffic.md#scenarios); `seed` seeds them.
 - `send` injects charger → CSMS CALLs; CSMS-side steps are `await_csms` (or the Mini CSMS API).
 - The trace file is the current frame log format (written while the run goes); the versioned trace format comes
   later.

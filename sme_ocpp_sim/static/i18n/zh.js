@@ -10,6 +10,7 @@ Shell.addStrings("zh", {
   "chargers.select_all": "全选",
   "chargers.count": "{n} 台",
   "chargers.count_online": "{online} / {n} 台在线",
+  "chargers.traffic": "流量生成：{active} 个会话，{kw} kW",
   "col.id": "ID",
   "col.conn": "连接",
   "col.version": "OCPP",

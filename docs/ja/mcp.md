@@ -56,6 +56,10 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `get_scenario_status` | `GET /api/scenarios/current` | シナリオの状態と進捗 |
 | `get_scenario_result` | `GET /api/scenarios/result` | 終了したシナリオの判定結果 |
 | `abort_scenario` | `POST /api/scenarios/abort` | 実行中のシナリオを停止 |
+| `get_traffic` | `GET /api/traffic` | 常駐[トラフィック](traffic.md)の状態、カウンター、電力 |
+| `set_traffic` | `PUT /api/traffic` | `traffic:` ブロックを置き換え |
+| `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | 常駐トラフィックの起動 / 停止 |
+| `preview_traffic_plan` | `GET /api/traffic/plan` | 計画された到着（シードで決定的） |
 | `expect_frame` | `POST /api/frames/expect` | 条件と payload matcher に一致するフレームを待つ |
 
 読み取り専用のツールには `readOnlyHint`、`disconnect_charger`・`drop_connection`・`set_impairments`・`send_frame`・`mini_csms_call` には `destructiveHint`

@@ -176,6 +176,18 @@ OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーシ�
 
 ファイル形式と判定結果は[シナリオ](scenarios.md)を参照してください。
 
+## トラフィックジェネレーター { #traffic }
+
+| メソッド | パス | 意味 |
+|---|---|---|
+| GET | `/api/traffic` | 状態、`traffic:` の設定、カウンター、実行中セッション数、合計電力、最近のイベント |
+| PUT | `/api/traffic` | `traffic:` ブロックを置き換え（リロード。不正なら 400） |
+| POST | `/api/traffic/start` | 常駐トラフィックを今すぐ起動、保存しない（タグや充電器がなければ 400） |
+| POST | `/api/traffic/stop` | 停止。セッションは停止してプラグを抜く（動作中でなければ 409） |
+| GET | `/api/traffic/plan?hours=&charger=&limit=&start=` | 計画された到着のプレビュー（シードと開始時刻で決定的） |
+
+[トラフィックジェネレーター](traffic.md)を参照してください。
+
 ## Mini CSMS { #mini-csms }
 
 組み込み [Mini CSMS](mini-csms.md) のルートです。ステーション ID はステーションが接続に使った ID です。

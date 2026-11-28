@@ -56,6 +56,10 @@ id as `cid`; connector numbers start at 1.
 | `get_scenario_status` | `GET /api/scenarios/current` | Status and progress of the scenario |
 | `get_scenario_result` | `GET /api/scenarios/result` | Verdict of the finished scenario |
 | `abort_scenario` | `POST /api/scenarios/abort` | Stop the running scenario |
+| `get_traffic` | `GET /api/traffic` | Standing [traffic](traffic.md): state, counters, power |
+| `set_traffic` | `PUT /api/traffic` | Replace the `traffic:` block |
+| `start_traffic` / `stop_traffic` | `POST /api/traffic/start` / `stop` | Start / stop the standing traffic |
+| `preview_traffic_plan` | `GET /api/traffic/plan` | The planned arrivals (deterministic for a seed) |
 | `expect_frame` | `POST /api/frames/expect` | Wait for a frame matching filters and payload matchers |
 
 Read-only tools are marked `readOnlyHint`; `disconnect_charger`, `drop_connection`, `set_impairments`, `send_frame` and

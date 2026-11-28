@@ -605,6 +605,41 @@ class MiniCsmsConfig(StrictModel):
         return self
 
 
+Range = Annotated[Tuple[float, float], AfterValidator(lambda v: _range(v))]
+
+
+def _range(v: Tuple[float, float]) -> Tuple[float, float]:
+    if not 0 <= v[0] <= v[1]:
+        raise ValueError("needs [min, max] with 0 <= min <= max")
+    return v
+
+
+class TrafficConfig(StrictModel):
+    """Traffic generator (ATG, v0.3 M4; ``scenario/traffic.py``): seeded random sessions on idle connectors. The
+    same fields (all optional) are a scenario's ``generate:`` block."""
+    enabled: bool = False
+    #: Seeds the plan (arrivals, durations, tags) and the vehicle streams of every charger (``vehicle_seed``).
+    seed: int = 0
+    chargers: Union[Literal["*"], List[str]] = "*"
+    interval_s: float = Field(300.0, gt=0, le=86400)
+    probability: float = Field(0.2, ge=0, le=1)
+    hourly_weights: Optional[List[Annotated[float, Field(ge=0)]]] = Field(None, min_length=24, max_length=24)
+    auth_order: Literal["plug_first", "tag_first"] = "plug_first"
+    stop_after: Literal["duration", "soc_target", "first"] = "first"
+    duration_s: Range = (1800.0, 7200.0)
+    stop_by: Literal["swipe", "unplug", "remote_only"] = "swipe"
+    #: Longest session (sim s): the stop of ``remote_only`` without a CSMS RemoteStop, and a cap for the others.
+    max_session_s: float = Field(43200.0, gt=0)
+    idle_after_s: Range = (0.0, 900.0)
+    id_tags: Optional[List[Annotated[str, Field(min_length=1, max_length=20)]]] = Field(None, min_length=1)
+    id_tag_strategy: Literal["random", "round_robin", "affinity"] = "random"
+    affinity_prob: float = Field(0.8, ge=0, le=1)
+    #: tag -> its home chargers (``affinity``); default: one home charger per tag, drawn from the seed.
+    affinity_map: Optional[Dict[str, List[str]]] = None
+    #: vehicle id -> weight (only these are drawn); default: the whole vehicle pool with its own weights.
+    vehicles: Optional[Dict[str, Annotated[float, Field(ge=0)]]] = None
+
+
 class SimConfig(StrictModel):
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     frame_log: FrameLogConfig = Field(default_factory=FrameLogConfig)
@@ -612,6 +647,43 @@ class SimConfig(StrictModel):
     ev_models: List[EvModelConfig] = Field(default_factory=list)
     chargers: List[ChargerConfig] = Field(default_factory=list)
     mini_csms: MiniCsmsConfig = Field(default_factory=MiniCsmsConfig)
+    traffic: TrafficConfig = Field(default_factory=TrafficConfig)
+
+    @model_validator(mode="after")
+    def _check_traffic(self) -> "SimConfig":
+        try:
+            self.check_traffic(self.traffic, tags=self.traffic.enabled)
+        except ValueError as e:
+            raise ValueError(f"traffic: {e}") from None
+        return self
+
+    def traffic_chargers(self, t: TrafficConfig) -> List[str]:
+        ids = [c.id for c in self.chargers]
+        return ids if t.chargers == "*" else list(t.chargers)
+
+    def check_traffic(self, t: TrafficConfig, chargers: Optional[List[str]] = None, *, tags: bool = True) -> None:
+        """Raise ``ValueError`` when ``t`` (on ``chargers``, default its own list) does not fit this config;
+        ``tags``: also require an id tag pool on every charger (checked when the traffic runs)."""
+        known = {c.id: c for c in self.chargers}
+        targets = self.traffic_chargers(t) if chargers is None else chargers
+        unknown = sorted(set(targets) - set(known))
+        if unknown:
+            raise ValueError(f"unknown charger(s) {unknown}")
+        for cid in targets if tags else ():
+            if not (t.id_tags or known[cid].id_tags):
+                raise ValueError(f"charger {cid!r} has no id_tags and traffic.id_tags is not set")
+        if t.affinity_map:
+            bad = sorted({c for v in t.affinity_map.values() for c in v} - set(known))
+            if bad:
+                raise ValueError(f"affinity_map: unknown charger(s) {bad}")
+        if t.vehicles is not None and self.chargers:
+            self.traffic_pool(self.chargers[0], t)
+
+    def traffic_pool(self, charger: ChargerConfig, t: TrafficConfig) -> VehiclePool:
+        """The vehicles the traffic generator draws on ``charger``: its :meth:`vehicle_pool`, narrowed to
+        ``t.vehicles``."""
+        pool = self.vehicle_pool(charger)
+        return pool.weighted(t.vehicles) if t.vehicles is not None else pool
 
     @model_validator(mode="after")
     def _check_chargers(self) -> "SimConfig":
@@ -717,7 +789,7 @@ def load_file(path: Union[str, Path]) -> SimConfig:
 
 #: Top-level blocks :func:`write_back` may rewrite, and their value when everything in them is default.
 WRITE_BACK_BLOCKS: Dict[str, Any] = {"simulation": {}, "frame_log": {}, "csms_defaults": {}, "ev_models": [],
-                                     "chargers": [], "mini_csms": {}}
+                                     "chargers": [], "mini_csms": {}, "traffic": {}}
 
 
 def _blocks(config: SimConfig) -> Dict[str, Any]:

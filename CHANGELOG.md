@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Traffic generator (v0.3 M4): the new top-level `traffic:` block runs seeded random sessions on idle
+  connectors: an arrival check every `interval_s` (sim) per connector with `probability` x `hourly_weights`,
+  `auth_order` plug / tag first, charging until `stop_after` (`duration` in `duration_s`, the vehicle's target
+  SoC, or the first), `stop_by` swipe / unplug / `remote_only` (CSMS RemoteStop, `max_session_s` fallback),
+  `idle_after_s` occupancy; id tags by `id_tag_strategy` `random` / `round_robin` / `affinity`
+  (`affinity_prob`, `affinity_map`); vehicles from the vehicle pool (`vehicles` narrows it). The same seed,
+  config and start time give the same plan (own random streams per connector; busy connectors skip an
+  arrival). It is a generator track of the scenario runner: scenarios take `generate:` tracks (same fields,
+  `use: traffic`), and a running scenario takes priority on its chargers. HTTP `GET` / `PUT /api/traffic`,
+  `POST /api/traffic/start` / `stop`, `GET /api/traffic/plan`; MCP `get_traffic`, `set_traffic`,
+  `start_traffic`, `stop_traffic`, `preview_traffic_plan`; the charger list header shows active sessions and
+  power. Example `configs/traffic-demo.yaml`; new docs page "Traffic generator".
 - Scenario runner and verdict (v0.3 M3): a standalone scenario YAML (`format: ocppsim-scenario/1`) names
   chargers of the running config by id and runs parallel tracks of timed steps on the sim clock (`at` /
   `after` / `until`, `for_each` / `repeat`, `${param}`): the actions `plug` / `unplug` / `swipe` / `start` /
@@ -26,9 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Vehicle profile pool (v0.3 M1): `session.ev_model: pool` draws the EV of every transaction (OCPP 1.6 and
   2.0.1) from the built-in presets plus `ev_models`, by the new `ev_models` field `weight`, with the new
   `initial_soc` / `target_soc` fields (a number or a `fixed` / `uniform` / truncated `normal` distribution).
-  Draws are deterministic per connector (stream `vehicle:{charger}:{connector}`). There is no seed setting
-  yet: the seed is fixed at 0, so each connector draws the same sequence on every run (and again after a
-  restart or a config change that rebuilds the charger) until a later release adds one. Loading a YAML file
+  Draws are deterministic per connector (stream `vehicle:{charger}:{connector}`). The seed is `traffic.seed`
+  (default 0, applied live; the streams start again after a restart or a config change that rebuilds the
+  charger). Loading a YAML file
   warns when an entry's initial SoC can exceed its target SoC.
 - Three more abstract presets: `suv-90kwh`, `phev-12kwh`, `van-75kwh` (vehicle classes, not real models).
 - Excel `ev_models` sheet: columns `weight`, `initial_soc_dist` / `_min` / `_max` / `_mean` / `_sd` and the

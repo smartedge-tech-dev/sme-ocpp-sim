@@ -10,6 +10,7 @@ Shell.addStrings("en", {
   "chargers.select_all": "All",
   "chargers.count": "{n} chargers",
   "chargers.count_online": "{online} / {n} online",
+  "chargers.traffic": "Traffic: {active} sessions, {kw} kW",
   "col.id": "ID",
   "col.conn": "Connection",
   "col.version": "OCPP",
