@@ -4,7 +4,7 @@ Web UI はテストスクリプトからも呼び出せる同じ HTTP API を使
 エラー: 存在しない充電器は `404`、不正な入力や現在の状態では実行できない操作は `400`（リクエストの検証エラーも `400`）です。
 CSMS が時間内に応答しない DataTransfer は `504`、CALLERROR で応答された場合は `502` になります。
 
-成功したリクエストは `{"ok": true, ...}` を返します（GET ルートはデータそのものを返します）。 充電器のアクション（connect / disconnect と一括、plug、unplug、swipe、start、stop、fault、clear-fault、drop、impairments の PUT、send）は `last_seq` も返します。アクション**前**に取得したフレームログのシーケンス番号です。`POST /api/frames/expect`（または `GET /api/frames`）の `since` に渡すと、そのアクションが起こしたフレームをすべて確認できます。
+成功したリクエストは `{"ok": true, ...}` を返します（GET ルートはデータそのものを返します）。 充電器のアクション（connect / disconnect と一括、plug、unplug、swipe、start、stop、fault、clear-fault、drop、impairments の PUT、send）は `last_seq` も返します。アクション**前**に取得したフレームログのシーケンス番号です。`POST /api/frames/expect`（または `GET /api/frames`）の `since` に渡すと、そのアクションが起こしたフレームをすべて確認できます。エラー応答には `last_seq` は含まれません。一括ルートはバッチ全体で 1 つの `last_seq` を返します。
 
 ## 共通ルート
 

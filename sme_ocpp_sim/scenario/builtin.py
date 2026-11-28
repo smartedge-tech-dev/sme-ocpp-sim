@@ -19,7 +19,7 @@ from .model import ScenarioError
 
 PREFIX = "builtin:"
 _PKG = Path(__file__).resolve().parents[1]
-_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 def folder() -> Optional[Path]:
@@ -35,7 +35,7 @@ def path(name: str) -> Path:
     if name.startswith(PREFIX):
         name = name[len(PREFIX):]
     d = folder()
-    p = d / f"{name}.yaml" if d is not None and _NAME.match(name) else None
+    p = d / f"{name}.yaml" if d is not None and _NAME.fullmatch(name) else None
     if p is None or not p.is_file():
         known = ", ".join(e["name"] for e in listing()) or "none"
         raise ScenarioError(f"unknown built-in scenario {name!r} (built-in: {known})")

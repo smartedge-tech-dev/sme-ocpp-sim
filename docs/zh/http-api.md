@@ -4,7 +4,7 @@ Web UI 使用的 HTTP API 同样可以从测试脚本调用。基础 URL：`http
 错误：未知充电桩为 `404`；输入无效或当前状态不允许的操作为 `400`（请求校验错误也是 `400`）。
 CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答时为 `502`。
 
-成功的请求返回 `{"ok": true, ...}`（GET 路由直接返回数据本身）。 充电桩动作（connect / disconnect 及批量、plug、unplug、swipe、start、stop、fault、clear-fault、drop、impairments 的 PUT、send）还返回 `last_seq`：动作**之前**取得的帧日志序号。把它作为 `since` 传给 `POST /api/frames/expect`（或 `GET /api/frames`），即可看到该动作引起的所有帧。
+成功的请求返回 `{"ok": true, ...}`（GET 路由直接返回数据本身）。 充电桩动作（connect / disconnect 及批量、plug、unplug、swipe、start、stop、fault、clear-fault、drop、impairments 的 PUT、send）还返回 `last_seq`：动作**之前**取得的帧日志序号。把它作为 `since` 传给 `POST /api/frames/expect`（或 `GET /api/frames`），即可看到该动作引起的所有帧。出错的应答不含 `last_seq`；批量路由对整批只返回一个 `last_seq`。
 
 ## 通用路由
 

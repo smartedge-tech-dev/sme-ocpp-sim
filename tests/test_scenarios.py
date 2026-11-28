@@ -478,6 +478,7 @@ def test_cli_sigint_aborts_and_writes_the_verdict(tmp_path):
         finally:
             if proc.poll() is None:
                 proc.kill()
+                proc.wait()
     assert proc.returncode == 2, stderr
     v = json.loads(out.read_text("utf-8"))
     assert v["result"] == "aborted" and v["scenario"] == "t", v

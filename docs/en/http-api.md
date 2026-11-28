@@ -5,7 +5,7 @@ Errors: an unknown charger is `404`; invalid input, or an operation the current 
 (request validation errors are `400` as well). A DataTransfer the CSMS does not answer in time is `504`, one it
 answers with CALLERROR is `502`.
 
-Successful requests answer `{"ok": true, ...}` (GET routes return the data itself). The charger actions (connect / disconnect and bulk, plug, unplug, swipe, start, stop, fault, clear-fault, drop, impairments PUT, send) also return `last_seq`: the frame-log sequence number captured **before** the action. Pass it as `since` to `POST /api/frames/expect` (or `GET /api/frames`) to see every frame the action caused.
+Successful requests answer `{"ok": true, ...}` (GET routes return the data itself). The charger actions (connect / disconnect and bulk, plug, unplug, swipe, start, stop, fault, clear-fault, drop, impairments PUT, send) also return `last_seq`: the frame-log sequence number captured **before** the action. Pass it as `since` to `POST /api/frames/expect` (or `GET /api/frames`) to see every frame the action caused. An error answer has no `last_seq`; the bulk routes return one `last_seq` for the whole batch.
 
 ## Common routes
 

@@ -91,7 +91,10 @@
       const r = await fetch("/api/scenarios/run", { method: "POST", headers: { "Content-Type": "text/plain; charset=utf-8" },
         body: text });
       const data = await r.json().catch(() => null);
-      if (!r.ok) throw new Error((data && (data.error || data.detail)) || r.status);
+      if (!r.ok) {  // as api() in app.js: a 422 detail is an array of objects
+        const msg = data && typeof data === "object" ? (data.error || data.detail) : data;
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg || r.status));
+      }
       Shell.toast(t("scn.started", { name: data.name }), "ok");
     } catch (e) { fail(e); }
     await refreshScenario();
@@ -108,7 +111,12 @@
     $("scnRun").disabled = running;
     $("scnAbort").disabled = !running;
     const done = st.state === "done";
-    for (const id of ["scnJson", "scnJunit"]) $(id).classList.toggle("disabled", !done);
+    for (const id of ["scnJson", "scnJunit"]) {  // links: no download before a verdict exists
+      const a = $(id);
+      a.classList.toggle("disabled", !done);
+      if (done) { a.removeAttribute("aria-disabled"); a.removeAttribute("tabindex"); }
+      else { a.setAttribute("aria-disabled", "true"); a.setAttribute("tabindex", "-1"); }
+    }
     let line;
     if (st.state === "idle") line = t("scn.state.idle");
     else {
@@ -135,6 +143,7 @@
 
   const openScenario = poller("dlgScenario", refreshScenario);
   async function openScenarioPanel() {
+    $("scnError").textContent = "";
     await openScenario();
     await loadBuiltins();
   }
@@ -191,6 +200,7 @@
 
   const openTraffic = poller("dlgTraffic", refreshTraffic);
   async function openTrafficPanel() {
+    $("trfError").textContent = "";
     await openTraffic();
     if (!$("trfPlan").childElementCount) await previewPlan();
   }

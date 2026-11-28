@@ -52,7 +52,7 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `mini_csms_status` | `GET /api/csms` | 内蔵 [Mini CSMS](mini-csms.md) の状態 |
 | `mini_csms_actions` | `GET /api/csms/actions` | Mini CSMS が送信できる CSMS → 充電器のアクション |
 | `mini_csms_call` | `POST /api/csms/chargers/{id}/call` | Mini CSMS から CSMS → 充電器の CALL を送信 |
-| `run_scenario` | `POST /api/scenarios/run` | [シナリオ](scenarios.md)を開始（引数 `body`：YAML テキスト、または `builtin:<name>`） |
+| `run_scenario` | `POST /api/scenarios/run` | [シナリオ](scenarios.md)を開始（引数 `body`：YAML テキスト、または `builtin:<name>`。不明な組み込みは 404、不正な YAML は問題箇所を示す 400 エラー） |
 | `get_scenario_status` | `GET /api/scenarios/current` | シナリオの状態と進捗 |
 | `get_scenario_result` | `GET /api/scenarios/result` | 終了したシナリオの判定結果 |
 | `abort_scenario` | `POST /api/scenarios/abort` | 実行中のシナリオを停止 |
@@ -64,7 +64,7 @@ stdio だけに対応したクライアント（Claude Desktop など）は `npx
 | `expect_frame` | `POST /api/frames/expect` | 条件と payload matcher に一致するフレームを待つ |
 
 充電器のアクションのツール（`plug_in`、`start_charging`、`send_frame` など）は `last_seq`（アクション前のフレームログの
-シーケンス番号）を返します。`expect_frame` の `since` に渡すと、アクションが起こしたフレームを取りこぼしません。
+シーケンス番号）を返します。`expect_frame` の `since` に渡すと、アクションが起こしたフレームを取りこぼしません。エラー結果には `last_seq` は含まれません。一括のツールはバッチ全体で 1 つを返します。
 
 読み取り専用のツールには `readOnlyHint`、`disconnect_charger`・`drop_connection`・`set_impairments`・`send_frame`・`mini_csms_call` には `destructiveHint`
 が付いているので、クライアントは呼び出し前に確認を求められます。
