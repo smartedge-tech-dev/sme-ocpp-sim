@@ -1,0 +1,13 @@
+# Compose override adding the Security Profile 3 nginx front to SteVe's docker compose; see scripts/steve.md.
+# MTLS_CERT_DIR = the absolute output directory of scripts/mtls_certs.py; OCPPSIM_SCRIPTS = this scripts/ folder.
+#   docker compose -f docker-compose.yml -f <repo>/scripts/steve-mtls.compose.yml up -d --no-deps mtls-proxy
+# Host port 8543 (8443 / 8444 are taken by the CitrineOS stack when both run).
+services:
+  mtls-proxy:
+    image: nginx:stable-alpine3.24-slim
+    pull_policy: missing
+    ports:
+      - "8543:8443"
+    volumes:
+      - ${OCPPSIM_SCRIPTS:?}/steve-mtls-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${MTLS_CERT_DIR:?}/nginx:/etc/nginx/mtls:ro

@@ -1,0 +1,13 @@
+# Compose override for the Security Profile 3 (mTLS) check against CitrineOS; see scripts/citrineos.md.
+# MTLS_CERT_DIR = the absolute output directory of scripts/mtls_certs.py; OCPPSIM_SCRIPTS = this scripts/ folder.
+#   docker compose -f docker-compose.yml -f <repo>/scripts/citrineos-mtls.compose.yml up -d --pull never citrine
+services:
+  citrine:
+    volumes:
+      # SP3 server entry (port 8444) with allowUnknownChargingStations: true; otherwise the shipped file.
+      - ${OCPPSIM_SCRIPTS:?}/citrineos-websocket-servers.json:/usr/local/apps/citrineos/apps/ocpp-server/dist/assets/websocket-servers.json:ro
+      # Server key / chain and the CA that client certificates must chain to (shipped samples expired 2026-09-15).
+      - ${MTLS_CERT_DIR:?}/citrineos/leafKey.pem:/usr/local/apps/citrineos/apps/ocpp-server/dist/assets/certificates/leafKey.pem:ro
+      - ${MTLS_CERT_DIR:?}/citrineos/certChain.pem:/usr/local/apps/citrineos/apps/ocpp-server/dist/assets/certificates/certChain.pem:ro
+      - ${MTLS_CERT_DIR:?}/citrineos/rootCertificate.pem:/usr/local/apps/citrineos/apps/ocpp-server/dist/assets/certificates/rootCertificate.pem:ro
+      - ${MTLS_CERT_DIR:?}/citrineos/subCAKey.pem:/usr/local/apps/citrineos/apps/ocpp-server/dist/assets/certificates/subCAKey.pem:ro
