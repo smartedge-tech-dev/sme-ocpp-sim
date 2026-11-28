@@ -184,6 +184,8 @@ def test_reorder_window_and_end_after_stop(version):
         assert len(meters) >= held + 1
         assert meters[-1] > i_stop and all(i < i_stop for i in meters[:-1])  # held ones first, the last one late
         if version == "2.0.1":
+            # the peer records the raw frame before its handler parses it: wait for the parsed late event too
+            await _until(lambda: len(_periodic(s, version)) >= len(meters))
             ended = next(e for e in s.transaction_events if e["event_type"] == "Ended")
             assert _periodic(s, version)[-1]["seq_no"] == ended["seq_no"] + 1
             seqs = [e["seq_no"] for e in s.transaction_events if e["trigger_reason"] == "MeterValuePeriodic"][:-1]

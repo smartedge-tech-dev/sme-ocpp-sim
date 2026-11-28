@@ -117,6 +117,8 @@ class ChargerRuntime:
         self.pool: Optional[VehiclePool] = ev if isinstance(ev, VehiclePool) else None
         self.vehicle_seed = vehicle_seed
         self._vehicle_rngs: Dict[int, random.Random] = {}
+        #: Vehicles set for the next session of a connector (scenario ``set_ev``); used once, then drawn again.
+        self.next_vehicle: Dict[int, Vehicle] = {}
         self.ev: EvModel = (self.pool.default_ev if self.pool is not None else ev) or PRESETS[cfg.session.ev_model]
         self.supply = AcSupply(cfg.voltage_v, cfg.phases, cfg.line_to_line)
         self._tick_s, self._time_scale = tick_s, time_scale
@@ -508,7 +510,11 @@ class ChargerRuntime:
 
     def vehicle(self, connector_id: int) -> Vehicle:
         """The EV of a new session on ``connector_id``: drawn from :attr:`pool` (stream
-        ``vehicle:{charger}:{connector}`` of :attr:`vehicle_seed`), else :attr:`ev` with the session's SoC."""
+        ``vehicle:{charger}:{connector}`` of :attr:`vehicle_seed`), else :attr:`ev` with the session's SoC. A
+        vehicle in :attr:`next_vehicle` (``set_ev``) is used instead, once; the pool stream is then not advanced."""
+        override = self.next_vehicle.pop(connector_id, None)
+        if override is not None:
+            return override
         if self.pool is None:
             return Vehicle(self.ev, self.cfg.session.initial_soc, self.cfg.session.target_soc)
         rng = self._vehicle_rngs.get(connector_id)

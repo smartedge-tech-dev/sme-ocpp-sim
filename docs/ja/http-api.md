@@ -164,6 +164,18 @@ OCPP 2.0.1 の充電器では `connector` は EVSE id です（0 = ステーシ�
 
 フレームログに含まれるのは OCPP フレームだけで、HTTP ヘッダーやパスワードは含みません。
 
+## シナリオ { #scenarios }
+
+| メソッド | パス | 意味 |
+|---|---|---|
+| POST | `/api/scenarios/run` | シナリオを開始。本文：YAML（または JSON）テキスト。不正・未知の充電器は 400、実行中は 409 |
+| GET | `/api/scenarios/current` | 現在 / 直前のシナリオの状態（なければ `{"state": "idle"}`） |
+| POST | `/api/scenarios/abort` | 実行中のシナリオを停止（なければ 409） |
+| GET | `/api/scenarios/result?format=json\|junit` | 終了したシナリオの判定結果（なし 404、実行中 409） |
+| POST | `/api/frames/expect` | `since` 以降で `charger` / `dir` / `action` / `message_type` / `payload` matcher に一致するフレームを最大 `within` 秒（上限 300）待つ。`{"matched": bool, "frame": ...}` |
+
+ファイル形式と判定結果は[シナリオ](scenarios.md)を参照してください。
+
 ## Mini CSMS { #mini-csms }
 
 組み込み [Mini CSMS](mini-csms.md) のルートです。ステーション ID はステーションが接続に使った ID です。

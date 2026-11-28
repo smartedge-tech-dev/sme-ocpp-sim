@@ -1,0 +1,24 @@
+# The same session on every charger of configs/mini-csms-demo.yaml (OCPP 1.6 and 2.0.1) in parallel: for_each
+# makes one track per charger. Only state assertions, so the steps do not depend on the OCPP version.
+#
+#   sme-ocpp-sim scenario run scenarios/both-versions.yaml -c configs/mini-csms-demo.yaml --junit junit.xml
+format: ocppsim-scenario/1
+name: both-versions
+clock: {time_scale: 3600}
+tracks:
+  - for_each: {chargers: "*"}
+    steps:
+      - expect: {state: {online: true}}
+        within: 30s
+      - {do: log, message: "${charger}: starting (track ${i})"}
+      - {do: start, connector: 1, id_tag: "TAG-${i}"}
+      - expect: {state: {status: Charging, has_transaction: true}}
+        within: 10s
+      - {do: wait, duration: 30m}
+      - {do: stop, connector: 1}
+      - expect: {state: {has_transaction: false}}
+        within: 10s
+      - {do: unplug, connector: 1}
+      - expect: {state: {status: Available}}
+        within: 10s
+until: "+2h"

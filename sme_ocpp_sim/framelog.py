@@ -105,6 +105,11 @@ class FrameLog:
         return self._seq
 
     @property
+    def oldest_seq(self) -> int:
+        """Seq of the oldest entry still in the buffer (``last_seq + 1`` when empty)."""
+        return self._buf[0].seq if self._buf else self._seq + 1
+
+    @property
     def maxlen(self) -> int:
         return self._buf.maxlen or 0
 

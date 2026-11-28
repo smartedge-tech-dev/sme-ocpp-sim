@@ -143,7 +143,9 @@ class SimClock:
                 return
             changed = self._changed
             timeout = self.to_wall(left) if self._running else None
+            # asyncio.wait, not wait_for: wait_for (3.11) can swallow a cancellation that races with the event
+            waiter = asyncio.ensure_future(changed.wait())
             try:
-                await asyncio.wait_for(changed.wait(), timeout)
-            except asyncio.TimeoutError:
-                pass
+                await asyncio.wait({waiter}, timeout=timeout)
+            finally:
+                waiter.cancel()

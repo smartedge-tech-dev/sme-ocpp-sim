@@ -153,6 +153,18 @@ connector 状态也不变）、`meter`（`drop_ratio`、`reorder_window`、`end_
 
 帧日志只包含 OCPP 帧，不含 HTTP 头和密码。
 
+## 场景 { #scenarios }
+
+| 方法 | 路径 | 含义 |
+|---|---|---|
+| POST | `/api/scenarios/run` | 启动场景；请求体：YAML（或 JSON）文本。无效 / 未知充电桩 400，已有场景运行 409 |
+| GET | `/api/scenarios/current` | 当前 / 上一个场景的状态（没有时 `{"state": "idle"}`） |
+| POST | `/api/scenarios/abort` | 停止正在运行的场景（没有时 409） |
+| GET | `/api/scenarios/result?format=json\|junit` | 已结束场景的判定结果（没有 404，仍在运行 409） |
+| POST | `/api/frames/expect` | 最多等 `within` 秒（上限 300），等 `since` 之后匹配 `charger` / `dir` / `action` / `message_type` / `payload` matcher 的帧；返回 `{"matched": bool, "frame": ...}` |
+
+文件格式和判定结果见[场景](scenarios.md)。
+
 ## Mini CSMS { #mini-csms }
 
 内置 [Mini CSMS](mini-csms.md) 的路由。站点 ID 是站点连接时使用的 ID。

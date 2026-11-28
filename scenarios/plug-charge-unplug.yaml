@@ -1,0 +1,31 @@
+# One OCPP 1.6 charging session on DEMO-16 of configs/mini-csms-demo.yaml, two simulated hours in about two
+# wall seconds (clock.time_scale 3600):
+#
+#   sme-ocpp-sim scenario run scenarios/plug-charge-unplug.yaml -c configs/mini-csms-demo.yaml --out verdict.json
+format: ocppsim-scenario/1
+name: plug-charge-unplug
+description: Plug in, authorize, charge for 2 h (sim), unplug; check the CSMS accepts the transaction.
+clock: {time_scale: 3600}
+params: {tag: "TAG001"}
+tracks:
+  - name: session
+    charger: DEMO-16
+    steps:
+      - expect: {state: {online: true}}
+        within: 30s
+      - {do: plug, connector: 1}
+      - {after: 1m, do: swipe, connector: 1, id_tag: "${tag}"}
+      - expect:
+          frame: {dir: tx, action: StartTransaction}
+          then: {message_type: CALLRESULT, payload: {idTagInfo.status: Accepted}}
+        within: 10s
+      - expect: {state: {connector: 1, status: Charging, power_w: {gt: 0}}}
+        within: 10s
+      - {do: wait, duration: 2h}
+      - expect: {state: {connector: 1, meter_wh: {gt: 1000}}}
+        within: 5s
+      - {do: unplug, connector: 1}
+      - expect:
+          frame: {dir: tx, action: StopTransaction, payload: {meterStop: {gt: 0}}}
+          then: {payload: {idTagInfo.status: Accepted}}
+        within: 10s

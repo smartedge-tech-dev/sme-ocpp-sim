@@ -64,7 +64,7 @@ import ipaddress
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from sme_sim_common.engine import BaseEngine
 
@@ -120,7 +120,9 @@ class _FrameSink:
         engine = self._engine
 
         def on_frame(info: Any) -> None:
-            engine.frame_log.add(charger, info)
+            entry = engine.frame_log.add(charger, info)
+            for listener in tuple(engine.frame_listeners):
+                listener(entry)
             engine.wake()
         return on_frame
 
@@ -159,6 +161,11 @@ class OcppEngine(BaseEngine):
         config = config if config is not None else SimConfig()
         self.frame_log = FrameLog(config.frame_log.size)
         self._sink = _FrameSink(self)
+        #: Called with every new :class:`.framelog.FrameEntry` of a charger (the scenario runner's frame stream:
+        #: it does not depend on the ring buffer's size). A listener must not block or raise.
+        self.frame_listeners: List[Callable[[Any], None]] = []
+        #: The scenario runner of the current / last scenario (``scenario.runner``; one at a time).
+        self.scenario: Optional[Any] = None
         self._runs: Dict[str, _Run] = {}
         self._started = False
         self._push_at = 0.0
@@ -371,6 +378,10 @@ class OcppEngine(BaseEngine):
                 self._launch(cid, e.runtime)
 
     async def stop(self) -> None:
+        runner = self.scenario
+        if runner is not None and runner.abort():  # a running scenario ends as aborted, with its cleanup
+            with contextlib.suppress(Exception):
+                await runner.wait()
         self._started = False
         self._stopping = True
         self._cancel_push_later()
