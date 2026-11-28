@@ -14,6 +14,7 @@ a CALLERROR answer is suppressed unless ``suppress=False``; assert on the charge
 from __future__ import annotations
 
 import asyncio
+import os
 import base64
 import logging
 import ssl
@@ -31,7 +32,7 @@ from websockets.exceptions import ConnectionClosed
 
 logging.getLogger("ocpp").setLevel(logging.WARNING)
 
-SUBPROTOCOL = "ocpp2.0.1"
+SUBPROTOCOL = "ocpp2.1" if os.environ.get("OCPPSIM_V201_SUITE") == "2.1" else "ocpp2.0.1"
 
 
 def _now() -> str:

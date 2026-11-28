@@ -49,13 +49,21 @@ def _field(error: Any) -> str:
     return path or "<payload>"
 
 
-def ocpp_package_schema_dir() -> Optional[Path]:
-    """The 2.0.1 schema directory of the installed ``ocpp`` package, or ``None`` when it is not installed."""
+def bundled_schema_dir(subprotocol: str = "ocpp2.1") -> Optional[Path]:
+    """The schemas shipped in this package (``sme_ocpp_sim/schemas/<subprotocol>``; only ``ocpp2.1`` today, see
+    THIRD-PARTY-NOTICES), or ``None`` when there are none for ``subprotocol``."""
+    path = Path(__file__).resolve().parents[2] / "schemas" / subprotocol
+    return path if path.is_dir() else None
+
+
+def ocpp_package_schema_dir(version_dir: str = "v201") -> Optional[Path]:
+    """The schema directory ``version_dir`` (``v201`` / ``v21``) of the installed ``ocpp`` package, or ``None``
+    when it is not installed."""
     try:
         import ocpp  # noqa: PLC0415 - optional, dev-only package
     except ImportError:
         return None
-    path = Path(ocpp.__file__).resolve().parent / "v201" / "schemas"
+    path = Path(ocpp.__file__).resolve().parent / version_dir / "schemas"
     return path if path.is_dir() else None
 
 

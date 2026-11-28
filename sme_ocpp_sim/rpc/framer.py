@@ -3,6 +3,8 @@
     CALL       [2, uniqueId, action, payload]
     CALLRESULT [3, uniqueId, payload]
     CALLERROR  [4, uniqueId, errorCode, errorDescription, errorDetails]
+    CALLRESULTERROR [5, uniqueId, errorCode, errorDescription, errorDetails]   (OCPP-J 2.1 only)
+    SEND       [6, uniqueId, action, payload]                                  (OCPP-J 2.1 only, never answered)
 
 Decoding never raises for bad input other than :class:`BadFrame`, which tells the
 caller whether a uniqueId could be recovered (and so whether a CALLERROR can be sent).
@@ -15,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
 CALL, CALLRESULT, CALLERROR = 2, 3, 4
+CALLRESULTERROR, SEND = 5, 6  # OCPP-J 2.1
 
 
 @dataclass(frozen=True)
@@ -38,14 +41,31 @@ class CallErrorFrame:
     details: dict = field(default_factory=dict)
 
 
-Frame = Union[Call, CallResult, CallErrorFrame]
+@dataclass(frozen=True)
+class Send:
+    """OCPP-J 2.1 SEND: a one-way message (no CALLRESULT / CALLERROR)."""
+    uid: str
+    action: str
+    payload: dict
+
+
+@dataclass(frozen=True)
+class CallResultErrorFrame:
+    """OCPP-J 2.1 CALLRESULTERROR: the peer found the CALLRESULT with this uniqueId invalid."""
+    uid: str
+    code: str
+    description: str = ""
+    details: dict = field(default_factory=dict)
+
+
+Frame = Union[Call, CallResult, CallErrorFrame, Send, CallResultErrorFrame]
 
 # BadFrame kinds
 NO_UID = "no_uid"              # not JSON / not an array / no string uniqueId: cannot answer
 BAD_CALL = "bad_call"          # CALL with a wrong frame structure (element count, action not a string)
 BAD_PAYLOAD = "bad_payload"    # CALL whose payload is not a JSON object
 BAD_RESULT = "bad_result"      # CALLRESULT / CALLERROR with wrong shape
-UNKNOWN_TYPE = "unknown_type"  # MessageTypeId other than 2 / 3 / 4
+UNKNOWN_TYPE = "unknown_type"  # MessageTypeId other than 2 / 3 / 4 (2.1: other than 2 to 6)
 
 
 class BadFrame(ValueError):
@@ -74,7 +94,15 @@ def encode_error(uid: str, code: str, description: str = "", details: Optional[d
     return _dumps([CALLERROR, uid, code, description, details or {}])
 
 
-def decode(raw: str) -> Frame:
+def encode_send(uid: str, action: str, payload: dict) -> str:
+    return _dumps([SEND, uid, action, payload])
+
+
+def encode_result_error(uid: str, code: str, description: str = "", details: Optional[dict] = None) -> str:
+    return _dumps([CALLRESULTERROR, uid, code, description, details or {}])
+
+
+def decode(raw: str, ocpp21: bool = False) -> Frame:
     try:
         msg = json.loads(raw)
     except ValueError:
@@ -85,21 +113,26 @@ def decode(raw: str) -> Frame:
     if not isinstance(uid, str):
         raise BadFrame(NO_UID, "uniqueId is not a string", message_type=mtype)
     # bool is an int subclass: reject [true, ...] explicitly.
-    if isinstance(mtype, bool) or mtype not in (CALL, CALLRESULT, CALLERROR):
+    known = (CALL, CALLRESULT, CALLERROR, CALLRESULTERROR, SEND) if ocpp21 else (CALL, CALLRESULT, CALLERROR)
+    if isinstance(mtype, bool) or mtype not in known:
         raise BadFrame(UNKNOWN_TYPE, f"unknown MessageTypeId {mtype!r}", uid, mtype)
 
-    if mtype == CALL:
+    if mtype in (CALL, SEND):
+        name = "CALL" if mtype == CALL else "SEND"
         if len(msg) != 4 or not isinstance(msg[2], str):
-            raise BadFrame(BAD_CALL, "CALL frame is malformed", uid, mtype)
+            raise BadFrame(BAD_CALL, f"{name} frame is malformed", uid, mtype)
         if not isinstance(msg[3], dict):
-            raise BadFrame(BAD_PAYLOAD, "CALL payload is not a JSON object", uid, mtype)
-        return Call(uid, msg[2], msg[3])
+            raise BadFrame(BAD_PAYLOAD, f"{name} payload is not a JSON object", uid, mtype)
+        return Call(uid, msg[2], msg[3]) if mtype == CALL else Send(uid, msg[2], msg[3])
     if mtype == CALLRESULT:
         if len(msg) != 3 or not isinstance(msg[2], dict):
             raise BadFrame(BAD_RESULT, "CALLRESULT frame or payload is malformed", uid, mtype)
         return CallResult(uid, msg[2])
     if len(msg) != 5 or not isinstance(msg[2], str):
-        raise BadFrame(BAD_RESULT, "CALLERROR frame is malformed", uid, mtype)
+        raise BadFrame(BAD_RESULT, f"{'CALLERROR' if mtype == CALLERROR else 'CALLRESULTERROR'} frame is malformed",
+                       uid, mtype)
     desc = msg[3] if isinstance(msg[3], str) else str(msg[3])
     details = msg[4] if isinstance(msg[4], dict) else {}
+    if mtype == CALLRESULTERROR:
+        return CallResultErrorFrame(uid, msg[2], desc, details)
     return CallErrorFrame(uid, msg[2], desc, details)

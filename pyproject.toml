@@ -61,6 +61,7 @@ packages = [
   "sme_ocpp_sim.protocol",
   "sme_ocpp_sim.protocol.v16",
   "sme_ocpp_sim.protocol.v201",
+  "sme_ocpp_sim.protocol.v21",
   "sme_ocpp_sim.rpc",
   "sme_ocpp_sim.runtime",
   "sme_ocpp_sim.scenario",
@@ -71,7 +72,7 @@ package-dir = { "sme_ocpp_sim.configs" = "configs", "sme_ocpp_sim.scenarios" = "
 license-files = ["LICENSE", "THIRD-PARTY-NOTICES"]
 
 [tool.setuptools.package-data]
-sme_ocpp_sim = ["static/**/*"]
+sme_ocpp_sim = ["static/**/*", "schemas/**/*.json"]
 "sme_ocpp_sim.configs" = ["*.yaml"]
 "sme_ocpp_sim.scenarios" = ["*.yaml"]
 

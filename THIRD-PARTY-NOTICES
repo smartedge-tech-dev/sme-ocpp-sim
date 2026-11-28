@@ -67,6 +67,19 @@ PyInstaller          GPL-2.0-or-later        Windows executable only: its bootlo
                      exception               distributing programs built with it under any license.
                                              https://pyinstaller.org/
 
+Bundled data: OCPP 2.1 JSON schemas
+-----------------------------------
+
+sme_ocpp_sim/schemas/ocpp2.1/*.json (181 files) are the OCPP 2.1 JSON schemas
+(OCPP-2.1_part3_JSON_schemas, Edition 1 schemas, used unchanged by OCPP 2.1 Edition 2),
+Copyright (c) Open Charge Alliance. They are licensed under the Creative Commons
+Attribution-NoDerivatives 4.0 International License (CC BY-ND 4.0),
+https://creativecommons.org/licenses/by-nd/4.0/legalcode
+They are included verbatim and unmodified (byte-identical to the files published by the
+Open Charge Alliance; each file's "comment" states the license). Their inclusion does not
+imply endorsement by the Open Charge Alliance. sme_ocpp_sim/protocol/v21/models.py is
+generated from their structure (no description text) by scripts/gen_v21_models.py.
+
 Not distributed
 ---------------
 

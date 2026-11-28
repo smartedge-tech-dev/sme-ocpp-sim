@@ -183,6 +183,8 @@ class Adapter201(d.VersionAdapter):
     #: Message models and codec; OCPP 2.1 (``protocol.v21``) swaps in its own (class-attribute injection).
     models: Any = m
     codec: Any = codec201.CODEC
+    #: CSMS -> CS actions answered by the station (``_remote``).
+    remote_actions: Sequence[str] = REMOTE_ACTIONS
 
     def __init__(self, *, strict: bool = False) -> None:
         super().__init__(strict=strict)
@@ -204,14 +206,14 @@ class Adapter201(d.VersionAdapter):
 
     def handlers(self, runtime: d.CommandSink) -> Dict[str, d.Handler]:
         table: Dict[str, Any] = {"DataTransfer": self._data_transfer}
-        for action in REMOTE_ACTIONS:
+        for action in self.remote_actions:
             table[action] = functools.partial(self._remote, action)
         return {a: functools.partial(h, runtime) for a, h in table.items()}
 
     async def _remote(self, action: str, runtime: d.CommandSink, payload: dict) -> dict:
         """A remote-control CALL: the station gets the request model and returns the response model."""
         res = await runtime.handle(self._parse(action, payload))
-        if not isinstance(res, self.models.RESPONSES[action]):
+        if not isinstance(res, self.codec.responses[action]):
             raise TypeError(f"{action}: the station answered {type(res).__name__}")
         return dump(res)
 

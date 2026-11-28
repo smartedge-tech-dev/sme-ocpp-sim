@@ -30,7 +30,8 @@ from ..protocol.v16 import codec as codec16
 from ..protocol.v16 import models as models16
 from ..protocol.v201 import codec as codec201
 from ..protocol.v201 import models as models201
-from ..rpc.errors import OCPP16_ERRORS, OCPP201_ERRORS, CallError, ErrorCodes
+from ..protocol.v21 import codec as codec21
+from ..rpc.errors import OCPP16_ERRORS, OCPP21_ERRORS, OCPP201_ERRORS, CallError, ErrorCodes
 
 if TYPE_CHECKING:
     from .session import CpSession
@@ -61,6 +62,13 @@ _CP201 = ("Authorize", "BootNotification", "ClearedChargingLimit", "DataTransfer
           "SecurityEventNotification", "SignCertificate", "StatusNotification", "TransactionEvent")
 
 
+#: 2.1 = the 2.0.1 CP actions plus the new CS -> CSMS 2.1 messages (NotifyPeriodicEventStream is a SEND).
+_CP21 = tuple(sorted(_CP201 + (
+    "BatterySwap", "ClosePeriodicEventStream", "GetCertificateChainStatus", "NotifyDERAlarm", "NotifyDERStartStop",
+    "NotifyPeriodicEventStream", "NotifyPriorityCharging", "NotifySettlement", "OpenPeriodicEventStream",
+    "PullDynamicScheduleUpdate", "ReportDERControl", "VatNumberValidation")))
+
+
 def _csms_actions(models: ModuleType, cp: Tuple[str, ...]) -> Tuple[str, ...]:
     return tuple(sorted(a for a in models.ACTIONS if a not in cp or a == "DataTransfer"))
 
@@ -68,6 +76,9 @@ def _csms_actions(models: ModuleType, cp: Tuple[str, ...]) -> Tuple[str, ...]:
 SPECS: Dict[str, VersionSpec] = {
     "1.6": VersionSpec("1.6", "ocpp1.6", codec16, OCPP16_ERRORS, _CP16, _csms_actions(models16, _CP16)),
     "2.0.1": VersionSpec("2.0.1", "ocpp2.0.1", codec201, OCPP201_ERRORS, _CP201, _csms_actions(models201, _CP201)),
+    # Minimal 2.1 set: the 2.0.1 answers (2.1 payloads parse with the 2.1 models) and schema-valid answers to the
+    # new 2.1 CS -> CSMS messages; CSMS -> CS: every action with a 2.1 model in protocol.v21.codec.
+    "2.1": VersionSpec("2.1", "ocpp2.1", codec21, OCPP21_ERRORS, _CP21, _csms_actions(codec21, _CP21)),
 }
 BY_SUBPROTOCOL = {s.subprotocol: s for s in SPECS.values()}
 
@@ -109,6 +120,8 @@ class Ctx:
 def build_handlers(spec: VersionSpec, session: "CpSession", ctx: Ctx) -> Dict[str, Handler]:
     answers = _answers16 if spec.version == "1.6" else _answers201
     table = answers(session, ctx)
+    if spec.version == "2.1":
+        table.update(_ANSWERS21)
     out: Dict[str, Handler] = {}
     for action in spec.cp_actions:
         out[action] = _wrap(spec, session, ctx, action, table.get(action))
@@ -130,6 +143,8 @@ def _wrap(spec: VersionSpec, session: "CpSession", ctx: Ctx, action: str, answer
 
 
 def _has_model(spec: VersionSpec, action: str) -> bool:
+    if spec.version == "2.1":
+        return action in codec21.REQUESTS
     models = models16 if spec.version == "1.6" else models201
     return action in models.REQUESTS
 
@@ -234,3 +249,13 @@ def _answers201(session: "CpSession", ctx: Ctx) -> Dict[str, Callable[[dict], di
         "NotifyEVChargingNeeds": lambda p: {"status": "Rejected"},
         "NotifyEVChargingSchedule": lambda p: {"status": "Accepted"},
     }
+
+
+#: Schema-valid answers to the new 2.1 CS -> CSMS messages (the others answer an empty payload, which is what
+#: their response schemas require). NotifyPeriodicEventStream is a SEND: never answered.
+_ANSWERS21: Dict[str, Callable[[dict], dict]] = {
+    "BatterySwap": lambda p: {},
+    "OpenPeriodicEventStream": lambda p: {"status": "Accepted"},
+    "PullDynamicScheduleUpdate": lambda p: {"status": "Rejected"},
+    "VatNumberValidation": lambda p: {"vatNumber": p.get("vatNumber", ""), "status": "Rejected"},
+}

@@ -42,7 +42,7 @@ const PRODUCT = {
 // Preselected fault code: 1.6 OtherError, 2.0.1 Other (ReasonEnumType); else the first code.
 const DEFAULT_FAULTS = ["OtherError", "Other"];
 // Versions with a Device Model (variables instead of configuration keys) and external limits.
-const DEVICE_MODEL_VERSIONS = new Set(["2.0.1"]);
+const DEVICE_MODEL_VERSIONS = new Set(["2.0.1", "2.1"]);
 const hasDeviceModel = (c) => !!c && DEVICE_MODEL_VERSIONS.has(c.ocpp_version);
 const TIME_SCALES = [1, 2, 5, 10, 60];
 const MAX_FRAMES = 2000;          // frames kept client side
@@ -733,7 +733,7 @@ function versionOptions(sel, withDefault) {
     ...(withDefault ? [h("option", { value: "" }, t("settings.default"))] : []),
     h("option", { value: "1.6" }, "1.6"),
     h("option", { value: "2.0.1" }, "2.0.1"),
-    h("option", { value: "2.1", disabled: true }, t("settings.version.v21")));
+    h("option", { value: "2.1" }, "2.1"));
 }
 
 // The dialog state: the csms_defaults block and the charger settings as loaded (masked password).

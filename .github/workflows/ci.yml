@@ -24,6 +24,10 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       # The sme-sim-common pytest plugin (asyncio timeout + hang dump) is activated automatically.
       - run: python -m pytest -q
+      # The 2.0.1 station suites again as OCPP 2.1 (Station21 inherits Station201; 2.1 is a superset of 2.0.1).
+      - run: python -m pytest -q tests/test_station201.py tests/test_station201_remote.py tests/test_station201_device_model.py tests/test_station201_smart_charging.py tests/test_station201_spec_rules.py
+        env:
+          OCPPSIM_V201_SUITE: "2.1"
 
   # The built wheel (not the source tree) must start and carry static/ and configs/ (plan M8).
   wheel:

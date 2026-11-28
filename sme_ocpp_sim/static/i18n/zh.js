@@ -115,7 +115,6 @@ Shell.addStrings("zh", {
   "settings.version": "OCPP 版本",
   "settings.version_override": "OCPP 版本",
   "settings.default": "（默认值）",
-  "settings.version.v21": "2.1（v0.3 支持）",
   "settings.profile": "Security Profile",
   "settings.profile.0": "0 - ws://，无密码",
   "settings.profile.1": "1 - ws:// + Basic 认证",

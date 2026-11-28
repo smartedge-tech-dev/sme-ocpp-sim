@@ -115,7 +115,6 @@ Shell.addStrings("en", {
   "settings.version": "OCPP version",
   "settings.version_override": "OCPP version",
   "settings.default": "(default)",
-  "settings.version.v21": "2.1 (coming in v0.3)",
   "settings.profile": "Security Profile",
   "settings.profile.0": "0 - ws://, no password",
   "settings.profile.1": "1 - ws:// + Basic auth",

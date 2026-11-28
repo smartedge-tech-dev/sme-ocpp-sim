@@ -21,6 +21,8 @@ root = os.path.abspath(os.path.join(SPECPATH, ".."))
 datas = [
     # Product static files (index.html, app.js, style.css, i18n/, favicon)
     (os.path.join(root, "sme_ocpp_sim", "static"), "sme_ocpp_sim/static"),
+    # OCPP 2.1 JSON schemas (CC BY-ND 4.0, verbatim; see THIRD-PARTY-NOTICES)
+    (os.path.join(root, "sme_ocpp_sim", "schemas"), "sme_ocpp_sim/schemas"),
     # Demo config, beside the package as in the source tree and the Docker image
     (os.path.join(root, "configs", "demo-site.yaml"), "configs"),
     (os.path.join(root, "configs", "mini-csms-demo.yaml"), "configs"),

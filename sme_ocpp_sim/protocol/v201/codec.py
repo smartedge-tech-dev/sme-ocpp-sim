@@ -80,6 +80,8 @@ def _path(loc: tuple) -> str:
     for part in loc:
         if isinstance(part, int):
             out += f"[{part}]"
+        elif "[" in part or "-" in part:  # a pydantic union member tag (2.1 Union enums), not a field
+            continue
         else:
             out += f".{part}" if out else str(part)
     return out

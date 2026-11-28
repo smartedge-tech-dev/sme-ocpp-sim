@@ -517,7 +517,7 @@ class ChargerConfig(StrictModel):
 
 
 #: OCPP versions the Mini CSMS speaks, and their OCPP-J subprotocols.
-MINI_CSMS_VERSIONS = {"1.6": "ocpp1.6", "2.0.1": "ocpp2.0.1"}
+MINI_CSMS_VERSIONS = {"1.6": "ocpp1.6", "2.0.1": "ocpp2.0.1", "2.1": "ocpp2.1"}
 _AUTH_STATUSES = ("Accepted", "Blocked", "Expired", "Invalid", "Unknown", "NoCredit", "NotAllowedTypeEVSE",
                   "NotAtThisLocation", "NotAtThisTime", "ConcurrentTx")
 
@@ -571,7 +571,7 @@ class MiniCsmsPlanItem(StrictModel):
     #: Only stations with this id (shell-style pattern, e.g. ``"CP-*"``); ``None`` = every station.
     charger: Optional[QuotedStr] = None
     #: Only stations speaking this version; ``None`` = every version (the payload must fit each of them).
-    ocpp_version: Optional[Literal["1.6", "2.0.1"]] = None
+    ocpp_version: Optional[Literal["1.6", "2.0.1", "2.1"]] = None
 
 
 class MiniCsmsConfig(StrictModel):
@@ -581,7 +581,8 @@ class MiniCsmsConfig(StrictModel):
     enabled: bool = False
     host: QuotedStr = "127.0.0.1"
     port: int = Field(9000, ge=0, le=65535)
-    versions: List[Literal["1.6", "2.0.1"]] = Field(default_factory=lambda: ["1.6", "2.0.1"], min_length=1)
+    versions: List[Literal["1.6", "2.0.1", "2.1"]] = Field(default_factory=lambda: ["1.6", "2.0.1", "2.1"],
+                                                     min_length=1)
     boot: MiniCsmsBoot = Field(default_factory=MiniCsmsBoot)
     auth: MiniCsmsAuth = Field(default_factory=MiniCsmsAuth)
     authorize: MiniCsmsAuthorize = Field(default_factory=MiniCsmsAuthorize)
@@ -714,7 +715,7 @@ class SimConfig(StrictModel):
         if not c.variables:
             return
         version = c.ocpp_version or self.csms_defaults.ocpp_version
-        if version != "2.0.1":
+        if version not in ("2.0.1", "2.1"):
             raise ValueError(f"charger {c.id!r}: variables is for OCPP 2.0.1 chargers (this one is {version}; "
                              "use config_keys)")
         from .protocol.v201.device_model import check_charger  # lazy: config imports no protocol stack
