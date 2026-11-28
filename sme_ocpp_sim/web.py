@@ -3,7 +3,9 @@
 The generic routes (``/``, ``/healthz``, ``/api/version``, ``/api/state``, ``/api/config*``, ``/api/devices*``,
 ``/api/simulation``, ``/ws``, the ``/sme-sim-common`` and ``/static`` mounts) come from
 ``sme_sim_common.web.make_base_app`` (devices = ``chargers``, key = ``id``); ``POST /mcp`` (MCP tools wrapping these
-routes) from :mod:`.mcp_tools`. This module adds the OCPP routes:
+routes) from :mod:`.mcp_tools`. This module adds the OCPP routes (the operator actions - connect / disconnect,
+plug ... clear-fault, drop, impairments PUT, send - call :mod:`.scenario.ops`, shared with scenarios; its
+``OpError`` kinds map to the HTTP statuses below):
 
 * ``GET /api/chargers/{id}`` - the charger's snapshot plus ``fault_codes``, the fault codes of its OCPP version;
 * ``POST /api/chargers/{id}/{connect,disconnect}`` - start / stop the connection loop (engine level; a disconnect
@@ -114,7 +116,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 
 import yaml
 from fastapi import APIRouter, Body, FastAPI, Query
@@ -128,11 +130,11 @@ from starlette.routing import Route
 
 from . import __version__, templates_builtin, xlsx_io
 from .config import PASSWORD_MASK, CsmsDefaults, ImpairmentConfig, SimConfig
-from .csms.handlers import SPECS
-from .engine import OcppEngine, OperationNotPossible
+from .engine import OcppEngine
 from .protocol.base import DataTransferStatus
 from .protocol.registry import get_station_class, list_versions
 from .rpc.errors import CallError
+from .scenario import ops
 
 STATIC = Path(__file__).resolve().parent / "static"
 #: Fault codes an operator may set on some charger: the union over the available OCPP versions (each version's
@@ -357,28 +359,38 @@ def simulation_hook(engine: OcppEngine, rest: dict) -> None:
     return None
 
 
+# ------------------------------------------------------------------ action layer
+
+def _http(e: ops.OpError):
+    return bad(ops.HTTP_STATUS[e.kind], e.detail)
+
+
+async def _act(aw: Awaitable[Any]) -> Any:
+    """Await an action of :mod:`.scenario.ops`; its :class:`~.scenario.ops.OpError` becomes the HTTP error."""
+    try:
+        return await aw
+    except ops.OpError as e:
+        raise _http(e) from None
+
+
+def _act_sync(fn: Callable[..., Any], *args: Any) -> Any:
+    """Call a synchronous function of :mod:`.scenario.ops` (lookups, ``drop``) the same way."""
+    try:
+        return fn(*args)
+    except ops.OpError as e:
+        raise _http(e) from None
+
+
 # ------------------------------------------------------------------ product router
 
 def _router(engine: OcppEngine) -> APIRouter:
     r = APIRouter(prefix="/api", tags=["ocpp"])
 
     def runtime(cid: str):
-        try:
-            return engine.charger(cid)
-        except KeyError:
-            raise bad(404, f"unknown charger {cid!r}") from None
+        return _act_sync(ops.runtime, engine, cid)
 
     def conn_ok(rt, connector: int) -> None:
-        if not 1 <= connector <= rt.connector_count:
-            raise bad(400, f"no connector {connector} (1..{rt.connector_count})")
-
-    async def engine_op(fn, cid: str) -> bool:
-        try:
-            return await fn(cid)
-        except KeyError:
-            raise bad(404, f"unknown charger {cid!r}") from None
-        except OperationNotPossible as e:
-            raise bad(400, e) from None
+        _act_sync(ops.connector_ok, rt, connector)
 
     def bulk_ids(body: Union[List[str], BulkBody]) -> List[str]:
         if isinstance(body, BulkBody):
@@ -397,13 +409,11 @@ def _router(engine: OcppEngine) -> APIRouter:
     # Bulk routes first: /chargers/bulk/connect must not match /chargers/{cid}/connect.
     @r.post("/chargers/bulk/connect", summary="Connect several chargers")
     async def bulk_connect(body: Union[List[str], BulkBody] = Body(...)):
-        ids = bulk_ids(body)
-        return {"ok": True, "changed": {cid: await engine_op(engine.connect, cid) for cid in ids}}
+        return await _act(ops.connect_many(engine, bulk_ids(body), up=True))
 
     @r.post("/chargers/bulk/disconnect", summary="Disconnect several chargers")
     async def bulk_disconnect(body: Union[List[str], BulkBody] = Body(...)):
-        ids = bulk_ids(body)
-        return {"ok": True, "changed": {cid: await engine_op(engine.disconnect, cid) for cid in ids}}
+        return await _act(ops.connect_many(engine, bulk_ids(body), up=False))
 
     @r.get("/chargers/{cid}", summary="One charger: its snapshot plus the fault codes of its OCPP version")
     async def charger(cid: str):
@@ -414,77 +424,40 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.post("/chargers/{cid}/connect", summary="Start the connection loop")
     async def connect(cid: str):
-        return {"ok": True, "changed": await engine_op(engine.connect, cid)}
+        return await _act(ops.connect(engine, cid))
 
     @r.post("/chargers/{cid}/disconnect", summary="Close the connection and keep it closed")
     async def disconnect(cid: str):
-        return {"ok": True, "changed": await engine_op(engine.disconnect, cid)}
+        return await _act(ops.disconnect(engine, cid))
 
     @r.post("/chargers/{cid}/plug", summary="Plug the EV cable in")
     async def plug(cid: str, body: ConnectorBody = Body(default_factory=ConnectorBody)):
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        await rt.plug(body.connector)
-        return {"ok": True}
+        return await _act(ops.plug(engine, cid, body.connector))
 
     @r.post("/chargers/{cid}/unplug", summary="Unplug the EV cable (ends a transaction)")
     async def unplug(cid: str, body: ConnectorBody = Body(default_factory=ConnectorBody)):
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        await rt.unplug(body.connector)
-        return {"ok": True}
+        return await _act(ops.unplug(engine, cid, body.connector))
 
     @r.post("/chargers/{cid}/swipe", summary="Present an id tag (start / stop like an RFID reader)")
     async def swipe(cid: str, body: TagBody = Body(default_factory=TagBody)):
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        if body.id_tag is None:
-            raise bad(400, "id_tag: required")
-        status = await rt.swipe(body.connector, body.id_tag)
-        return {"ok": True, "status": status.value}
+        return await _act(ops.swipe(engine, cid, body.connector, body.id_tag))
 
     @r.post("/chargers/{cid}/start", summary="Plug in and present an id tag (default: the first configured)")
     async def start(cid: str, body: TagBody = Body(default_factory=TagBody)):
-        """Check-then-act: the transaction / fault checks and the plug + swipe that follow are not atomic (a CSMS
-        RemoteStart or another request may run in between); the runtime then answers by its own rules, the checks
-        only give the common mistakes a clear 400."""
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        tag = body.id_tag or (rt.cfg.id_tags[0] if rt.cfg.id_tags else None)
-        if tag is None:
-            raise bad(400, "id_tag: required (the charger has no id_tags configured)")
-        if rt.has_transaction(body.connector):
-            raise bad(400, f"connector {body.connector} already has a transaction")
-        if rt.faulted(body.connector):
-            raise bad(400, f"connector {body.connector} is faulted")
-        await rt.plug(body.connector)
-        status = await rt.swipe(body.connector, tag)
-        return {"ok": True, "status": status.value, "id_tag": tag}
+        """Check-then-act (see :func:`.scenario.ops.start`): the checks only give the common mistakes a clear 400."""
+        return await _act(ops.start(engine, cid, body.connector, body.id_tag))
 
     @r.post("/chargers/{cid}/stop", summary="Stop the transaction locally (reason Local)")
     async def stop(cid: str, body: ConnectorBody = Body(default_factory=ConnectorBody)):
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        if not await rt.stop_tx(body.connector):
-            raise bad(400, f"connector {body.connector} has no transaction")
-        return {"ok": True}
+        return await _act(ops.stop(engine, cid, body.connector))
 
     @r.post("/chargers/{cid}/fault", summary="Fault a connector (StatusNotification Faulted)")
     async def fault(cid: str, body: FaultBody = Body(default_factory=FaultBody)):
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        if body.error_code not in rt.fault_codes:
-            raise bad(400, f"error_code {body.error_code!r} is not a fault code of OCPP {rt.adapter.version}")
-        await rt.fault(body.connector, body.error_code)
-        return {"ok": True}
+        return await _act(ops.fault(engine, cid, body.connector, body.error_code))
 
     @r.post("/chargers/{cid}/clear-fault", summary="Clear a connector fault")
     async def clear_fault(cid: str, body: ConnectorBody = Body(default_factory=ConnectorBody)):
-        rt = runtime(cid)
-        conn_ok(rt, body.connector)
-        if not await rt.clear_fault(body.connector):
-            raise bad(400, f"connector {body.connector} is not faulted")
-        return {"ok": True}
+        return await _act(ops.clear_fault(engine, cid, body.connector))
 
     @r.post("/chargers/{cid}/datatransfer", summary="Send a DataTransfer to the CSMS")
     async def datatransfer(cid: str, body: DataTransferBody):
@@ -507,63 +480,17 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     @r.put("/chargers/{cid}/impairments", summary="Replace the impairments block (applied live, no restart)")
     async def impairments_put(cid: str, body: ImpairmentConfig):
-        i, c = charger_cfg(cid)
-        data = engine.config.model_dump()
-        data["chargers"][i] = {**c.model_dump(), "impairments": body.model_dump()}
-        await apply(data)  # impairments is not part of the restart key: the running charger keeps its connection
-        return {"ok": True, **charger_cfg(cid)[1].impairments.model_dump(mode="json")}
+        return await _act(ops.impair(engine, cid, body))
 
     @r.post("/chargers/{cid}/drop", summary="Drop the connection now (simulated network failure)")
     async def drop(cid: str, body: DropBody = Body(default_factory=DropBody)):
-        rt = runtime(cid)
-        try:
-            rt.drop(body.mode, body.reconnect_after_s)
-        except ConnectionError as e:
-            raise bad(409, e) from None
-        imp = rt.impairments
-        return {"ok": True, "mode": body.mode or imp.drop_mode,
-                "reconnect_after_s": imp.down_s if body.reconnect_after_s is None else body.reconnect_after_s}
+        return _act_sync(ops.drop, engine, cid, body.mode, body.reconnect_after_s)
 
     @r.post("/chargers/{cid}/send", summary="Inject a CALL or a raw frame (expert use; no station state change)")
     async def send(cid: str, body: SendBody):
-        rt = runtime(cid)
-        if body.raw is not None:
-            if body.action is not None or "payload" in body.model_fields_set:
-                raise bad(400, "give either raw or action / payload, not both")
-            try:
-                await rt.inject_raw(body.raw)
-            except (ConnectionError, ValueError) as e:  # not connected / uniqueId of a pending station CALL
-                raise bad(409, e) from None
-            return {"ok": True, "raw": True}
-        if body.action is None:
-            raise bad(400, "action (or raw): required")
-        if len(json.dumps(body.payload, separators=(",", ":"))) > MAX_INJECT_BYTES:
-            raise bad(413, f"payload: larger than {MAX_INJECT_BYTES} characters serialized")
-        spec = SPECS.get(rt.adapter.version)
-        if body.validate_:
-            if spec is None:
-                raise bad(400, f"no schema check for OCPP {rt.adapter.version}; send with validate: false")
-            if body.action not in spec.cp_actions:
-                raise bad(400, f"{body.action!r} is not a CP -> CSMS action of OCPP {spec.version}")
-            try:
-                spec.codec.parse(body.action, body.payload, "request", strict=True)
-            except CallError as e:
-                raise bad(400, f"{e.code}: {e.description}") from None
-        try:
-            result = await rt.inject_call(body.action, body.payload, timeout=body.timeout)
-        except ConnectionError as e:
-            raise bad(409, e) from None
-        except TimeoutError:
-            raise bad(504, f"{body.action}: the CSMS did not answer in time") from None
-        except CallError as e:
-            return {"ok": False, "error": {"code": e.code, "description": e.description, "details": e.details}}
-        out: Dict[str, Any] = {"ok": True, "result": result}
-        if body.validate_ and spec is not None:
-            try:
-                spec.codec.parse(body.action, result, "response", strict=False)
-            except CallError as e:
-                out["warning"] = f"the answer does not match the response schema: {e.code}: {e.description}"
-        return out
+        payload = body.payload if "payload" in body.model_fields_set else ops.UNSET
+        return await _act(ops.send(engine, cid, action=body.action, payload=payload, raw=body.raw,
+                                  validate=body.validate_, timeout=body.timeout))
 
     @r.get("/chargers/{cid}/profiles", summary="Installed charging profiles")
     async def profiles(cid: str, connector: Optional[int] = Query(None, ge=0)):
@@ -601,20 +528,10 @@ def _router(engine: OcppEngine) -> APIRouter:
 
     async def apply(data: dict) -> None:
         """Validate ``data`` (a whole config dump) and reload the engine with it; any rejection is a 400."""
-        try:
-            cfg = SimConfig.model_validate(data)
-        except ValueError as e:  # pydantic ValidationError
-            raise bad(400, e) from None
-        try:
-            await engine.reload(cfg)
-        except Exception as e:  # noqa: BLE001 - build / apply errors: the old config keeps running
-            raise bad(400, e) from None
+        await _act(ops.apply_config(engine, data))
 
     def charger_cfg(cid: str):
-        for i, c in enumerate(engine.config.chargers):
-            if c.id == cid:
-                return i, c
-        raise bad(404, f"unknown charger {cid!r}")
+        return _act_sync(ops.charger_cfg, engine, cid)
 
     def settings_view(c) -> dict:
         out = {k: getattr(c, k) for k in SETTINGS_FIELDS}
@@ -742,7 +659,7 @@ def _router(engine: OcppEngine) -> APIRouter:
 
 
 #: Largest ``raw`` text / serialized ``payload`` of ``POST /api/chargers/{id}/send`` (characters).
-MAX_INJECT_BYTES = 1_000_000
+MAX_INJECT_BYTES = ops.MAX_INJECT_BYTES
 
 
 class SendBody(BaseModel):
