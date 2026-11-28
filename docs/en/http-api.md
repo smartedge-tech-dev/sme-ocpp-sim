@@ -103,6 +103,10 @@ the simulator would not send on its own:
 - The station state never changes: an injected StartTransaction creates no transaction, an injected
   StatusNotification changes no connector. Injected frames are marked `injected` / `injected (raw)` in the
   frame log. `409` while the charger is not connected.
+- One CALL is outstanding per connection (OCPP-J), so the charger's own CALLs (Heartbeat, MeterValues, ...)
+  queue behind an injected CALL until it is answered or times out; `timeout` is therefore at most 60 s.
+- `raw` and the serialized `payload` are limited to 1,000,000 characters (`400` / `413`). A raw frame whose
+  uniqueId is that of a pending charger CALL is refused with `409` (its answer would resolve that call).
 
 ## Smart Charging
 

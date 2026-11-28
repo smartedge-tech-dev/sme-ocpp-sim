@@ -240,8 +240,8 @@ class OcppEngine(BaseEngine):
                             self._launch(cid, merged[cid].runtime)
                             launched.append(cid)
             sim = new_config.simulation
-            self._apply_clock((e.runtime for e in merged.values()), sim.time_scale, sim.running)
             self._apply_impairments(merged, new_config)
+            self._apply_clock((e.runtime for e in merged.values()), sim.time_scale, sim.running)
         except BaseException:  # incl. cancellation, which BaseEngine.reload does not roll back
             await _shielded(self._undo(old, launched, old_config))
             raise

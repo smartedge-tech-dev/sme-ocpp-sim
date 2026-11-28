@@ -328,3 +328,20 @@ def test_send_raw_and_injected_call_are_logged():
             await rpc.send_raw("[]")
         return True
     assert run(scenario)
+
+
+def test_send_raw_refuses_the_uid_of_a_pending_call():
+    async def scenario(ws):
+        rpc, _ = _rpc(ws)
+        rx = asyncio.create_task(rpc.run())
+        pending = asyncio.create_task(rpc.call("Heartbeat", {}, timeout=1))
+        await _until(lambda: ws.sent)
+        with pytest.raises(ValueError, match="pending"):
+            await rpc.send_raw('[2,"id1","Heartbeat",{}]')
+        assert len(ws.sent) == 1
+        ws.feed([3, "id1", {"currentTime": "t"}])
+        assert await pending == {"currentTime": "t"}
+        await rpc.close()
+        await rx
+        return True
+    assert run(scenario)

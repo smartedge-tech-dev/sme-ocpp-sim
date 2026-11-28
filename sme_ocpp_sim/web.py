@@ -18,8 +18,9 @@ The generic routes (``/``, ``/api/version``, ``/api/state``, ``/api/config*``, `
 * ``POST /api/chargers/{id}/send`` - frame injection (expert use): ``{"action", "payload", "validate": true,
   "timeout"?}`` sends a CALL past the station (no station state changes) and returns ``{"ok": true, "result"}`` /
   ``{"ok": false, "error"}`` (CALLERROR), 504 on timeout; ``validate: false`` skips the schema checks;
-  ``{"raw": "<text>"}`` writes the text verbatim and awaits nothing (an answer is logged as unsolicited). 409 while
-  the charger is not connected;
+  ``{"raw": "<text>"}`` writes the text verbatim and awaits nothing (an answer is logged as unsolicited; a uniqueId
+  of a pending station CALL is 409). 409 while the charger is not connected; ``timeout`` <= 60 s (the station's own
+  CALLs queue behind an injected one); ``raw`` and the serialized ``payload`` at most 1,000,000 characters (413);
 * ``GET /api/chargers/{id}/profiles?connector=`` - installed charging profiles;
 * ``GET /api/chargers/{id}/composite?connector=&duration=&unit=`` - the GetCompositeSchedule answer computed
   locally. In OCPP 1.6 the plan's ``evse`` is a connectorId, so the parameter is ``connector`` (``evse`` is
@@ -536,11 +537,13 @@ def _router(engine: OcppEngine) -> APIRouter:
                 raise bad(400, "give either raw or action / payload, not both")
             try:
                 await rt.inject_raw(body.raw)
-            except ConnectionError as e:
+            except (ConnectionError, ValueError) as e:  # not connected / uniqueId of a pending station CALL
                 raise bad(409, e) from None
             return {"ok": True, "raw": True}
         if body.action is None:
             raise bad(400, "action (or raw): required")
+        if len(json.dumps(body.payload, separators=(",", ":"))) > MAX_INJECT_BYTES:
+            raise bad(413, f"payload: larger than {MAX_INJECT_BYTES} characters serialized")
         spec = SPECS.get(rt.adapter.version)
         if body.validate_:
             if spec is None:
@@ -743,6 +746,10 @@ def _router(engine: OcppEngine) -> APIRouter:
     return r
 
 
+#: Largest ``raw`` text / serialized ``payload`` of ``POST /api/chargers/{id}/send`` (characters).
+MAX_INJECT_BYTES = 1_000_000
+
+
 class SendBody(BaseModel):
     """``POST /api/chargers/{id}/send``: either ``action`` (+ ``payload``) or ``raw``, not both."""
 
@@ -752,8 +759,10 @@ class SendBody(BaseModel):
     #: Check that ``action`` is a CP -> CSMS action of the charger's version and ``payload`` matches its request
     #: schema (strict) before sending, and the answer against the response schema (a mismatch is a ``warning``).
     validate_: bool = Field(True, alias="validate")
-    raw: Optional[str] = Field(None, min_length=1)
-    timeout: Optional[float] = Field(None, gt=0, le=300)
+    raw: Optional[str] = Field(None, min_length=1, max_length=MAX_INJECT_BYTES)
+    #: An injected CALL holds the connection's call slot (one outstanding CALL, OCPP-J) while it waits, so the
+    #: station's own CALLs queue behind it: capped lower than the Mini CSMS ``/call``.
+    timeout: Optional[float] = Field(None, gt=0, le=60)
 
 
 class CsmsCallBody(BaseModel):

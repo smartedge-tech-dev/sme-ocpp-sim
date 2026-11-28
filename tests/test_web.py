@@ -599,8 +599,11 @@ def test_send_needs_connection_and_valid_input(setup):
     assert client.post("/api/chargers/CP001/send", json={"action": "Heartbeat"}).status_code == 409
     assert client.post("/api/chargers/CP001/send", json={"raw": "[2]"}).status_code == 409
     for body in ({}, {"raw": "x", "action": "Heartbeat"}, {"action": "Reset", "payload": {"type": "Hard"}},
-                 {"action": "Heartbeat", "payload": {"x": 1}}):
-        assert client.post("/api/chargers/CP001/send", json=body).status_code == 400, body
+                 {"action": "Heartbeat", "payload": {"x": 1}}, {"action": "Heartbeat", "timeout": 61},
+                 {"raw": "x" * 1_000_001}):
+        assert client.post("/api/chargers/CP001/send", json=body).status_code == 400, str(body)[:80]
+    big = {"action": "DataTransfer", "payload": {"vendorId": "V", "data": "x" * 1_000_000}, "validate": False}
+    assert client.post("/api/chargers/CP001/send", json=big).status_code == 413
 
 
 @pytest.mark.parametrize("version", ["1.6", "2.0.1"])
@@ -647,13 +650,20 @@ def test_block_and_inject_against_mini_csms(version):
                 assert r["ok"] is True and "currentTime" in r["result"] and "warning" not in r
                 start = {"1.6": ("StartTransaction", {"connectorId": 1, "idTag": "T1", "meterStart": 0,
                                                       "timestamp": "2026-11-28T00:00:00Z"}),
-                         "2.0.1": ("Heartbeat", {})}[version]
+                         "2.0.1": ("TransactionEvent", {
+                             "eventType": "Started", "timestamp": "2026-11-28T00:00:00Z", "triggerReason": "Authorized",
+                             "seqNo": 0, "transactionInfo": {"transactionId": "inj-tx-1"}, "evse": {"id": 1, "connectorId": 1},
+                             "idToken": {"idToken": "T1", "type": "ISO14443"}})}[version]
                 r = (await c.post("/api/chargers/CP/send", json={"action": start[0], "payload": start[1]})).json()
-                assert r["ok"] is True and not rt.has_transaction(1)
+                assert r["ok"] is True and "warning" not in r and not rt.has_transaction(1)
+                assert not any(x.get("transaction") for x in rt.snapshot()["connectors"])
                 r = (await c.post("/api/chargers/CP/send",
-                                  json={"action": "NoSuchAction", "payload": [1], "validate": False})).json()
-                assert r["ok"] is False and r["error"]["code"] in ("NotImplemented", "NotSupported",
-                                                                    "FormationViolation", "FormatViolation")
+                                  json={"action": "NoSuchAction", "payload": {}, "validate": False})).json()
+                assert r["ok"] is False and r["error"]["code"] == "NotImplemented"
+                r = (await c.post("/api/chargers/CP/send",
+                                  json={"action": "Heartbeat", "payload": [1], "validate": False})).json()
+                assert r["ok"] is False and r["error"]["code"] == {"1.6": "FormationViolation",
+                                                                   "2.0.1": "FormatViolation"}[version]
                 r = await c.post("/api/chargers/CP/send", json={"raw": '[2,"inj-1","Heartbeat",{}]'})
                 assert r.json() == {"ok": True, "raw": True}
                 async with asyncio.timeout(5):

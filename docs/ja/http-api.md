@@ -99,6 +99,10 @@ CSMS 側がタイムアウトします。フレームログでは受信した CA
 - ステーションの状態は変わりません。注入した StartTransaction はトランザクションを作らず、StatusNotification も
   コネクターを変えません。注入したフレームはフレームログで `injected` / `injected (raw)` と表示されます。
   未接続の充電器では `409` です。
+- 1 接続で未応答の CALL は 1 つだけ（OCPP-J）なので、充電器自身の CALL（Heartbeat、MeterValues など）は注入した
+  CALL が応答されるかタイムアウトするまで待たされます。そのため `timeout` は最大 60 秒です。
+- `raw` とシリアライズ後の `payload` は 1,000,000 文字まで（`400` / `413`）。未応答の充電器 CALL と同じ uniqueId の
+  raw フレームは `409` で拒否します（その応答が充電器の CALL を解決してしまうため）。
 
 ## Smart Charging
 

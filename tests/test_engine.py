@@ -356,16 +356,22 @@ def test_impairments_only_reload_applies_live_without_restart():
             await engine.reload(_config(peer.url, ["A", "B", "C"],
                                         A={"impairments": {"block": {"NoSuchAction": "NoReply"}}}))
         assert old["A"]._block_mode("Reset") == "NoReply"
-        # a failing apply rolls the impairments back with the rest
-        launch = engine._launch
+        # a failure after the impairments step rolls them back with the rest: _apply_clock (the step after
+        # _apply_impairments) raises once, then _undo's own _apply_clock / _apply_impairments run normally
+        clock, calls = engine._apply_clock, []
 
-        def failing(cid, rt):
-            raise RuntimeError("boom")
-        engine._launch = failing
+        def failing_clock(runtimes, time_scale, running):
+            calls.append(old["A"]._block_mode("Reset"))
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            clock(runtimes, time_scale, running)
+        engine._apply_clock = failing_clock
         with pytest.raises(RuntimeError, match="boom"):
-            await engine.reload(_config(peer.url, ["A", "B", "C"], B={"vendor": "Other"}))
-        engine._launch = launch
-        assert old["A"]._block_mode("Reset") == "NoReply"
+            await engine.reload(_config(peer.url, ["A", "B", "C"],
+                                        A={"impairments": {"block": {"Reset": "NotSupported"}}}))
+        engine._apply_clock = clock
+        assert calls[0] == "NotSupported"  # the new block was live when the failure hit
+        assert old["A"]._block_mode("Reset") == "NoReply" and engine.chargers == old
         await engine.reload(_config(peer.url, ["A", "B", "C"]))
         assert not old["A"].impaired and engine.chargers == old
         assert _connections(peer)["A"] == 1

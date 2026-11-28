@@ -92,6 +92,10 @@ CSMS 未在时限内应答的 DataTransfer 为 `504`，CSMS 以 CALLERROR 应答
 - `{"raw": "<text>"}` 把文本原样写入 WebSocket，不等待任何应答；对它的应答在帧日志中显示为 unsolicited response。
 - 不改变站内状态：注入的 StartTransaction 不会生成交易，注入的 StatusNotification 不改变连接器。注入的帧在帧日志中
   标注 `injected` / `injected (raw)`。充电桩未连接时返回 `409`。
+- 每个连接只能有一个未应答的 CALL（OCPP-J），因此充电桩自己的 CALL（Heartbeat、MeterValues 等）会排在注入的 CALL
+  之后，直到它得到应答或超时；所以 `timeout` 最大 60 秒。
+- `raw` 与序列化后的 `payload` 最多 1,000,000 字符（`400` / `413`）。uniqueId 与未应答的充电桩 CALL 相同的 raw 帧
+  以 `409` 拒绝（其应答会错误地完成该 CALL）。
 
 ## Smart Charging
 

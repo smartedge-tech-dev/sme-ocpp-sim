@@ -136,7 +136,9 @@ class RpcConnection:
         """Write ``raw`` to the socket verbatim (frame injection, expert use) and log it as a tx frame.
 
         Nothing is parsed or correlated: an answer to an injected CALL arrives as an unsolicited response and is
-        logged and dropped. Raises :class:`ConnectionError` when the connection is (or gets) closed."""
+        logged and dropped. Raises :class:`ConnectionError` when the connection is (or gets) closed and
+        :class:`ValueError` for a frame whose uniqueId is that of a pending outbound CALL (its answer would
+        resolve that call)."""
         if self.closed.is_set() or self._stopping:
             raise ConnectionError("connection closed")
         mtype = uid = action = None
@@ -146,6 +148,8 @@ class RpcConnection:
             pass
         else:
             uid = frame.uid
+            if uid in self._pending:
+                raise ValueError(f"uniqueId {uid!r} is that of a pending outbound CALL")
             if isinstance(frame, framer.Call):
                 mtype, action = framer.CALL, frame.action
             else:
